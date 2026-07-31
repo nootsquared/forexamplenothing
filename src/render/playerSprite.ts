@@ -1,17 +1,27 @@
 import { Container, Sprite, Graphics } from 'pixi.js';
 import { lerp } from './interp';
+import { Vec2, len, norm, rotate } from '../core/math';
 import { PlayerBody } from '../sim/player';
 import { GameAssets } from './assets';
-import { project } from './projection';
+import { project, pxPerMeter, squash } from './projection';
+
+// Charge + J/L bend state the local player's view needs to draw its aim tell
+export interface AimState {
+  charge: number;
+  offset: number;
+  move: Vec2;
+}
 
 export class PlayerView {
   root = new Container();
   private shadow: Sprite;
   private body: Sprite;
+  private aimArrow: Sprite;
   private chargeBar = new Graphics();
   private animPhase = 0;
   private idlePhase = 0;
   private kickTimer = 0;
+  private aimPulse = 0;
   private sheet: string;
 
   constructor(private assets: GameAssets, sheet: string) {
@@ -23,20 +33,24 @@ export class PlayerView {
     const { frameH, baseline } = assets.manifest.player;
     this.body.anchor.set(0.5, baseline / frameH);
     this.body.position.y = 1; // boots settle INTO the turf, not on top of it
-    this.root.addChild(this.shadow, this.body, this.chargeBar);
+    this.aimArrow = new Sprite(assets.aimFrames[0]);
+    this.aimArrow.anchor.set(0.5, 0.5);
+    this.aimArrow.visible = false;
+    this.root.addChild(this.shadow, this.aimArrow, this.body, this.chargeBar);
   }
 
   triggerKick() {
     this.kickTimer = 0.26;
   }
 
-  update(p: PlayerBody, dt: number, alpha: number, charge: number) {
+  update(p: PlayerBody, dt: number, alpha: number, aim: AimState | null) {
     const x = lerp(p.prev.x, p.pos.x, alpha);
     const y = lerp(p.prev.y, p.pos.y, alpha);
     const proj = project(x, y, 0);
     this.root.position.set(proj.sx, proj.sy);
     this.root.zIndex = proj.depth;
     this.shadow.position.set(0.5, 0.5); // pooled right under the feet
+    this.updateAimArrow(p, dt, aim);
 
     const speed = p.speed();
     const anims = this.assets.manifest.player.anims;
@@ -59,12 +73,32 @@ export class PlayerView {
     this.body.texture = this.assets.players[this.sheet][this.headingRow(p)][frame];
 
     // Charge tell: a small bar filling above the head — readable at couch distance
+    const charge = aim?.charge ?? 0;
     this.chargeBar.clear();
     if (charge > 0) {
       const w = 16;
-      this.chargeBar.rect(-w / 2, -27, w, 3).fill({ color: 0x1a1626, alpha: 0.7 });
-      this.chargeBar.rect(-w / 2 + 0.5, -26.5, (w - 1) * charge, 2).fill(charge > 0.8 ? 0xff5340 : 0xffdf5e);
+      this.chargeBar.rect(-w / 2, -30, w, 3).fill({ color: 0x1a1626, alpha: 0.7 });
+      this.chargeBar.rect(-w / 2 + 0.5, -29.5, (w - 1) * charge, 2).fill(charge > 0.8 ? 0xff5340 : 0xffdf5e);
     }
+  }
+
+  // The shot sight: a chalk arrow orbiting the feet at the FINAL aim — stick
+  // line bent by J/L — so you always see where the strike will leave
+  private updateAimArrow(p: PlayerBody, dt: number, aim: AimState | null) {
+    if (!aim || aim.charge <= 0) {
+      this.aimArrow.visible = false;
+      return;
+    }
+    this.aimPulse += dt * 9;
+    const base = len(aim.move) > 0.25 ? norm(aim.move) : p.facing;
+    const dir = rotate(base, aim.offset);
+    const dirs = this.assets.manifest.fx.aim.frames;
+    const bin = Math.round(Math.atan2(dir.y, dir.x) / ((Math.PI * 2) / dirs));
+    this.aimArrow.texture = this.assets.aimFrames[((bin % dirs) + dirs) % dirs];
+    const M = pxPerMeter();
+    this.aimArrow.position.set(dir.x * 1.7 * M, dir.y * 1.7 * M * squash() - 2);
+    this.aimArrow.visible = true;
+    this.aimArrow.alpha = 0.82 + 0.18 * Math.sin(this.aimPulse);
   }
 
   // Continuous heading → nearest of the 16 baked compass rows

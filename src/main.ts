@@ -51,7 +51,7 @@ async function boot() {
       world.step(dt, [input]);
       scene.handleEvents(world.events);
     },
-    (alpha, renderDt) => scene.render(alpha, renderDt, controls.charge),
+    (alpha, renderDt) => scene.render(alpha, renderDt, { charge: controls.charge, offset: controls.aimOffset, move: input.move }),
   );
 
   const scene = new Scene(app, assets, world, loop);
@@ -64,6 +64,7 @@ async function boot() {
     world.ball.vel = vec();
     world.ball.z = 0;
     world.ball.vz = 0;
+    world.ball.spin = 0;
   });
 
   loop.start();

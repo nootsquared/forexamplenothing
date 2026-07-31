@@ -15,7 +15,8 @@ export interface PlayerInput {
   move: Vec2;          // unit-ish intent
   sprint: boolean;
   kickCharging: boolean;
-  kickReleased: { power: number } | null;
+  // aimOffset: radians of J/L bend applied off the stick line at release
+  kickReleased: { power: number; aimOffset?: number } | null;
 }
 
 export class PlayerBody {
@@ -26,7 +27,7 @@ export class PlayerBody {
   touchCooldown = 0;
   kickCooldown = 0;
   // Released kick waiting for the ball to come into reach
-  pendingKick: { power: number; ttl: number } | null = null;
+  pendingKick: { power: number; bend: number; ttl: number } | null = null;
   // Set for one tick when a cut plants — the foot can chop the ball with it
   justCut = false;
   cutDir: Vec2 = vec(1, 0);

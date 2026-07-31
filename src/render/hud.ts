@@ -16,7 +16,7 @@ export class Hud {
 
   constructor(assets: GameAssets) {
     this.hint = new PixelText(assets, 2);
-    this.hint.text = 'WASD MOVE - SHIFT SPRINT - SPACE KICK - 1 2 3 PITCH - R BALL';
+    this.hint.text = 'WASD MOVE - SHIFT SPRINT - SPACE KICK - J L BEND - 1 2 3 PITCH - R BALL';
     this.hint.alpha = 0.72;
 
     this.toast = new PixelText(assets, 4, 0xffe27a);

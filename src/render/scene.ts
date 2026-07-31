@@ -5,7 +5,7 @@ import { SimEvent } from '../sim/events';
 import { GameAssets } from './assets';
 import { PitchLayer } from './pitchLayer';
 import { GrassField, GrassActor } from './grassField';
-import { PlayerView } from './playerSprite';
+import { PlayerView, AimState } from './playerSprite';
 import { BallView } from './ballSprite';
 import { Effects } from './effects';
 import { FollowCamera } from './camera';
@@ -69,13 +69,13 @@ export class Scene {
     }
   }
 
-  render(alpha: number, dt: number, charge: number) {
+  render(alpha: number, dt: number, aim: AimState) {
     const w = this.app.renderer.width;
     const h = this.app.renderer.height;
 
     this.camera.update(dt, this.world.ball.pos, this.world.ball.vel, this.world.players.map((p) => p.pos), w, h);
     this.world.players.forEach((p, i) => {
-      this.playerViews[i]?.update(p, dt, alpha, i === 0 ? charge : 0);
+      this.playerViews[i]?.update(p, dt, alpha, i === 0 ? aim : null);
       this.effects.sprintDust(p, dt);
     });
     this.ballView.update(this.world.ball, dt, alpha);

@@ -40,6 +40,16 @@ export function angleBetween(a: Vec2, b: Vec2): number {
   return Math.acos(clamp((a.x * b.x + a.y * b.y) / (la * lb), -1, 1));
 }
 
+// Signed rotation that carries direction a onto direction b
+export function signedAngle(a: Vec2, b: Vec2): number {
+  return Math.atan2(a.x * b.y - a.y * b.x, a.x * b.x + a.y * b.y);
+}
+
+// 90° clockwise on screen: the dominant-foot side of a heading
+export function perpRight(v: Vec2): Vec2 {
+  return { x: -v.y, y: v.x };
+}
+
 export function rotate(v: Vec2, rad: number): Vec2 {
   const c = Math.cos(rad);
   const s = Math.sin(rad);

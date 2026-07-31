@@ -1,4 +1,5 @@
 import { makeCanvas, PixelGrid, mulberry32 } from './lib.mjs';
+import { ISO } from './palettes.mjs';
 
 // All juice sprites: dust puffs, kick flash rings, skid streaks, soft shadows,
 // swaying grass tufts, and the goal net tile
@@ -137,6 +138,30 @@ export function generateBladeSheet() {
       grid.set(x, BLADE_H - 1 - y, y === tall - 1 ? tip : y === 0 ? '#1e4218' : body);
     }
     grid.blitTo(ctx, i * BLADE_W, 0);
+  }
+  return canvas;
+}
+
+// Chunky chalk aim arrow lying on the ground plane, baked in 16 headings —
+// the shot-direction tell while a kick charges. Squashed like the pitch.
+export const AIM_SIZE = 18;
+export const AIM_DIRS = 16;
+export function generateAimArrowSheet() {
+  const { canvas, ctx } = makeCanvas(AIM_SIZE * AIM_DIRS, AIM_SIZE);
+  const c = AIM_SIZE / 2 - 0.5;
+  for (let d = 0; d < AIM_DIRS; d++) {
+    const grid = new PixelGrid(AIM_SIZE, AIM_SIZE);
+    const ang = (d * Math.PI * 2) / AIM_DIRS;
+    const dx = Math.cos(ang);
+    const dy = Math.sin(ang) * ISO.squash;
+    const px = -Math.sin(ang);
+    const py = Math.cos(ang) * ISO.squash;
+    const dot = (t, s, hex) => grid.set(c + dx * t + px * s, c + dy * t + py * s, hex);
+    for (let t = -1; t <= 4; t++) { dot(t, 0, '#f6eed8'); if (t < 3) { dot(t, 1, '#d9d1b4'); dot(t, -1, '#d9d1b4'); } }
+    for (let s = 1; s <= 2; s++) { dot(4 - s, s, '#f6eed8'); dot(4 - s, -s, '#f6eed8'); } // head flares
+    dot(5, 0, '#fffbea'); // tip
+    grid.autoOutline('#20240f');
+    grid.blitTo(ctx, d * AIM_SIZE, 0);
   }
   return canvas;
 }

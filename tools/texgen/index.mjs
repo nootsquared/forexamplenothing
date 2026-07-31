@@ -4,7 +4,7 @@ import { VARIANTS, KITS, PX_PER_METER, ISO } from './palettes.mjs';
 import { generatePitchTexture, PITCH } from './pitch.mjs';
 import { generatePlayerSheet, FRAME_W, FRAME_H, BASELINE, DIRS, FRAMES } from './players.mjs';
 import { generateBallSheet, BALL_SIZE, BALL_DIRS, BALL_PHASES, BALL_VISUAL_R } from './ball.mjs';
-import { generateDustSheet, generateGrassBitsSheet, generateRingSheet, generateShadow, generateSkid, generateBladeSheet, generateGoalBar, BLADE_W, BLADE_H, BLADE_FRAMES } from './fx.mjs';
+import { generateDustSheet, generateGrassBitsSheet, generateRingSheet, generateShadow, generateSkid, generateBladeSheet, generateAimArrowSheet, generateGoalBar, BLADE_W, BLADE_H, BLADE_FRAMES, AIM_SIZE, AIM_DIRS } from './fx.mjs';
 import { generateFontSheet, GLYPHS, CELL_W, CELL_H } from './font.mjs';
 import { generateStand, generateBoards, generateDugout, generateCornerFlag, generateCloudShadow, STAND_H, BOARD_H } from './stands.mjs';
 
@@ -29,6 +29,7 @@ savePNG(generateRingSheet(), `${OUT}fx-ring.png`);
 savePNG(generateShadow(), `${OUT}fx-shadow.png`);
 savePNG(generateSkid(), `${OUT}fx-skid.png`);
 savePNG(generateBladeSheet(), `${OUT}fx-blade.png`);
+savePNG(generateAimArrowSheet(), `${OUT}fx-aim.png`);
 savePNG(generateGoalBar(), `${OUT}goal-bar.png`);
 savePNG(generateFontSheet(), `${OUT}font.png`);
 savePNG(generateStand(), `${OUT}stand.png`);
@@ -50,6 +51,7 @@ const manifest = {
   fx: {
     dust: { size: 14, frames: 5 }, grass: { size: 12, frames: 4 }, ring: { size: 26, frames: 3 },
     blade: { w: BLADE_W, h: BLADE_H, frames: BLADE_FRAMES },
+    aim: { size: AIM_SIZE, frames: AIM_DIRS },
   },
   font: { cellW: CELL_W, cellH: CELL_H, glyphs: GLYPHS },
   stand: { h: STAND_H },

@@ -110,7 +110,20 @@ function assemble(kit, { bob, hipL, kneeL, hipR, kneeR, armL, armR, elbow, lean 
   const hy = leanY(RIG.headC);
   P.push(sphere([0, hy + 0.015, RIG.headC + z0], RIG.headR, kit.skin));
   P.push(sphere([0, hy - 0.055, RIG.headC + 0.045 + z0], RIG.hairR, kit.hair));
+  // Eyes are real geometry: two dark caps on the face that appear, track and
+  // vanish with the head like everything else — never painted on
+  for (const side of [-1, 1]) {
+    const dir = normDir([side * 0.4, 0.84, -0.22]);
+    P.push(sphere([
+      dir[0] * 0.155, hy + 0.015 + dir[1] * 0.155, RIG.headC + z0 + dir[2] * 0.155,
+    ], 0.048, '#1f1713'));
+  }
   return P;
+}
+
+function normDir(v) {
+  const l = Math.hypot(v[0], v[1], v[2]);
+  return [v[0] / l, v[1] / l, v[2] / l];
 }
 
 // Limb segment hanging from `from`, swung `ang` radians toward +y (forward)

@@ -3,6 +3,7 @@ const DEAD_ZONE = 0.18;
 export interface PadState {
   moveX: number;
   moveY: number;
+  bend: number; // right-stick x: sweeps the aim while a kick charges
   sprint: boolean;
   kick: boolean;
 }
@@ -15,6 +16,7 @@ export function pollPad(): PadState | null {
   return {
     moveX: dz(pad.axes[0] ?? 0),
     moveY: dz(pad.axes[1] ?? 0),
+    bend: dz(pad.axes[2] ?? 0),
     sprint: pad.buttons[5]?.pressed || pad.buttons[7]?.pressed || false, // RB or RT
     kick: pad.buttons[0]?.pressed || false, // A / Cross
   };

@@ -72,6 +72,32 @@ describe('kicking', () => {
     expect(Math.abs(world.ball.vel.x)).toBeLessThan(Math.abs(world.ball.vel.y) * 0.3);
   });
 
+  it('J/L bend angles the shot off the body line without turning', () => {
+    const world = new World();
+    const p = new PlayerBody(vec(52, 34), stats);
+    p.facing = vec(1, 0);
+    world.players.push(p);
+    world.ball.pos = vec(52.5, 34);
+    // Bent a full radian toward the left: flies up-field, never straight east
+    world.step(1 / 60, [{ ...idle, kickReleased: { power: 0.5, aimOffset: -1.0 } }]);
+    expect(world.ball.vel.x).toBeGreaterThan(0);
+    expect(world.ball.vel.y).toBeLessThan(0);
+    expect(Math.abs(world.ball.vel.y)).toBeGreaterThan(Math.abs(world.ball.vel.x));
+  });
+
+  it('a bent strike curls in flight — the heading keeps bending after it leaves', () => {
+    const world = new World();
+    const p = new PlayerBody(vec(30, 34), stats);
+    p.facing = vec(1, 0);
+    world.players.push(p);
+    world.ball.pos = vec(30.5, 34);
+    world.step(1 / 60, [{ ...idle, kickReleased: { power: 1, aimOffset: 1.31 } }]);
+    const headingAt = () => Math.atan2(world.ball.vel.y, world.ball.vel.x);
+    const early = headingAt();
+    for (let i = 0; i < 40; i++) world.step(1 / 60, [idle]);
+    expect(headingAt()).toBeGreaterThan(early + 0.15); // banana, not a straight line
+  });
+
   it('cannot kick a ball out of reach', () => {
     const world = new World();
     world.players.push(new PlayerBody(vec(30, 34), stats));
@@ -124,9 +150,34 @@ describe('dribbling', () => {
     for (let i = 0; i < 300; i++) {
       world.step(1 / 60, [charge]);
       // Every step ends outside the keep-out ring — the ball is solid
-      expect(Math.hypot(world.ball.pos.x - p.pos.x, world.ball.pos.y - p.pos.y)).toBeGreaterThan(0.4);
+      expect(Math.hypot(world.ball.pos.x - p.pos.x, world.ball.pos.y - p.pos.y)).toBeGreaterThan(0.5);
     }
     expect(world.ball.pos.x).toBeGreaterThan(52); // and it got moved, not ignored
+  });
+
+  it('holding the charge while dribbling also never phases through the ball', () => {
+    const world = new World();
+    const p = new PlayerBody(vec(48, 34), stats);
+    world.players.push(p);
+    world.ball.pos = vec(50, 34);
+    const chargeRun: PlayerInput = { ...idle, move: vec(1, 0), kickCharging: true };
+    for (let i = 0; i < 300; i++) {
+      world.step(1 / 60, [chargeRun]);
+      expect(Math.hypot(world.ball.pos.x - p.pos.x, world.ball.pos.y - p.pos.y)).toBeGreaterThan(0.5);
+    }
+  });
+
+  it('an off-foot touch converges the ball back onto the dominant-foot lane', () => {
+    const world = new World();
+    const p = new PlayerBody(vec(50, 34), stats);
+    world.players.push(p);
+    world.ball.pos = vec(50.6, 33.5); // caught on the LEFT foot after a turn
+    const run: PlayerInput = { ...idle, move: vec(1, 0) };
+    for (let i = 0; i < 180; i++) world.step(1 / 60, [run]);
+    // Ball settles on the right-of-center lane, still leading the run
+    expect(world.ball.pos.y - p.pos.y).toBeGreaterThan(-0.05);
+    expect(world.ball.pos.y - p.pos.y).toBeLessThan(0.6);
+    expect(world.ball.pos.x).toBeGreaterThan(p.pos.x);
   });
 
   it('standing player traps an incoming ball dead at the feet', () => {
@@ -163,5 +214,35 @@ describe('goals', () => {
     runSteps(world, [], 60 * 2);
     expect(world.score.right).toBe(0);
     expect(world.ball.pos.x).toBeGreaterThan(-1.6);
+  });
+});
+
+describe('goal frames are solid', () => {
+  const NEAR_NET_Y = 34 + 7.32 / 2; // south side netting of the left goal
+
+  it('a player cannot walk out through the side netting', () => {
+    const world = new World();
+    const p = new PlayerBody(vec(-1, 34), stats); // standing inside the goal mouth
+    world.players.push(p);
+    runSteps(world, [{ ...idle, move: vec(0, 1) }], 180); // shove south into the net
+    expect(p.pos.y).toBeLessThan(NEAR_NET_Y - 0.2);
+  });
+
+  it('a ball cannot enter the goal box through the side netting', () => {
+    const world = new World();
+    world.ball.pos = vec(-1, 41);
+    world.ball.vel = vec(0, -12); // charging north at the outside of the net
+    runSteps(world, [], 90);
+    expect(world.ball.pos.y).toBeGreaterThan(NEAR_NET_Y - 0.05);
+    expect(world.score.right).toBe(0);
+  });
+
+  it('a shot onto the post pings back into play', () => {
+    const world = new World();
+    world.ball.pos = vec(4, NEAR_NET_Y); // dead in line with the near post
+    world.ball.vel = vec(-16, 0);
+    runSteps(world, [], 90);
+    expect(world.ball.pos.x).toBeGreaterThan(0.5); // bounced out, not through
+    expect(world.score.right).toBe(0);
   });
 });
