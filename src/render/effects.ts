@@ -77,6 +77,15 @@ export class Effects {
             this.spawn(bits, e.x, e.y, { life: 0.25, vy: -4 });
           }
           break;
+        case 'tackle':
+          // A body launching itself in: turf flies where the slide bites
+          this.spawn(this.assets.dustFrames, e.x, e.y, { life: 0.32, vx: this.rng.range(-10, 10), vy: -3 });
+          this.spawn(this.assets.grassFrames, e.x, e.y, { life: 0.34, vx: this.rng.range(-8, 8) });
+          break;
+        case 'steal':
+          this.spawn(this.assets.ringFrames, e.x, e.y, { life: 0.18, fade: 0 });
+          this.kickShake(1.6);
+          break;
         case 'bounce':
           this.spawn(this.assets.dustFrames, e.x, e.y, { life: 0.28, vx: this.rng.range(-8, 8) });
           this.spawn(this.assets.grassFrames, e.x, e.y, { life: 0.3, vx: this.rng.range(-4, 4) });

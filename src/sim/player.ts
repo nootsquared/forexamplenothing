@@ -1,4 +1,4 @@
-import { Vec2, vec, len, norm, scale, expDecayVec, angleBetween, clamp } from '../core/math';
+import { Vec2, vec, len, norm, scale, add, expDecayVec, angleBetween, clamp } from '../core/math';
 import { SimEvent } from './events';
 
 // Stats are the ONLY thing that differs between players — no personality sliders
@@ -17,6 +17,15 @@ export interface PlayerInput {
   kickCharging: boolean;
   // aimOffset: radians of J/L bend applied off the stick line at release
   kickReleased: { power: number; aimOffset?: number } | null;
+  tackle?: boolean;    // lunge-poke at the ball — win it clean or eat the recovery
+}
+
+// Which side a body plays for and where it lives in the team's shape
+export interface PlayerIdentity {
+  team: 0 | 1;         // 0 attacks +x, 1 attacks -x
+  role: 'GK' | 'DF' | 'MF' | 'FW';
+  anchor: Vec2;        // formation slot, normalized (x: own goal→opponent, y: 0..1)
+  number: number;
 }
 
 export class PlayerBody {
@@ -26,19 +35,28 @@ export class PlayerBody {
   stamina = 1;
   touchCooldown = 0;
   kickCooldown = 0;
+  // Just kicked or just dispossessed: the body is solid but can't STEER the
+  // ball — no bulldozing your own shot, no instantly re-tapping a lost duel
+  playLock = 0;
   // Released kick waiting for the ball to come into reach
   pendingKick: { power: number; bend: number; ttl: number } | null = null;
   // Set for one tick when a cut plants — the foot can chop the ball with it
   justCut = false;
   cutDir: Vec2 = vec(1, 0);
   private cutTimer = 0;
+  // Tackle: a committed lunge window, then either the ball or the recovery
+  lungeTimer = 0;
+  tackleCooldown = 0;
+  recoverTimer = 0;
   isSprinting = false;
   isCharging = false;
   prev = { x: 0, y: 0 };
+  id: PlayerIdentity;
 
-  constructor(public pos: Vec2, public stats: PlayerStats) {
+  constructor(public pos: Vec2, public stats: PlayerStats, id?: PlayerIdentity) {
     this.home = vec(pos.x, pos.y);
     this.prev = { x: pos.x, y: pos.y };
+    this.id = id ?? { team: 0, role: 'MF', anchor: vec(0.5, 0.5), number: 0 };
   }
 
   savePrev() {
@@ -56,9 +74,25 @@ export class PlayerBody {
     this.isSprinting = input.sprint && moveLen > 0.4 && this.stamina > 0.05;
     this.isCharging = input.kickCharging;
 
+    // A lunge that expires without winning the ball becomes the recovery
+    if (this.lungeTimer > 0 && this.lungeTimer <= dt) this.recoverTimer = 0.5;
+    this.lungeTimer = Math.max(0, this.lungeTimer - dt);
+    this.tackleCooldown = Math.max(0, this.tackleCooldown - dt);
+    this.recoverTimer = Math.max(0, this.recoverTimer - dt);
+    // The lunge: a committed burst toward the point of attack. Miss and the
+    // recovery leaves you beaten — tackling is a bet, not a spam button.
+    if (input.tackle && this.tackleCooldown <= 0 && this.lungeTimer <= 0 && this.recoverTimer <= 0) {
+      const dir = wantDir ?? this.facing;
+      this.lungeTimer = 0.24;
+      this.tackleCooldown = 0.9;
+      this.vel = add(scale(this.vel, 0.4), scale(dir, 6.2));
+      events.push({ kind: 'tackle', x: this.pos.x, y: this.pos.y });
+    }
+
     const staminaFactor = 0.8 + 0.2 * this.stamina;
     let maxSpeed = (this.isSprinting ? this.stats.sprintSpeed : this.stats.topSpeed) * staminaFactor;
     if (this.isCharging) maxSpeed *= 0.92; // you can dribble into a shot; barely a tax
+    if (this.recoverTimer > 0) maxSpeed *= 0.45; // beaten after a whiffed lunge
 
     // A hard cut plants the foot: brief speed cost, big visual payoff
     this.cutTimer = Math.max(0, this.cutTimer - dt);
@@ -92,6 +126,7 @@ export class PlayerBody {
     );
     this.touchCooldown = Math.max(0, this.touchCooldown - dt);
     this.kickCooldown = Math.max(0, this.kickCooldown - dt);
+    this.playLock = Math.max(0, this.playLock - dt);
 
     this.pos.x += this.vel.x * dt;
     this.pos.y += this.vel.y * dt;

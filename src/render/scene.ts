@@ -26,6 +26,7 @@ export class Scene {
   private overlay = new Graphics();
   private flash = new Graphics();
   private flashAlpha = 0;
+  private controlledIdx = -1;
   private mood: VariantMood = MOODS[0];
 
   constructor(private app: Application, private assets: GameAssets, private world: World, loop: GameLoop) {
@@ -56,11 +57,17 @@ export class Scene {
     this.hud.showToast(mood.name);
   }
 
+  setControlled(idx: number) {
+    if (idx === this.controlledIdx) return;
+    this.controlledIdx = idx;
+    this.playerViews.forEach((v, i) => v.setControlled(i === idx));
+  }
+
   handleEvents(events: SimEvent[]) {
     this.effects.consume(events);
     for (const e of events) {
       if (e.kind === 'bounce') this.ballView.triggerBounce();
-      if (e.kind === 'kick') this.playerViews[0]?.triggerKick();
+      if (e.kind === 'kick') this.playerViews[e.idx]?.triggerKick();
       if (e.kind === 'goal') {
         this.hud.goalFlash();
         this.flashAlpha = 0.5; // full-screen white pop on the moment
@@ -75,7 +82,7 @@ export class Scene {
 
     this.camera.update(dt, this.world.ball.pos, this.world.ball.vel, this.world.players.map((p) => p.pos), w, h);
     this.world.players.forEach((p, i) => {
-      this.playerViews[i]?.update(p, dt, alpha, i === 0 ? aim : null);
+      this.playerViews[i]?.update(p, dt, alpha, i === this.controlledIdx ? aim : null);
       this.effects.sprintDust(p, dt);
     });
     this.ballView.update(this.world.ball, dt, alpha);

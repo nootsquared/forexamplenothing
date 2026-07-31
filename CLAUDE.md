@@ -19,7 +19,10 @@ Per-player AI is the flagship system.
 - `src/core/` — fixed 60Hz timestep loop, math, seeded RNG.
 - `src/sim/` — pure deterministic simulation (meters, top-down coords, ball has
   height z). No rendering imports, runs headless.
-- `src/ai/` — team blackboard + per-player brains (from M2).
+- `src/ai/` — team blackboard (phase, elastic anchors, press auction) +
+  per-player utility brains with belief-table perception; brains emit
+  PlayerInput, same interface as humans.
+- `src/match.ts` — 11v11 assembly + fixed tick, shared by browser and tests.
 - `src/input/` — keyboard + Gamepad API, device→player mapping.
 - `src/render/` — PixiJS 8: high-angle iso projection (uniform y-squash + z
   lift, shared with texgen via the manifest), ball-follow camera, depth-sorted

@@ -228,13 +228,18 @@ describe('goal frames are solid', () => {
     expect(p.pos.y).toBeLessThan(NEAR_NET_Y - 0.2);
   });
 
-  it('a ball cannot enter the goal box through the side netting', () => {
+  it('a scored ball stays caught in the net box until the reset', () => {
     const world = new World();
-    world.ball.pos = vec(-1, 41);
-    world.ball.vel = vec(0, -12); // charging north at the outside of the net
-    runSteps(world, [], 90);
-    expect(world.ball.pos.y).toBeGreaterThan(NEAR_NET_Y - 0.05);
-    expect(world.score.right).toBe(0);
+    world.ball.pos = vec(2, 34);
+    world.ball.vel = vec(-16, 4); // scores, then tries to burst out the side
+    for (let i = 0; i < 45; i++) {
+      world.step(1 / 60, []);
+      if (world.score.right === 1) {
+        expect(world.ball.pos.y).toBeLessThan(NEAR_NET_Y + 0.2);
+        expect(world.ball.pos.x).toBeGreaterThan(-2.4);
+      }
+    }
+    expect(world.score.right).toBe(1);
   });
 
   it('a shot onto the post pings back into play', () => {

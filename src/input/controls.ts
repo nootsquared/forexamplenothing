@@ -4,7 +4,7 @@ import { Keyboard } from './keyboard';
 import { pollPad } from './gamepad';
 
 const CHARGE_TIME = 0.85;
-const AIM_RATE = 3.0;       // rad/s the J/L sweep bends the aim
+const AIM_RATE = 3.9;       // rad/s the J/L sweep bends the aim
 const AIM_MAX = 1.31;       // ~75° — you strike across your body, never backward
 
 // Merges keyboard + pad into one player's intent, owns kick charge and aim
@@ -43,6 +43,7 @@ export class LocalControls {
       sprint: kb.has('ShiftLeft') || kb.has('ShiftRight') || pad?.sprint || false,
       kickCharging: held,
       kickReleased,
+      tackle: kb.has('KeyK') || pad?.tackle || false,
     };
   }
 }

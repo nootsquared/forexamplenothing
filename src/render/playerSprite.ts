@@ -17,11 +17,13 @@ export class PlayerView {
   private shadow: Sprite;
   private body: Sprite;
   private aimArrow: Sprite;
+  private marker: Sprite;
   private chargeBar = new Graphics();
   private animPhase = 0;
   private idlePhase = 0;
   private kickTimer = 0;
   private aimPulse = 0;
+  private markerPulse = 0;
   private sheet: string;
 
   constructor(private assets: GameAssets, sheet: string) {
@@ -36,7 +38,16 @@ export class PlayerView {
     this.aimArrow = new Sprite(assets.aimFrames[0]);
     this.aimArrow.anchor.set(0.5, 0.5);
     this.aimArrow.visible = false;
-    this.root.addChild(this.shadow, this.aimArrow, this.body, this.chargeBar);
+    // "You are here": a chalk ring pooled under the controlled player's feet
+    this.marker = new Sprite(assets.ringFrames[0]);
+    this.marker.anchor.set(0.5, 0.5);
+    this.marker.visible = false;
+    this.marker.tint = 0xffe27a;
+    this.root.addChild(this.marker, this.shadow, this.aimArrow, this.body, this.chargeBar);
+  }
+
+  setControlled(on: boolean) {
+    this.marker.visible = on;
   }
 
   triggerKick() {
@@ -50,6 +61,11 @@ export class PlayerView {
     this.root.position.set(proj.sx, proj.sy);
     this.root.zIndex = proj.depth;
     this.shadow.position.set(0.5, 0.5); // pooled right under the feet
+    if (this.marker.visible) {
+      this.markerPulse += dt * 6;
+      this.marker.scale.set(0.62 + 0.05 * Math.sin(this.markerPulse), 0.44 + 0.035 * Math.sin(this.markerPulse));
+      this.marker.alpha = 0.85;
+    }
     this.updateAimArrow(p, dt, aim);
 
     const speed = p.speed();

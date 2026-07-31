@@ -6,6 +6,8 @@ export interface PadState {
   bend: number; // right-stick x: sweeps the aim while a kick charges
   sprint: boolean;
   kick: boolean;
+  tackle: boolean;
+  switchPlayer: boolean;
 }
 
 // First connected pad; couch multi-pad mapping arrives with multiplayer in M4
@@ -19,5 +21,7 @@ export function pollPad(): PadState | null {
     bend: dz(pad.axes[2] ?? 0),
     sprint: pad.buttons[5]?.pressed || pad.buttons[7]?.pressed || false, // RB or RT
     kick: pad.buttons[0]?.pressed || false, // A / Cross
+    tackle: pad.buttons[1]?.pressed || false, // B / Circle
+    switchPlayer: pad.buttons[4]?.pressed || false, // LB
   };
 }
