@@ -5,7 +5,7 @@ import { GameAssets } from './assets';
 import { project } from './projection';
 
 const TRAIL_LEN = 7;
-const TRAIL_MIN_SPEED = 15;
+const TRAIL_MIN_SPEED = 13;
 
 export class BallView {
   root = new Container(); // sits in the sorted world; children are screen-relative
@@ -14,19 +14,19 @@ export class BallView {
   private trail: Sprite[] = [];
   private trailTimer = 0;
   private rollPhase = 0;
+  private headingBin = 0;
   private squashTimer = 0;
 
   constructor(private assets: GameAssets, worldSorted: Container) {
     this.shadow = new Sprite(assets.shadow);
     this.shadow.anchor.set(0.5, 0.5);
-    this.shadow.scale.set(0.55);
-    this.sprite = new Sprite(assets.ballFrames[0]);
-    this.sprite.anchor.set(0.5, 0.78); // resting point sits near the sprite's base
+    this.sprite = new Sprite(assets.ballFrames[0][0]);
+    this.sprite.anchor.set(0.5, 0.94); // contact point at the sphere's base
     this.root.addChild(this.shadow, this.sprite);
 
     for (let i = 0; i < TRAIL_LEN; i++) {
-      const ghost = new Sprite(assets.ballFrames[0]);
-      ghost.anchor.set(0.5, 0.78);
+      const ghost = new Sprite(assets.ballFrames[0][0]);
+      ghost.anchor.set(0.5, 0.94);
       ghost.visible = false;
       this.trail.push(ghost);
       worldSorted.addChild(ghost);
@@ -45,28 +45,34 @@ export class BallView {
     const lifted = project(x, y, z);
 
     this.root.position.set(ground.sx, ground.sy);
-    this.root.zIndex = ground.depth + 2; // shades the player at identical depth
+    this.root.zIndex = ground.depth + 0.5; // wins ties at the boot, loses real depth
     this.sprite.position.set(0, lifted.sy - ground.sy);
 
-    // Shadow sits down-sun of the ball, shrinking and fading as it climbs
-    this.shadow.position.set(1.5 + z * 2, 1);
-    this.shadow.scale.set((0.55 * ground.scale) / (1 + z * 0.45));
-    this.shadow.alpha = 0.75 / (1 + z * 0.8);
+    // The anchor shadow: always pooled hard at the ground point, shrinking and
+    // drifting down-sun as the ball climbs — height you can read at a glance
+    this.shadow.position.set(1 + z * 3, 0.5);
+    this.shadow.scale.set(0.85 / (1 + z * 0.5), 0.85 / (1 + z * 0.6));
+    this.shadow.alpha = 0.72 / (1 + z * 0.9);
 
-    // The sprite NEVER rotates: baked top-left lighting stays put (a rotating
-    // highlight is what reads as a gliding sticker, not a sphere). Rolling is
-    // all pattern — patches cycling through the frames at wheel speed.
+    // A real rolling sphere: the heading picks the baked roll axis, distance
+    // traveled spins the pattern around it. Lighting is baked screen-fixed, so
+    // the ball reads solid — the pattern moves, the sun never does.
     const speed = ball.speed();
-    this.rollPhase += speed * dt * 3.5;
-    const frame = Math.floor(this.rollPhase) % this.assets.ballFrames.length;
-    this.sprite.texture = this.assets.ballFrames[frame];
+    const { dirs, phases, worldR } = this.assets.manifest.ball;
+    if (speed > 0.4) {
+      const angle = Math.atan2(ball.vel.y, ball.vel.x);
+      const bin = Math.round(angle / ((Math.PI * 2) / dirs));
+      this.headingBin = ((bin % dirs) + dirs) % dirs;
+    }
+    this.rollPhase += ((speed * dt) / (Math.PI * 2 * worldR)) * phases;
+    const phase = Math.floor(this.rollPhase) % phases;
+    this.sprite.texture = this.assets.ballFrames[this.headingBin][phase];
 
-    // Bounce squash with a springy overshoot back to round, on the depth scale
-    const s = ground.scale;
+    // Bounce squash with a springy overshoot back to round
     this.squashTimer = Math.max(0, this.squashTimer - dt);
-    if (this.squashTimer > 0.07) this.sprite.scale.set(1.18 * s, 0.72 * s);
-    else if (this.squashTimer > 0) this.sprite.scale.set(0.9 * s, 1.14 * s);
-    else this.sprite.scale.set(s, s);
+    if (this.squashTimer > 0.07) this.sprite.scale.set(1.18, 0.72);
+    else if (this.squashTimer > 0) this.sprite.scale.set(0.9, 1.14);
+    else this.sprite.scale.set(1, 1);
 
     this.updateTrail(ground.sx, this.sprite.position.y + ground.sy, ground.depth, speed, dt);
   }
@@ -78,9 +84,10 @@ export class BallView {
       const ghost = this.trail.pop()!;
       this.trail.unshift(ghost);
       ghost.visible = true;
+      ghost.texture = this.sprite.texture;
       ghost.position.set(sx, sy);
       ghost.zIndex = depth + 1;
-      ghost.alpha = 0.5;
+      ghost.alpha = 0.45;
       ghost.scale.set(0.9);
     }
     for (const ghost of this.trail) {

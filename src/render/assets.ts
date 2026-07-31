@@ -2,14 +2,14 @@ import { Assets, Rectangle, Texture } from 'pixi.js';
 
 export interface Manifest {
   pxPerMeter: number;
-  persp: { xsFar: number; xsSpan: number; sqFar: number; sqSpan: number };
+  iso: { squash: number; zLift: number };
   pitch: { length: number; width: number; apron: number };
   player: {
-    frameW: number; frameH: number; baseline: number; dirs: string[]; frames: number;
-    anims: { idle: number; runStart: number; runLen: number; windup: number; strike: number };
+    frameW: number; frameH: number; baseline: number; dirs: number; frames: number;
+    anims: { idleStart: number; idleLen: number; runStart: number; runLen: number; kickStart: number; kickLen: number };
   };
-  ball: { size: number; frames: number };
-  fx: { dust: { size: number; frames: number }; grass: { size: number; frames: number }; ring: { size: number; frames: number }; tuft: { size: number; frames: number } };
+  ball: { size: number; dirs: number; phases: number; worldR: number };
+  fx: { dust: { size: number; frames: number }; grass: { size: number; frames: number }; ring: { size: number; frames: number }; blade: { w: number; h: number; frames: number } };
   font: { cellW: number; cellH: number; glyphs: string };
   stand: { h: number };
   boards: { h: number };
@@ -23,11 +23,12 @@ export interface GameAssets {
   pitch: Record<string, Texture>;
   // sheet name → [directionRow][frame]
   players: Record<string, Texture[][]>;
-  ballFrames: Texture[];
+  // [headingBin][rollPhase]
+  ballFrames: Texture[][];
   dustFrames: Texture[];
   grassFrames: Texture[];
   ringFrames: Texture[];
-  tuftFrames: Texture[];
+  bladeFrames: Texture[];
   flagFrames: Texture[];
   glyphs: Record<string, Texture>;
   shadow: Texture;
@@ -53,7 +54,7 @@ export async function loadAssets(): Promise<GameAssets> {
     ...manifest.variants.map((v) => v.pitch),
     ...manifest.playerSheets,
     'ball.png', 'fx-dust.png', 'fx-grass.png', 'fx-ring.png', 'fx-shadow.png', 'fx-skid.png',
-    'fx-tuft.png', 'goal-bar.png', 'font.png', 'stand.png', 'boards.png', 'dugout.png', 'flag.png', 'cloud.png',
+    'fx-blade.png', 'goal-bar.png', 'font.png', 'stand.png', 'boards.png', 'dugout.png', 'flag.png', 'cloud.png',
   ];
   const loaded: Record<string, Texture> = {};
   await Promise.all(names.map(async (n) => { loaded[n] = await Assets.load(url(n)); }));
@@ -64,8 +65,8 @@ export async function loadAssets(): Promise<GameAssets> {
   const players: Record<string, Texture[][]> = {};
   const { frameW, frameH, dirs, frames } = manifest.player;
   for (const sheetName of manifest.playerSheets) {
-    const key = sheetName.replace('players-', '').replace('.png', ''); // e.g. "hero-home"
-    players[key] = dirs.map((_, row) => sliceRow(loaded[sheetName], frameW, frameH, row, frames));
+    const key = sheetName.replace('players-', '').replace('.png', ''); // e.g. "home"
+    players[key] = Array.from({ length: dirs }, (_, row) => sliceRow(loaded[sheetName], frameW, frameH, row, frames));
   }
 
   const glyphs: Record<string, Texture> = {};
@@ -78,11 +79,12 @@ export async function loadAssets(): Promise<GameAssets> {
     manifest,
     pitch,
     players,
-    ballFrames: sliceRow(loaded['ball.png'], manifest.ball.size, manifest.ball.size, 0, manifest.ball.frames),
+    ballFrames: Array.from({ length: manifest.ball.dirs }, (_, dir) =>
+      sliceRow(loaded['ball.png'], manifest.ball.size, manifest.ball.size, dir, manifest.ball.phases)),
     dustFrames: sliceRow(loaded['fx-dust.png'], manifest.fx.dust.size, manifest.fx.dust.size, 0, manifest.fx.dust.frames),
     grassFrames: sliceRow(loaded['fx-grass.png'], manifest.fx.grass.size, manifest.fx.grass.size, 0, manifest.fx.grass.frames),
     ringFrames: sliceRow(loaded['fx-ring.png'], manifest.fx.ring.size, manifest.fx.ring.size, 0, manifest.fx.ring.frames),
-    tuftFrames: sliceRow(loaded['fx-tuft.png'], manifest.fx.tuft.size, manifest.fx.tuft.size, 0, manifest.fx.tuft.frames),
+    bladeFrames: sliceRow(loaded['fx-blade.png'], manifest.fx.blade.w, manifest.fx.blade.h, 0, manifest.fx.blade.frames),
     flagFrames: sliceRow(loaded['flag.png'], manifest.flag.w, manifest.flag.h, 0, manifest.flag.frames),
     glyphs,
     shadow: loaded['fx-shadow.png'],

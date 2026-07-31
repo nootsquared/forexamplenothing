@@ -1,27 +1,9 @@
 import { Container, Sprite, TilingSprite, Graphics } from 'pixi.js';
-import { Rng } from '../core/rng';
 import { PITCH } from '../sim/constants';
 import { GameAssets } from './assets';
-import { project, pxPerMeter, SQUASH } from './projection';
+import { project, squash } from './projection';
 
 type Pt = [number, number];
-
-// Anything moving across the turf that grass should react to
-export interface TurfDisturber {
-  x: number;
-  y: number;
-  speed: number;
-}
-
-interface BladeState {
-  sprite: Sprite;
-  wx: number;
-  wy: number;
-  phase: number;
-  base: number;
-  disturb: number;
-  pushSign: number;
-}
 
 interface NetPanel {
   g: Graphics;
@@ -38,14 +20,13 @@ interface GoalRig {
   phase: number;
 }
 
-// The stage: turf that moves in the wind AND under boots, grown-over boundary
-// fringes, cloud shade, an arena, and box goals with nets that actually swish
+// The stage: the baked turf plane, cloud shade, an arena, and box goals with
+// nets that actually swish. Living grass lives in GrassField.
 export class PitchLayer {
   ground = new Container(); // flat layer, always behind the sorted world
   groundFx = new Container(); // decals stamped by play: skids, scuffs
   private pitchSprite: Sprite;
   private clouds: Sprite[] = [];
-  private blades: BladeState[] = [];
   private flags: { sprite: Sprite; phase: number }[] = [];
   private goals: Record<'left' | 'right', GoalRig> = {
     left: { panels: [], backSign: -1, rippleAge: -1, phase: 0 },
@@ -54,20 +35,16 @@ export class PitchLayer {
   private time = 0;
 
   constructor(private assets: GameAssets, worldSorted: Container) {
-    const M = pxPerMeter();
     this.pitchSprite = new Sprite(assets.pitch['day']);
-    // Perspective is baked into the texture: center it on the pitch centerline
-    // with its top row at the far apron edge — no runtime squash
-    this.pitchSprite.position.set(
-      52.5 * M - this.pitchSprite.texture.width / 2,
-      project(0, -PITCH.apron, 0).sy,
-    );
+    // The iso squash is baked into the texture; its top-left corner is the
+    // far apron corner in world space
+    const corner = project(-PITCH.apron, -PITCH.apron, 0);
+    this.pitchSprite.position.set(corner.sx, corner.sy);
     this.ground.addChild(this.pitchSprite);
 
     this.driftClouds();
     this.ground.addChild(this.groundFx); // decals above the turf, below everything alive
     this.buildArena(worldSorted);
-    this.plantGrass(worldSorted);
     this.buildGoal(worldSorted, 'left');
     this.buildGoal(worldSorted, 'right');
   }
@@ -82,32 +59,9 @@ export class PitchLayer {
     this.goals[side].rippleAge = 0;
   }
 
-  update(dt: number, disturbers: TurfDisturber[]) {
+  update(dt: number) {
     this.time += dt;
     const t = this.time;
-
-    // One wind field for the whole ground: gusts swell slowly while a bend
-    // wave travels down-pitch — and boots flatten whatever they run over
-    const gust = 0.55 + 0.45 * Math.sin(t * 0.37 + 1.3);
-    for (const b of this.blades) {
-      b.disturb = Math.max(0, b.disturb - dt * 2.6); // trampled grass springs back
-      for (const a of disturbers) {
-        const dx = b.wx - a.x;
-        if (dx > 1.15 || dx < -1.15) continue;
-        const dy = b.wy - a.y;
-        if (dy > 1.15 || dy < -1.15) continue;
-        const d2 = dx * dx + dy * dy;
-        if (d2 > 1.32) continue;
-        const strength = (1 - d2 / 1.32) * Math.min(1, 0.35 + a.speed / 6);
-        if (strength > b.disturb) {
-          b.disturb = strength;
-          b.pushSign = dx >= 0 ? 1 : -1; // bent away from the boot
-        }
-      }
-      const wind = 0.05 + gust * 0.16 * Math.sin(t * 1.6 - b.wx * 0.12 - b.wy * 0.07 + b.phase);
-      b.sprite.skew.x = wind + b.pushSign * 0.55 * b.disturb;
-      b.sprite.scale.y = b.base * (1 - 0.45 * b.disturb); // flattened underfoot
-    }
 
     for (const side of ['left', 'right'] as const) {
       const rig = this.goals[side];
@@ -140,7 +94,7 @@ export class PitchLayer {
     for (const p of placements) {
       const cloud = new Sprite(this.assets.cloud);
       cloud.position.set(p.x, p.y);
-      cloud.scale.set(p.scale, p.scale * SQUASH);
+      cloud.scale.set(p.scale, p.scale * squash());
       this.ground.addChild(cloud);
       this.clouds.push(cloud);
     }
@@ -191,41 +145,6 @@ export class PitchLayer {
       worldSorted.addChild(flag);
       this.flags.push({ sprite: flag, phase: i * 1.7 });
     });
-  }
-
-  // ~1200 blade clusters in three populations: subtle motion inside the lines,
-  // a grown-in fringe hugging every boundary, wilder growth on the apron
-  private plantGrass(worldSorted: Container) {
-    const rng = new Rng(99);
-    const plant = (x: number, y: number, scale: number, alpha = 1) => {
-      const sprite = new Sprite(this.assets.tuftFrames[Math.floor(rng.next() * this.assets.tuftFrames.length)]);
-      const p = project(x, y, 0);
-      sprite.anchor.set(0.5, 1);
-      sprite.position.set(p.sx, p.sy);
-      sprite.zIndex = p.depth;
-      sprite.scale.set(scale);
-      sprite.alpha = alpha;
-      worldSorted.addChild(sprite);
-      this.blades.push({ sprite, wx: x, wy: y, phase: rng.range(0, 6.28), base: scale, disturb: 0, pushSign: 1 });
-    };
-    for (let i = 0; i < 560; i++) {
-      plant(rng.range(0.5, PITCH.length - 0.5), rng.range(0.5, PITCH.width - 0.5), rng.range(0.55, 0.9), 0.8);
-    }
-    for (let x = -0.2; x < PITCH.length + 0.2; x += rng.range(0.4, 0.9)) {
-      plant(x, rng.range(-0.3, 0.2), rng.range(0.8, 1.2));
-      plant(x, PITCH.width + rng.range(-0.2, 0.3), rng.range(0.8, 1.2));
-    }
-    for (let y = -0.2; y < PITCH.width + 0.2; y += rng.range(0.4, 0.9)) {
-      plant(rng.range(-0.3, 0.2), y, rng.range(0.8, 1.2));
-      plant(PITCH.length + rng.range(-0.2, 0.3), y, rng.range(0.8, 1.2));
-    }
-    for (let i = 0; i < 260; i++) {
-      const x = rng.range(-PITCH.apron + 1, PITCH.length + PITCH.apron - 1);
-      const y = rng.next() < 0.5
-        ? rng.range(-PITCH.apron + 1, -0.6)
-        : rng.range(PITCH.width + 0.6, PITCH.width + PITCH.apron - 1);
-      plant(x, y, rng.range(1.3, 2));
-    }
   }
 
   // A real goal box in perspective: two distinct posts, a crossbar that runs

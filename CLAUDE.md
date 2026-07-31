@@ -1,7 +1,8 @@
 # Golazo Arcade — project facts
 
-Arcade 11v11 couch-multiplayer soccer game. Premium pixel art, angled broadcast
-camera (never flat top-down). Per-player AI is the flagship system.
+Arcade 11v11 couch-multiplayer soccer game. Premium pixel art that reads as 3D:
+high-angle iso camera (~52°), sprites raytraced offline from real 3D rigs.
+Per-player AI is the flagship system.
 
 ## Commands
 
@@ -20,8 +21,9 @@ camera (never flat top-down). Per-player AI is the flagship system.
   height z). No rendering imports, runs headless.
 - `src/ai/` — team blackboard + per-player brains (from M2).
 - `src/input/` — keyboard + Gamepad API, device→player mapping.
-- `src/render/` — PixiJS 8: broadcast oblique projection (y-squash + z lift),
-  ball-follow camera, depth-sorted sprites, arcade FX (dust, hitstop, trails).
+- `src/render/` — PixiJS 8: high-angle iso projection (uniform y-squash + z
+  lift, shared with texgen via the manifest), ball-follow camera, depth-sorted
+  sprites, ~19k-blade interactive grass field, arcade FX (dust, hitstop, trails).
 - `src/ui/` — HUD, menus.
 - `src/data/` — players/formations/pitch surfaces.
 

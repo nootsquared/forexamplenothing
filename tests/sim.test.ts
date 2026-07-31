@@ -49,7 +49,27 @@ describe('kicking', () => {
     const tap = kick(0.15);
     const smash = kick(1);
     expect(smash).toBeGreaterThan(tap * 1.8);
-    expect(smash).toBeLessThan(31); // fairness cap
+    expect(smash).toBeLessThan(24); // fairness cap
+  });
+
+  it('even a max shot stays driven, never ballooned over the pitch', () => {
+    const world = new World();
+    world.players.push(new PlayerBody(vec(52, 34), stats));
+    world.ball.pos = vec(52.6, 34);
+    world.step(1 / 60, [{ ...idle, kickReleased: { power: 1 } }]);
+    expect(world.ball.vz).toBeLessThanOrEqual(4.2);
+  });
+
+  it('shoots exactly where the stick points, not where the body faces', () => {
+    const world = new World();
+    const p = new PlayerBody(vec(52, 34), stats);
+    p.facing = vec(1, 0); // running east
+    world.players.push(p);
+    world.ball.pos = vec(52.5, 34);
+    // Stick held north at release: the shot must fly north, at a right angle to the run
+    world.step(1 / 60, [{ ...idle, move: vec(0, -1), kickReleased: { power: 0.5 } }]);
+    expect(world.ball.vel.y).toBeLessThan(0);
+    expect(Math.abs(world.ball.vel.x)).toBeLessThan(Math.abs(world.ball.vel.y) * 0.3);
   });
 
   it('cannot kick a ball out of reach', () => {
@@ -93,6 +113,20 @@ describe('dribbling', () => {
     expect(Math.abs(world.ball.vel.y)).toBeGreaterThan(Math.abs(world.ball.vel.x));
     expect(world.ball.vel.y).toBeGreaterThan(0);
     expect(Math.hypot(world.ball.pos.x - p.pos.x, world.ball.pos.y - p.pos.y)).toBeLessThan(1.8);
+  });
+
+  it('sprinting straight over a resting ball can never phase through it', () => {
+    const world = new World();
+    const p = new PlayerBody(vec(48, 34), stats);
+    world.players.push(p);
+    world.ball.pos = vec(52, 34);
+    const charge: PlayerInput = { ...idle, move: vec(1, 0), sprint: true };
+    for (let i = 0; i < 300; i++) {
+      world.step(1 / 60, [charge]);
+      // Every step ends outside the keep-out ring — the ball is solid
+      expect(Math.hypot(world.ball.pos.x - p.pos.x, world.ball.pos.y - p.pos.y)).toBeGreaterThan(0.4);
+    }
+    expect(world.ball.pos.x).toBeGreaterThan(52); // and it got moved, not ignored
   });
 
   it('standing player traps an incoming ball dead at the feet', () => {

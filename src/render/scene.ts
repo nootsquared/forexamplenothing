@@ -4,6 +4,7 @@ import { World } from '../sim/world';
 import { SimEvent } from '../sim/events';
 import { GameAssets } from './assets';
 import { PitchLayer } from './pitchLayer';
+import { GrassField, GrassActor } from './grassField';
 import { PlayerView } from './playerSprite';
 import { BallView } from './ballSprite';
 import { Effects } from './effects';
@@ -16,6 +17,7 @@ export class Scene {
   private viewport = new Container(); // camera-transformed world space
   private worldSorted = new Container();
   private pitchLayer: PitchLayer;
+  private grass: GrassField;
   private playerViews: PlayerView[] = [];
   private ballView: BallView;
   private effects: Effects;
@@ -30,6 +32,7 @@ export class Scene {
     this.hud = new Hud(assets);
     this.worldSorted.sortableChildren = true;
     this.pitchLayer = new PitchLayer(assets, this.worldSorted);
+    this.grass = new GrassField(assets, this.worldSorted);
     this.viewport.addChild(this.pitchLayer.ground, this.worldSorted);
 
     this.ballView = new BallView(assets, this.worldSorted);
@@ -76,12 +79,17 @@ export class Scene {
       this.effects.sprintDust(p, dt);
     });
     this.ballView.update(this.world.ball, dt, alpha);
-    // Turf reacts to whoever is on it: every player, plus the rolling ball
-    const disturbers = this.world.players.map((p) => ({ x: p.pos.x, y: p.pos.y, speed: p.speed() }));
-    if (this.world.ball.z < 0.5) {
-      disturbers.push({ x: this.world.ball.pos.x, y: this.world.ball.pos.y, speed: this.world.ball.speed() * 0.5 });
+    this.effects.rollGrass(this.world.ball, dt);
+    // Every body on the turf bends the grass it crosses — parked ones part it
+    const actors: GrassActor[] = this.world.players.map((p) => ({
+      x: p.pos.x, y: p.pos.y, speed: p.speed(), press: p.speed() < 0.7,
+    }));
+    const ball = this.world.ball;
+    if (ball.z < 0.4) {
+      actors.push({ x: ball.pos.x, y: ball.pos.y, speed: ball.speed(), press: ball.speed() < 0.7 });
     }
-    this.pitchLayer.update(dt, disturbers);
+    this.grass.update(dt, actors);
+    this.pitchLayer.update(dt);
     this.effects.update(dt);
     this.camera.applyTo(this.viewport, w, h, this.effects.shakeX, this.effects.shakeY);
 

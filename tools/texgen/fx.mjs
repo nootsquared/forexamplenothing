@@ -82,7 +82,7 @@ export function generateRingSheet() {
 // Contact shadow that GROUNDS: a dense pool right under the feet melting fast
 // into the turf — wide faint halos are what make sprites float
 export function generateShadow() {
-  const w = 22, h = 11;
+  const w = 14, h = 7;
   const { canvas, ctx } = makeCanvas(w, h);
   const grid = new PixelGrid(w, h);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -113,26 +113,30 @@ export function generateSkid() {
   return canvas;
 }
 
-// Six little blade clusters in mixed heights and greens — planted by the
-// hundreds and bent by wind at runtime
-export function generateTuftSheet() {
-  const size = 10;
-  const count = 6;
-  const { canvas, ctx } = makeCanvas(size * count, size);
+// Single grass blades — the physics field plants tens of thousands of these
+// and bends each one under boots, ball and wind. Mixed heights, leans and
+// greens so a crowd of them reads as living turf, not a stamped pattern.
+export const BLADE_W = 5;
+export const BLADE_H = 9;
+export const BLADE_FRAMES = 10;
+export function generateBladeSheet() {
+  const { canvas, ctx } = makeCanvas(BLADE_W * BLADE_FRAMES, BLADE_H);
   const rng = mulberry32(7);
-  const bases = ['#2c5d24', '#33702a', '#417f33'];
-  for (let i = 0; i < count; i++) {
-    const grid = new PixelGrid(size, size);
-    const blades = 3 + Math.floor(rng() * 4);
-    for (let b = 0; b < blades; b++) {
-      const x = 1 + Math.floor(rng() * (size - 2));
-      const tall = 2 + Math.floor(rng() * 5);
-      const dry = rng() < 0.08;
-      const body = dry ? '#877b45' : bases[Math.floor(rng() * bases.length)];
-      const tip = dry ? '#b3a05e' : '#9cc46a';
-      for (let y = 0; y < tall; y++) grid.set(x, size - 1 - y, y === tall - 1 ? tip : body);
+  const bases = ['#2e6126', '#35722c', '#3f7d32', '#2a5822'];
+  for (let i = 0; i < BLADE_FRAMES; i++) {
+    const grid = new PixelGrid(BLADE_W, BLADE_H);
+    const tall = 4 + Math.floor(rng() * 5);
+    const dry = rng() < 0.1;
+    const body = dry ? '#8a7d47' : bases[Math.floor(rng() * bases.length)];
+    const tip = dry ? '#b5a25f' : '#8fbc60';
+    const leanEvery = 2 + Math.floor(rng() * 3); // blade curves a pixel sideways as it rises
+    const leanDir = rng() < 0.5 ? -1 : 1;
+    let x = 2;
+    for (let y = 0; y < tall; y++) {
+      if (y > 0 && y % leanEvery === 0) x += leanDir;
+      grid.set(x, BLADE_H - 1 - y, y === tall - 1 ? tip : y === 0 ? '#1e4218' : body);
     }
-    grid.blitTo(ctx, i * size, 0);
+    grid.blitTo(ctx, i * BLADE_W, 0);
   }
   return canvas;
 }

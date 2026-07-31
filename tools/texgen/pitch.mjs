@@ -1,5 +1,5 @@
 import { makeCanvas, mulberry32, shade, hash2, vnoise } from './lib.mjs';
-import { PX_PER_METER, PERSPECTIVE } from './palettes.mjs';
+import { PX_PER_METER, ISO } from './palettes.mjs';
 
 export const PITCH = { length: 105, width: 68, apron: 6 };
 const M = PX_PER_METER;
@@ -26,33 +26,21 @@ export function generatePitchTexture(variant) {
   paintFringe(ctx, rng, variant, ox, oy);
   paintLighting(ctx, variant, w, h);
 
-  return warpPerspective(canvas);
+  return squashRows(canvas);
 }
 
-// Bake the camera tilt into the texture: every row is drawn at its own width
-// (narrow far, wide near) and rows compress with distance — the classic
-// pseudo-3D ground plane, with the renderer projecting by the same formula
-function warpPerspective(src) {
+// Bake the iso camera into the texture: art is painted top-down in meters,
+// then rows compress uniformly by the shared squash — a parallel-projection
+// ground plane that matches every raytraced sprite standing on it
+function squashRows(src) {
   const w0 = src.width;
   const h0 = src.height;
-  const P = PERSPECTIVE;
-  const yTop = -PITCH.apron;
-  const yBot = PITCH.width + PITCH.apron;
-  const a = (M * P.sqSpan) / (2 * PITCH.width);
-  const b = M * P.sqFar;
-  const syAt = (ym) => b * ym + a * ym * ym;
-  const xsAt = (ym) => P.xsFar + P.xsSpan * (ym / PITCH.width);
-  const topSy = syAt(yTop);
-  const outH = Math.ceil(syAt(yBot) - topSy);
-  const outW = Math.ceil(w0 * xsAt(yBot));
-  const { canvas, ctx } = makeCanvas(outW, outH);
+  const outH = Math.round(h0 * ISO.squash);
+  const { canvas, ctx } = makeCanvas(w0, outH);
   ctx.imageSmoothingEnabled = false;
   for (let Y = 0; Y < outH; Y++) {
-    const target = topSy + Y + 0.5;
-    const ym = (-b + Math.sqrt(b * b + 4 * a * target)) / (2 * a); // invert syAt
-    const srcY = Math.min(h0 - 1, Math.max(0, Math.floor((ym - yTop) * M)));
-    const rowW = w0 * xsAt(ym);
-    ctx.drawImage(src, 0, srcY, w0, 1, (outW - rowW) / 2, Y, rowW, 1);
+    const srcY = Math.min(h0 - 1, Math.floor((Y + 0.5) / ISO.squash));
+    ctx.drawImage(src, 0, srcY, w0, 1, 0, Y, w0, 1);
   }
   return canvas;
 }

@@ -34,7 +34,7 @@ async function boot() {
   document.querySelector('#game')!.appendChild(app.canvas);
 
   const assets = await loadAssets();
-  setProjection(assets.manifest.pxPerMeter, assets.manifest.persp);
+  setProjection(assets.manifest.pxPerMeter, assets.manifest.iso);
 
   const world = new World();
   const hero = new PlayerBody(vec(PITCH.length / 2 - 8, PITCH.width / 2), HERO_STATS);

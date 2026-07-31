@@ -2,9 +2,10 @@ import { Container, Sprite, Texture } from 'pixi.js';
 import { GameLoop } from '../core/loop';
 import { Rng } from '../core/rng';
 import { SimEvent } from '../sim/events';
+import { Ball } from '../sim/ball';
 import { PlayerBody } from '../sim/player';
 import { GameAssets } from './assets';
-import { project, SQUASH } from './projection';
+import { project, squash } from './projection';
 
 interface Particle {
   sprite: Sprite;
@@ -36,6 +37,7 @@ export class Effects {
   private shakeT = 0;
   private sprintDustTimer = 0;
   private sprintScuffTimer = 0;
+  private rollGrassTimer = 0;
   private rng = new Rng(555);
 
   constructor(
@@ -104,13 +106,25 @@ export class Effects {
     }
   }
 
+  // A ball tearing across the turf flicks clippings up behind itself
+  rollGrass(ball: Ball, dt: number) {
+    this.rollGrassTimer -= dt;
+    if (ball.z > 0.05 || ball.speed() <= 7 || this.rollGrassTimer > 0) return;
+    this.rollGrassTimer = 0.07;
+    this.spawn(this.assets.grassFrames, ball.pos.x, ball.pos.y, {
+      life: 0.3,
+      vx: -ball.vel.x * 0.35 + this.rng.range(-4, 4),
+      vy: -ball.vel.y * 0.25 - this.rng.range(2, 7),
+    });
+  }
+
   // Press a skid mark into the ground layer; oldest marks make way
   private stampSkid(x: number, y: number, dirX: number, dirY: number, alpha: number, life: number, scale: number) {
     const sprite = new Sprite(this.assets.skid);
     const p = project(x, y, 0);
     sprite.anchor.set(1, 0.5); // streak trails behind the plant point
     sprite.position.set(p.sx, p.sy);
-    sprite.rotation = Math.atan2(dirY * SQUASH, dirX);
+    sprite.rotation = Math.atan2(dirY * squash(), dirX);
     sprite.scale.set(scale, scale);
     sprite.alpha = alpha;
     this.groundFx.addChild(sprite);

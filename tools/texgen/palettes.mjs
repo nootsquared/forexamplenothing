@@ -4,14 +4,14 @@
 
 export const PX_PER_METER = 16;
 
-// The broadcast camera's tilt, shared by the texture bake and the renderer:
-// horizontal scale narrows toward the far touchline (xs) while row spacing
-// compresses (sq) — a real receding ground plane, not a flat squash
-export const PERSPECTIVE = {
-  xsFar: 0.84,  // horizontal scale at the far touchline
-  xsSpan: 0.22, // added scale by the near touchline
-  sqFar: 0.52,  // row squash at the far touchline
-  sqSpan: 0.22, // added squash by the near touchline
+// One high-angle isometric camera for the whole game, shared by the texture
+// bake, the sprite raytracer and the renderer. Elevation ~52°: high enough to
+// read omnidirectional movement and the tops of heads, low enough that goals,
+// bounces and bodies still have height.
+export const ISO_ELEVATION = (52 * Math.PI) / 180;
+export const ISO = {
+  squash: Math.sin(ISO_ELEVATION), // ground rows compress by this
+  zLift: Math.cos(ISO_ELEVATION),  // height climbs the screen by this
 };
 
 export const VARIANTS = [

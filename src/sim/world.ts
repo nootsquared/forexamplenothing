@@ -37,6 +37,9 @@ export class World {
     });
 
     this.ball.update(dt, this.surface, this.events);
+    // Separate again after the ball has moved: every step ENDS with no body
+    // overlapping the ball, so you can never run through it
+    for (const p of this.players) this.collideBall(p);
     this.handleGoalsAndBounds(dt);
   }
 
@@ -55,20 +58,17 @@ export class World {
 
     const power = clamp(p.pendingKick.power, 0.1, 1) * (0.75 + 0.25 * p.stats.power);
     p.pendingKick = null;
-    // Aim blends the body's continuous heading with the stick — shots leave at
-    // any angle your run carves, not just the eight key directions
-    let aim = p.facing;
-    if (len(input.move) > 0.3) {
-      const blended = add(scale(p.facing, 0.45), scale(norm(input.move), 0.55));
-      aim = len(blended) > 0.2 ? norm(blended) : norm(input.move);
-    }
+    // The stick IS the sight: hold any direction and the shot goes exactly
+    // there, fully omnidirectional — the body only aims when the stick rests
+    const aim = len(input.move) > 0.25 ? norm(input.move) : p.facing;
     // The honesty mechanic: harder shots wobble more — no guaranteed lasers
     const error = this.rng.gauss() * (0.015 + 0.05 * power);
     const dir = rotate(aim, error);
 
-    const speed = 11 + 19 * power;
+    // Driven, not ballooned: capped pace and a low arc that stays playable
+    const speed = 10 + 13 * power;
     this.ball.vel = scale(dir, speed);
-    this.ball.vz = power > 0.4 ? (power - 0.4) * 12 : 0.5;
+    this.ball.vz = power > 0.4 ? (power - 0.4) * 7.5 : 0.4;
     this.ball.z = Math.max(this.ball.z, 0.01);
     p.kickCooldown = 0.4;
     p.touchCooldown = 0.5;
@@ -121,16 +121,17 @@ export class World {
       // new direction mid-dribble and the next touch plays it that way, with a
       // stretched toe-poke reach while the ball is drifting off your new line.
       const steer = len(input.move) > 0.3 ? norm(input.move) : norm(p.vel);
-      const veering = this.ball.speed() > 0.6 && angleBetween(this.ball.vel, steer) > 0.4;
+      const veering = this.ball.speed() > 0.6 && angleBetween(this.ball.vel, steer) > 0.3;
       if (d > (veering ? STEER_RANGE : CONTACT_RANGE)) return;
       const soft = p.isCharging || p.pendingKick;
-      const target = pSpeed * (soft ? 0.95 : p.isSprinting ? 1.28 : 1.05) + (soft ? 0.2 : p.isSprinting ? 0.7 : 0.5);
+      // Touches stay close: the ball works ahead of the boot, never away from it
+      const target = pSpeed * (soft ? 0.95 : p.isSprinting ? 1.16 : 1.02) + (soft ? 0.2 : p.isSprinting ? 0.55 : 0.42);
       const wobble = this.rng.gauss() * (0.09 - 0.05 * p.stats.control);
       this.ball.vel = add(
         scale(this.ball.vel, MOMENTUM_KEPT),
         scale(rotate(steer, wobble), target * (1 - MOMENTUM_KEPT)),
       );
-      touch(veering ? 0.12 : p.isSprinting ? 0.16 : 0.11, p.isSprinting);
+      touch(veering ? 0.1 : p.isSprinting ? 0.15 : 0.1, p.isSprinting);
     } else if (d < CONTACT_RANGE && this.ball.speed() > 1.0) {
       // Standing trap: kill most of the pace, let the rest roll off the boot
       this.ball.vel = add(scale(this.ball.vel, 0.25), scale(p.facing, 0.3));
@@ -142,13 +143,19 @@ export class World {
   // ball's drawn edge, so what you see is what you collide with
   private collideBall(p: PlayerBody) {
     const away = sub(this.ball.pos, p.pos);
-    const d = len(away);
-    if (d > 0.42 || this.ball.z > 1.1 || d < 1e-6) return;
-    const push = norm(away);
+    let d = len(away);
+    if (d > 0.42 || this.ball.z > 1.5) return;
+    // Dead-centered overlap still resolves — shove it out along the run
+    const push = d < 1e-6 ? (p.speed() > 0.1 ? norm(p.vel) : vec(1, 0)) : norm(away);
     this.ball.pos = add(p.pos, scale(push, 0.42));
     const radialSpeed = this.ball.vel.x * push.x + this.ball.vel.y * push.y;
     if (radialSpeed < 0) {
       this.ball.vel = add(this.ball.vel, scale(push, -radialSpeed * 1.15));
+    }
+    // A body plowing into a slow ball knocks it along instead of ghosting it
+    const approach = p.vel.x * push.x + p.vel.y * push.y;
+    if (approach > 0 && radialSpeed < approach) {
+      this.ball.vel = add(this.ball.vel, scale(push, (approach - Math.max(0, radialSpeed)) * 0.55));
     }
   }
 
