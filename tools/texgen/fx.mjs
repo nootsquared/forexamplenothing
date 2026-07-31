@@ -79,21 +79,22 @@ export function generateRingSheet() {
   return canvas;
 }
 
-// Three-step soft contact shadow — dense core melting into the turf,
-// never a hard-edged blob
+// Contact shadow that GROUNDS: a dense pool right under the feet melting fast
+// into the turf — wide faint halos are what make sprites float
 export function generateShadow() {
-  const w = 20, h = 10;
+  const w = 22, h = 11;
   const { canvas, ctx } = makeCanvas(w, h);
   const grid = new PixelGrid(w, h);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const d = ((x - w / 2 + 0.5) / (w / 2)) ** 2 + ((y - h / 2 + 0.5) / (h / 2)) ** 2;
-    if (d < 0.3) grid.set(x, y, '#0a1408', 105);
-    else if (d < 0.62) grid.set(x, y, '#0a1408', 62);
-    else if (d < 1) grid.set(x, y, '#0a1408', 26);
+    if (d < 0.16) grid.set(x, y, '#0a1408', 135);
+    else if (d < 0.48) grid.set(x, y, '#0a1408', 70);
+    else if (d < 1) grid.set(x, y, '#0a1408', 24);
   }
   grid.blitTo(ctx, 0, 0);
   return canvas;
 }
+
 
 // Torn-turf skid streak, stamped on the ground where boots plant and cut
 export function generateSkid() {

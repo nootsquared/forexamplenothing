@@ -21,10 +21,11 @@ export class PlayerView {
     this.sheet = sheet;
     this.shadow = new Sprite(assets.shadow);
     this.shadow.anchor.set(0.5, 0.5);
-    this.shadow.alpha = 0.75;
+    this.shadow.alpha = 0.8;
     this.body = new Sprite(assets.players[sheet][0][0]);
     const { frameH, baseline } = assets.manifest.player;
     this.body.anchor.set(0.5, baseline / frameH);
+    this.body.position.y = 1; // boots settle INTO the turf, not on top of it
     this.root.addChild(this.shadow, this.body, this.chargeBar);
   }
 
@@ -39,7 +40,8 @@ export class PlayerView {
     this.root.position.set(proj.sx, proj.sy);
     this.root.zIndex = proj.depth;
     this.body.scale.set(proj.scale);
-    this.shadow.position.set(1.5, 1); // cast down-sun, same key light as everything
+    this.shadow.position.set(0.5, 0.5); // pooled right under the feet
+    this.shadow.scale.set(proj.scale);
 
     const row = this.directionRow(p);
     const speed = p.speed();
@@ -63,9 +65,9 @@ export class PlayerView {
     // Charge tell: a small bar filling above the head — readable at couch distance
     this.chargeBar.clear();
     if (charge > 0) {
-      const w = 16;
-      this.chargeBar.rect(-w / 2, -31, w, 3).fill({ color: 0x1a1626, alpha: 0.7 });
-      this.chargeBar.rect(-w / 2 + 0.5, -30.5, (w - 1) * charge, 2).fill(charge > 0.8 ? 0xff5340 : 0xffdf5e);
+      const w = 18;
+      this.chargeBar.rect(-w / 2, -38, w, 3).fill({ color: 0x1a1626, alpha: 0.7 });
+      this.chargeBar.rect(-w / 2 + 0.5, -37.5, (w - 1) * charge, 2).fill(charge > 0.8 ? 0xff5340 : 0xffdf5e);
     }
   }
 

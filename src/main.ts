@@ -7,7 +7,7 @@ import { PITCH } from './sim/constants';
 import { Keyboard } from './input/keyboard';
 import { LocalControls } from './input/controls';
 import { loadAssets } from './render/assets';
-import { setPxPerMeter } from './render/projection';
+import { setProjection } from './render/projection';
 import { Scene } from './render/scene';
 import { MOODS } from './render/variants';
 
@@ -34,7 +34,7 @@ async function boot() {
   document.querySelector('#game')!.appendChild(app.canvas);
 
   const assets = await loadAssets();
-  setPxPerMeter(assets.manifest.pxPerMeter);
+  setProjection(assets.manifest.pxPerMeter, assets.manifest.persp);
 
   const world = new World();
   const hero = new PlayerBody(vec(PITCH.length / 2 - 8, PITCH.width / 2), HERO_STATS);

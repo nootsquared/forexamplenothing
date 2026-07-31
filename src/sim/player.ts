@@ -27,6 +27,9 @@ export class PlayerBody {
   kickCooldown = 0;
   // Released kick waiting for the ball to come into reach
   pendingKick: { power: number; ttl: number } | null = null;
+  // Set for one tick when a cut plants — the foot can chop the ball with it
+  justCut = false;
+  cutDir: Vec2 = vec(1, 0);
   private cutTimer = 0;
   isSprinting = false;
   isCharging = false;
@@ -62,6 +65,8 @@ export class PlayerBody {
       this.cutTimer = 0.35;
       const planted = norm(this.vel);
       this.vel = scale(this.vel, 0.6);
+      this.justCut = true;
+      this.cutDir = wantDir;
       events.push({ kind: 'cut', x: this.pos.x, y: this.pos.y, dx: planted.x, dy: planted.y });
     }
 
@@ -73,8 +78,11 @@ export class PlayerBody {
       : this.stats.accel * 1.6;
     this.vel = expDecayVec(this.vel, desired, rate, dt);
 
-    if (wantDir) this.facing = wantDir;
-    else if (this.speed() > 0.6) this.facing = norm(this.vel);
+    // Heading follows the body, not the keys: velocity bends smoothly through
+    // turns, so the runner sweeps through every angle instead of snapping
+    // between key directions. Standing still, you aim with the stick directly.
+    if (this.speed() > 0.6) this.facing = norm(this.vel);
+    else if (wantDir) this.facing = wantDir;
 
     this.stamina = clamp(
       this.stamina + (this.isSprinting ? -0.11 : this.speed() < 2 ? 0.07 : 0.035) * dt,

@@ -2,6 +2,7 @@ import { Assets, Rectangle, Texture } from 'pixi.js';
 
 export interface Manifest {
   pxPerMeter: number;
+  persp: { xsFar: number; xsSpan: number; sqFar: number; sqSpan: number };
   pitch: { length: number; width: number; apron: number };
   player: {
     frameW: number; frameH: number; baseline: number; dirs: string[]; frames: number;

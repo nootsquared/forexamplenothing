@@ -4,23 +4,33 @@
 
 export const PX_PER_METER = 16;
 
+// The broadcast camera's tilt, shared by the texture bake and the renderer:
+// horizontal scale narrows toward the far touchline (xs) while row spacing
+// compresses (sq) — a real receding ground plane, not a flat squash
+export const PERSPECTIVE = {
+  xsFar: 0.84,  // horizontal scale at the far touchline
+  xsSpan: 0.22, // added scale by the near touchline
+  sqFar: 0.52,  // row squash at the far touchline
+  sqSpan: 0.22, // added squash by the near touchline
+};
+
 export const VARIANTS = [
   {
     id: 'day',
     name: 'Lush Day',
-    grassA: '#4f8a40',
-    grassB: '#578f46',
+    grassA: '#4c8740',
+    grassB: '#61a04f',
     apron: '#3d6a32',
     line: '#efe9d8',
     lineAlpha: 0.85,
     worn: '#93854e',
-    mow: 'checker',
+    mow: 'rings', // bold concentric mow rings — the showpiece cut
   },
   {
     id: 'dusk',
     name: 'Golazo Dusk',
     grassA: '#6d8444',
-    grassB: '#758c4a',
+    grassB: '#7b934e',
     apron: '#566c36',
     line: '#e8dfc4',
     lineAlpha: 0.82,
@@ -31,7 +41,7 @@ export const VARIANTS = [
     id: 'night',
     name: 'Floodlight Night',
     grassA: '#2c6340',
-    grassB: '#326a4a',
+    grassB: '#377252',
     apron: '#234c31',
     line: '#e9edef',
     lineAlpha: 0.9,

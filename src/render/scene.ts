@@ -70,7 +70,7 @@ export class Scene {
     const w = this.app.renderer.width;
     const h = this.app.renderer.height;
 
-    this.camera.update(dt, this.world.ball.pos, this.world.ball.vel, w, h);
+    this.camera.update(dt, this.world.ball.pos, this.world.ball.vel, this.world.players.map((p) => p.pos), w, h);
     this.world.players.forEach((p, i) => {
       this.playerViews[i]?.update(p, dt, alpha, i === 0 ? charge : 0);
       this.effects.sprintDust(p, dt);

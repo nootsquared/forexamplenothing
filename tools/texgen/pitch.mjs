@@ -1,30 +1,8 @@
-import { makeCanvas, mulberry32, shade } from './lib.mjs';
-import { PX_PER_METER } from './palettes.mjs';
+import { makeCanvas, mulberry32, shade, hash2, vnoise } from './lib.mjs';
+import { PX_PER_METER, PERSPECTIVE } from './palettes.mjs';
 
 export const PITCH = { length: 105, width: 68, apron: 6 };
 const M = PX_PER_METER;
-
-// Position-stable integer hash → [0,1): the texture reads as planted, not random
-function hash2(x, y) {
-  let n = (x * 374761393 + y * 668265263) | 0;
-  n = Math.imul(n ^ (n >>> 13), 1274126177);
-  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
-}
-
-// Bilinear value noise with smoothstep, cell size s px
-function vnoise(x, y, s) {
-  const gx = Math.floor(x / s);
-  const gy = Math.floor(y / s);
-  const fx = x / s - gx;
-  const fy = y / s - gy;
-  const a = hash2(gx, gy);
-  const b = hash2(gx + 1, gy);
-  const c = hash2(gx, gy + 1);
-  const d = hash2(gx + 1, gy + 1);
-  const ux = fx * fx * (3 - 2 * fx);
-  const uy = fy * fy * (3 - 2 * fy);
-  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
-}
 
 // Full pitch + apron: mowing, then a per-pixel blade pass that turns flat paint
 // into turf, scars of play, chalk lines, grown-over fringes, baked lighting
@@ -41,12 +19,41 @@ export function generatePitchTexture(variant) {
 
   paintMowing(ctx, variant, ox, oy);
   paintBlades(ctx, w, h);
+  paintWalkway(ctx, rng, w, oy);
   paintDirtScrapes(ctx, rng, ox, oy);
   paintWear(ctx, rng, variant, ox, oy);
   paintLines(ctx, variant, ox, oy);
   paintFringe(ctx, rng, variant, ox, oy);
   paintLighting(ctx, variant, w, h);
 
+  return warpPerspective(canvas);
+}
+
+// Bake the camera tilt into the texture: every row is drawn at its own width
+// (narrow far, wide near) and rows compress with distance — the classic
+// pseudo-3D ground plane, with the renderer projecting by the same formula
+function warpPerspective(src) {
+  const w0 = src.width;
+  const h0 = src.height;
+  const P = PERSPECTIVE;
+  const yTop = -PITCH.apron;
+  const yBot = PITCH.width + PITCH.apron;
+  const a = (M * P.sqSpan) / (2 * PITCH.width);
+  const b = M * P.sqFar;
+  const syAt = (ym) => b * ym + a * ym * ym;
+  const xsAt = (ym) => P.xsFar + P.xsSpan * (ym / PITCH.width);
+  const topSy = syAt(yTop);
+  const outH = Math.ceil(syAt(yBot) - topSy);
+  const outW = Math.ceil(w0 * xsAt(yBot));
+  const { canvas, ctx } = makeCanvas(outW, outH);
+  ctx.imageSmoothingEnabled = false;
+  for (let Y = 0; Y < outH; Y++) {
+    const target = topSy + Y + 0.5;
+    const ym = (-b + Math.sqrt(b * b + 4 * a * target)) / (2 * a); // invert syAt
+    const srcY = Math.min(h0 - 1, Math.max(0, Math.floor((ym - yTop) * M)));
+    const rowW = w0 * xsAt(ym);
+    ctx.drawImage(src, 0, srcY, w0, 1, (outW - rowW) / 2, Y, rowW, 1);
+  }
   return canvas;
 }
 
@@ -63,6 +70,22 @@ function paintMowing(ctx, variant, ox, oy) {
         ctx.fillRect(ox + cx * cell, oy + cy * cell, Math.min(cell, pw - cx * cell), Math.min(cell, ph - cy * cell));
       }
     }
+  } else if (variant.mow === 'rings') {
+    // Concentric mow rings spreading from the center spot — the showpiece cut
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(ox, oy, pw, ph);
+    ctx.clip();
+    const band = 5.5 * M;
+    const maxR = Math.hypot(pw / 2, ph / 2) + band;
+    for (let r = maxR, i = Math.round(maxR / band); r > 0; r -= band, i--) {
+      const base = i % 2 === 0 ? variant.grassA : variant.grassB;
+      ctx.fillStyle = shade(base, 0.985 + hash2(i, 55) * 0.03);
+      ctx.beginPath();
+      ctx.arc(ox + pw / 2, oy + ph / 2, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   } else {
     const band = 5.25 * M;
     for (let bx = 0; bx * band < pw; bx++) {
@@ -107,6 +130,25 @@ function paintBlades(ctx, w, h) {
     }
   }
   ctx.putImageData(img, 0, 0);
+}
+
+// Trodden dirt walkway in front of the ad boards — groundskeepers, subs and
+// photographers wear the grass down to earth along the far side
+function paintWalkway(ctx, rng, w, oy) {
+  const tones = ['#a08a58', '#96814f', '#8b7748'];
+  const y0 = oy - 2.1 * M;
+  const y1 = oy - 0.9 * M;
+  for (let x = 0; x < w; x += 2) {
+    for (let y = y0; y < y1; y += 2) {
+      if (rng() < 0.9) {
+        ctx.fillStyle = tones[Math.floor(rng() * 3)];
+        ctx.globalAlpha = 0.55 + rng() * 0.4;
+        const ragged = rng() < 0.14 ? (rng() < 0.5 ? -2 : 2) : 0; // chewed edges
+        ctx.fillRect(x, y + ragged, 2, 2);
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
 }
 
 // Little scars of play: skid scrapes scattered where boots actually tear grass
@@ -173,7 +215,7 @@ function paintWear(ctx, rng, variant, ox, oy) {
 function paintLines(ctx, variant, ox, oy) {
   const L = PITCH.length * M;
   const W = PITCH.width * M;
-  const lw = 2;
+  const lw = 3; // bold chalk — survives the perspective compression at distance
   const rng = mulberry32(4242);
   ctx.fillStyle = variant.line;
 
@@ -267,8 +309,10 @@ function paintFringe(ctx, rng, variant, ox, oy) {
   }
 }
 
-// Baked light: sun gradient + vignette by day, warm rake at dusk,
-// four floodlight pools at night. Applied last so the chalk lines catch it too.
+// Baked light with a real SUN, not universal brightness: day rakes warm from
+// the top-left with a soft hot patch and cool shade creeping into the far
+// corner; dusk is a low western sun; night is floodlight pools on dark turf.
+// Applied last so the chalk lines catch it too.
 function paintLighting(ctx, variant, w, h) {
   const img = ctx.getImageData(0, 0, w, h);
   const d = img.data;
@@ -286,11 +330,17 @@ function paintLighting(ctx, variant, w, h) {
       const vignette = 1 - Math.max(0, edge - 0.62) * 0.28;
       let r = 1, g = 1, b = 1;
       if (variant.id === 'day') {
-        const f = (1.06 - 0.12 * (nx + ny) / 2) * vignette;
-        r = f; g = f; b = f;
+        const sunAxis = nx * 0.62 + ny * 0.38; // 0 at the sunlit corner, 1 in the shade
+        const hot = Math.exp(-(((nx - 0.26) ** 2) + ((ny - 0.3) ** 2) * 1.8) / 0.055) * 0.055;
+        const f = (1.12 - 0.22 * sunAxis + hot) * vignette;
+        const warmth = 1 - sunAxis; // sunlit grass runs warm, shaded grass runs cool
+        r = f * (1 + 0.025 * warmth);
+        g = f;
+        b = f * (1 - 0.035 * warmth + 0.02 * sunAxis);
       } else if (variant.id === 'dusk') {
-        const f = (1.09 - 0.17 * (nx + ny) / 2) * vignette;
-        r = f * 1.05; g = f * 0.99; b = f * 0.9;
+        const sunAxis = nx * 0.75 + ny * 0.25; // low sun from the west end
+        const f = (1.16 - 0.3 * sunAxis) * vignette;
+        r = f * 1.08; g = f * 0.97; b = f * 0.84;
       } else {
         let pool = 0;
         for (const fl of floods) {
@@ -298,8 +348,8 @@ function paintLighting(ctx, variant, w, h) {
           const dy = y - fl.y;
           pool += Math.exp(-(dx * dx + dy * dy) / (floodR * floodR));
         }
-        const f = (0.78 + Math.min(0.5, pool * 0.55)) * vignette;
-        r = f * 0.97; g = f; b = f * 1.06;
+        const f = (0.74 + Math.min(0.55, pool * 0.62)) * vignette;
+        r = f * 0.96; g = f; b = f * 1.07;
       }
       d[i] = Math.min(255, d[i] * r);
       d[i + 1] = Math.min(255, d[i + 1] * g);

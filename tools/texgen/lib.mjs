@@ -13,6 +13,28 @@ export function mulberry32(seed) {
   };
 }
 
+// Position-stable integer hash → [0,1): textures read as planted, not random
+export function hash2(x, y) {
+  let n = (x * 374761393 + y * 668265263) | 0;
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+}
+
+// Bilinear value noise with smoothstep, cell size s px
+export function vnoise(x, y, s) {
+  const gx = Math.floor(x / s);
+  const gy = Math.floor(y / s);
+  const fx = x / s - gx;
+  const fy = y / s - gy;
+  const a = hash2(gx, gy);
+  const b = hash2(gx + 1, gy);
+  const c = hash2(gx, gy + 1);
+  const d = hash2(gx + 1, gy + 1);
+  const ux = fx * fx * (3 - 2 * fx);
+  const uy = fy * fy * (3 - 2 * fy);
+  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
+}
+
 export function makeCanvas(w, h) {
   const canvas = createCanvas(w, h);
   const ctx = canvas.getContext('2d');

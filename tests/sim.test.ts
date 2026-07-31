@@ -77,9 +77,9 @@ describe('dribbling', () => {
     }
     expect(world.ball.pos.x).toBeGreaterThan(p.pos.x); // ball leads the run
     expect(p.pos.x).toBeGreaterThan(56);               // they travel together
-    expect(maxGap).toBeGreaterThan(0.7);               // ball genuinely runs free
-    expect(maxGap).toBeLessThan(3);                    // but never out of control
-    expect(touches).toBeGreaterThan(2);                // distinct repeated touches
+    expect(maxGap).toBeGreaterThan(0.4);               // ball genuinely runs free
+    expect(maxGap).toBeLessThan(2.5);                  // but never out of control
+    expect(touches).toBeGreaterThan(3);                // distinct repeated touches
   });
 
   it('carries the ball through a hard turn instead of losing it', () => {

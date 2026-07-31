@@ -1,6 +1,6 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { savePNG, makeCanvas } from './lib.mjs';
-import { VARIANTS, KITS, PX_PER_METER } from './palettes.mjs';
+import { VARIANTS, KITS, PX_PER_METER, PERSPECTIVE } from './palettes.mjs';
 import { generatePitchTexture, PITCH } from './pitch.mjs';
 import { generatePlayerSheet, FRAME_W, FRAME_H, BASELINE, DIRS, FRAMES } from './players.mjs';
 import { generateBallSheet, BALL_SIZE, BALL_FRAMES } from './ball.mjs';
@@ -40,6 +40,7 @@ savePNG(generateCloudShadow(), `${OUT}cloud.png`);
 // Single source of truth the renderer reads: frame geometry + variant list
 const manifest = {
   pxPerMeter: PX_PER_METER,
+  persp: PERSPECTIVE,
   pitch: { length: PITCH.length, width: PITCH.width, apron: PITCH.apron },
   player: {
     frameW: FRAME_W, frameH: FRAME_H, baseline: BASELINE, dirs: DIRS, frames: FRAMES,

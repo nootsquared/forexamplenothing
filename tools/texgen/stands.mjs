@@ -1,4 +1,4 @@
-import { makeCanvas, mulberry32, shade } from './lib.mjs';
+import { makeCanvas, mulberry32, shade, vnoise } from './lib.mjs';
 import { stampText, textWidth } from './font.mjs';
 
 // Everything that turns a lonely field into an arena: grandstand, ad boards,
@@ -141,21 +141,32 @@ export function generateCornerFlag() {
   return canvas;
 }
 
+// A cumulus silhouette carved from layered value noise — a ragged, organic
+// mass with soft edges, drifting like real cloud shade. Never circles.
 export function generateCloudShadow() {
-  const w = 220;
-  const h = 140;
+  const w = 320;
+  const h = 190;
   const { canvas, ctx } = makeCanvas(w, h);
-  const rng = mulberry32(31);
-  ctx.fillStyle = '#08140a';
-  for (let i = 0; i < 26; i++) {
-    const cx = 30 + rng() * (w - 60);
-    const cy = 30 + rng() * (h - 60);
-    const r = 18 + rng() * 34;
-    ctx.globalAlpha = 0.05 + rng() * 0.04;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fill();
+  const img = ctx.createImageData(w, h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const sy = y * 1.55; // clouds stretch along their drift
+      const v =
+        0.55 * vnoise(x, sy, 64) +
+        0.3 * vnoise(x + 91, sy + 41, 27) +
+        0.15 * vnoise(x + 211, sy + 97, 11);
+      // fade out before the canvas edge so the mass never clips square
+      const rx = (x / w - 0.5) * 2;
+      const ry = (y / h - 0.5) * 2;
+      const falloff = Math.max(0, 1.25 - (rx * rx + ry * ry) * 1.35);
+      const m = Math.max(0, Math.min(1, (v * falloff - 0.5) * 4.5));
+      if (m > 0) {
+        const i = (y * w + x) * 4;
+        img.data[i] = 10; img.data[i + 1] = 20; img.data[i + 2] = 8;
+        img.data[i + 3] = Math.round(m * 30);
+      }
+    }
   }
-  ctx.globalAlpha = 1;
+  ctx.putImageData(img, 0, 0);
   return canvas;
 }

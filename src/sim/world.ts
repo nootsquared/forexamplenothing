@@ -6,10 +6,12 @@ import { PlayerBody, PlayerInput } from './player';
 import { SimEvent } from './events';
 
 const KICK_RANGE = 2.0;
-const KICK_BUFFER = 0.28; // released kick fires as soon as the ball is in reach
-const TOUCH_RANGE = 0.6;  // the foot's reach for a dribble knock
-const TURN_RANGE = 1.25;  // longer reach to drag the ball around a turn — covers the knock lead at jog
-const TRAP_RANGE = 0.85;  // the foot's reach for killing an incoming ball
+const KICK_BUFFER = 0.28;   // released kick fires as soon as the ball is in reach
+const CONTACT_RANGE = 0.55; // a real foot's reach — the ball is NEVER played from further
+const STEER_RANGE = 0.85;   // toe-stretch reach while veering onto a new line
+const CHOP_RANGE = 0.8;     // planting a cut stretches the leg a touch further
+const CUSHION_RANGE = 0.8;  // stretching to kill a ball arriving with pace
+const MOMENTUM_KEPT = 0.22; // slice of the ball's old velocity surviving a touch
 
 export class World {
   ball = new Ball();
@@ -30,7 +32,7 @@ export class World {
       const input = inputs[i] ?? { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
       p.update(dt, input, this.events);
       this.handleKick(p, input, dt);
-      this.handleDribble(p);
+      this.handleDribble(p, input);
       this.collideBall(p);
     });
 
@@ -53,7 +55,13 @@ export class World {
 
     const power = clamp(p.pendingKick.power, 0.1, 1) * (0.75 + 0.25 * p.stats.power);
     p.pendingKick = null;
-    const aim = len(input.move) > 0.3 ? norm(input.move) : p.facing;
+    // Aim blends the body's continuous heading with the stick — shots leave at
+    // any angle your run carves, not just the eight key directions
+    let aim = p.facing;
+    if (len(input.move) > 0.3) {
+      const blended = add(scale(p.facing, 0.45), scale(norm(input.move), 0.55));
+      aim = len(blended) > 0.2 ? norm(blended) : norm(input.move);
+    }
     // The honesty mechanic: harder shots wobble more — no guaranteed lasers
     const error = this.rng.gauss() * (0.015 + 0.05 * power);
     const dir = rotate(aim, error);
@@ -67,61 +75,77 @@ export class World {
     this.events.push({ kind: 'kick', x: this.ball.pos.x, y: this.ball.pos.y, power });
   }
 
-  // Real dribbling: the foot KNOCKS the ball ahead and it rolls free until the
-  // player catches up. Pace decides how far each touch runs — sprinting pushes
-  // it further out, charging keeps it tucked for the strike. Never magnetized.
-  private handleDribble(p: PlayerBody) {
-    if (p.touchCooldown > 0 || this.ball.z > 0.6) return;
+  // Dribbling, built from nothing but real foot-to-ball contacts. Every touch
+  // keeps a slice of the ball's momentum and adds push along the run, so
+  // redirects ARC the way a ball comes off a boot — never snapping around a
+  // pivot, never played from beyond a leg's reach. Between touches: free ball.
+  private handleDribble(p: PlayerBody, input: PlayerInput) {
+    const justCut = p.justCut;
+    p.justCut = false;
+    if (this.ball.z > 0.6) return;
     const d = dist(p.pos, this.ball.pos);
-    if (d > Math.max(TRAP_RANGE, TURN_RANGE)) return;
+    const touch = (cooldown: number, sprint = false) => {
+      p.touchCooldown = cooldown;
+      this.events.push({ kind: 'touch', x: this.ball.pos.x, y: this.ball.pos.y, sprint });
+    };
+
+    // The chop: planting a hard cut with the ball at your feet knocks it
+    // ACROSS the body onto the new running line — aimed at where you're going,
+    // not just parallel to it, or you'd jog beside a ball you can't reach.
+    // The plant foot strikes on its own timing, never blocked by the tap rhythm.
+    if (justCut && d < CHOP_RANGE) {
+      const ontoLane = norm(sub(add(p.pos, scale(p.cutDir, 1.6)), this.ball.pos));
+      this.ball.vel = add(scale(this.ball.vel, MOMENTUM_KEPT), scale(ontoLane, p.speed() * 1.3 + 1.2));
+      return touch(0.14);
+    }
+
+    if (p.touchCooldown > 0 || d > CUSHION_RANGE) return;
+
     const rel = sub(this.ball.vel, p.vel);
     const toBall = sub(this.ball.pos, p.pos);
     const closing = d > 1e-6 ? -(rel.x * toBall.x + rel.y * toBall.y) / d : 0;
 
-    // First touch: a fast incoming ball is cushioned dead instead of ricocheting
-    if (closing > 5 && d < TRAP_RANGE) {
-      const keep = 0.18 - 0.1 * p.stats.control;
+    // A ball arriving with pace gets cushioned dead off the boot
+    if (closing > 5) {
+      const keep = 0.2 - 0.1 * p.stats.control;
       this.ball.vel = add(p.vel, scale(rel, keep));
-      if (p.speed() > 0.8) this.ball.vel = add(this.ball.vel, scale(p.facing, 1.4)); // drop it into stride
-      p.touchCooldown = 0.22;
-      this.events.push({ kind: 'touch', x: this.ball.pos.x, y: this.ball.pos.y, sprint: false });
-      return;
+      if (p.speed() > 0.8) this.ball.vel = add(this.ball.vel, scale(p.facing, 1.2)); // drop it into stride
+      return touch(0.22);
     }
+
     const pSpeed = p.speed();
     if (pSpeed > 0.8) {
-      const moveDir = norm(p.vel);
-      // Off the running lane — sideways after a cut, or rolling the wrong way?
-      // The foot reaches further and DRAGS the ball back onto the line ahead,
-      // so you carry it through corners instead of watching it escape
-      const lateral = Math.abs(moveDir.x * toBall.y - moveDir.y * toBall.x);
-      const misaligned = this.ball.speed() > 0.6 && angleBetween(this.ball.vel, moveDir) > 0.55;
-      const offLane = lateral > 0.45 || misaligned;
-      if (d > (offLane ? TURN_RANGE : TOUCH_RANGE)) return;
-      const wobble = this.rng.gauss() * (0.1 - 0.055 * p.stats.control);
-      let dir = moveDir;
-      let knock = pSpeed * (p.isCharging || p.pendingKick ? 1.04 : p.isSprinting ? 1.32 : 1.16) + 0.7;
-      if (offLane) {
-        dir = norm(sub(add(p.pos, scale(moveDir, 1.1)), this.ball.pos));
-        knock = pSpeed * 1.02 + 0.6;
-      }
-      this.ball.vel = scale(rotate(dir, wobble), knock);
-      p.touchCooldown = offLane ? 0.12 : 0.15;
-      this.events.push({ kind: 'touch', x: this.ball.pos.x, y: this.ball.pos.y, sprint: p.isSprinting });
-    } else if (d < TOUCH_RANGE && this.ball.speed() > 1.2) {
+      // Soft taps at a jog keep it in stride; sprint knocks push it on ahead;
+      // charging keeps it tucked under the plant foot for the strike.
+      // Taps aim where you're STEERING, not where momentum drags you — press a
+      // new direction mid-dribble and the next touch plays it that way, with a
+      // stretched toe-poke reach while the ball is drifting off your new line.
+      const steer = len(input.move) > 0.3 ? norm(input.move) : norm(p.vel);
+      const veering = this.ball.speed() > 0.6 && angleBetween(this.ball.vel, steer) > 0.4;
+      if (d > (veering ? STEER_RANGE : CONTACT_RANGE)) return;
+      const soft = p.isCharging || p.pendingKick;
+      const target = pSpeed * (soft ? 0.95 : p.isSprinting ? 1.28 : 1.05) + (soft ? 0.2 : p.isSprinting ? 0.7 : 0.5);
+      const wobble = this.rng.gauss() * (0.09 - 0.05 * p.stats.control);
+      this.ball.vel = add(
+        scale(this.ball.vel, MOMENTUM_KEPT),
+        scale(rotate(steer, wobble), target * (1 - MOMENTUM_KEPT)),
+      );
+      touch(veering ? 0.12 : p.isSprinting ? 0.16 : 0.11, p.isSprinting);
+    } else if (d < CONTACT_RANGE && this.ball.speed() > 1.0) {
       // Standing trap: kill most of the pace, let the rest roll off the boot
-      this.ball.vel = add(scale(this.ball.vel, 0.28), scale(p.facing, 0.35));
-      p.touchCooldown = 0.25;
-      this.events.push({ kind: 'touch', x: this.ball.pos.x, y: this.ball.pos.y, sprint: false });
+      this.ball.vel = add(scale(this.ball.vel, 0.25), scale(p.facing, 0.3));
+      touch(0.28);
     }
   }
 
-  // The ball never tunnels through a player's feet — a nudge, not a force field
+  // Bodies never pass through the ball: the keep-out ring sits just past the
+  // ball's drawn edge, so what you see is what you collide with
   private collideBall(p: PlayerBody) {
     const away = sub(this.ball.pos, p.pos);
     const d = len(away);
-    if (d > 0.3 || this.ball.z > 1.1 || d < 1e-6) return;
+    if (d > 0.42 || this.ball.z > 1.1 || d < 1e-6) return;
     const push = norm(away);
-    this.ball.pos = add(p.pos, scale(push, 0.3));
+    this.ball.pos = add(p.pos, scale(push, 0.42));
     const radialSpeed = this.ball.vel.x * push.x + this.ball.vel.y * push.y;
     if (radialSpeed < 0) {
       this.ball.vel = add(this.ball.vel, scale(push, -radialSpeed * 1.15));

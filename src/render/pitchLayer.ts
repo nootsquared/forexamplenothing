@@ -56,8 +56,12 @@ export class PitchLayer {
   constructor(private assets: GameAssets, worldSorted: Container) {
     const M = pxPerMeter();
     this.pitchSprite = new Sprite(assets.pitch['day']);
-    this.pitchSprite.position.set(-PITCH.apron * M, -PITCH.apron * M * SQUASH);
-    this.pitchSprite.scale.y = SQUASH;
+    // Perspective is baked into the texture: center it on the pitch centerline
+    // with its top row at the far apron edge — no runtime squash
+    this.pitchSprite.position.set(
+      52.5 * M - this.pitchSprite.texture.width / 2,
+      project(0, -PITCH.apron, 0).sy,
+    );
     this.ground.addChild(this.pitchSprite);
 
     this.driftClouds();
@@ -143,27 +147,29 @@ export class PitchLayer {
   }
 
   // Grandstand + boards behind the far touchline, dugouts on the near side,
-  // waving corner flags — the pitch lives inside an arena now
+  // waving corner flags — the pitch lives inside an arena now. Strips take
+  // their width from the projection at their own depth row.
   private buildArena(worldSorted: Container) {
-    const M = pxPerMeter();
-    const standBaseY = project(0, -2.1, 0).sy;
+    const standL = project(-11, -2.1, 0);
+    const standR = project(PITCH.length + 11, -2.1, 0);
     const stand = new TilingSprite({
       texture: this.assets.stand,
-      width: (PITCH.length + 22) * M,
+      width: standR.sx - standL.sx,
       height: this.assets.manifest.stand.h,
     });
-    stand.position.set(project(-11, 0, 0).sx, standBaseY - this.assets.manifest.stand.h);
-    stand.zIndex = project(0, -2.1, 0).depth;
+    stand.position.set(standL.sx, standL.sy - this.assets.manifest.stand.h);
+    stand.zIndex = standL.depth;
     worldSorted.addChild(stand);
 
-    const boardsBaseY = project(0, -0.8, 0).sy;
+    const boardsL = project(-4, -0.8, 0);
+    const boardsR = project(PITCH.length + 4, -0.8, 0);
     const boards = new TilingSprite({
       texture: this.assets.boards,
-      width: (PITCH.length + 8) * M,
+      width: boardsR.sx - boardsL.sx,
       height: this.assets.manifest.boards.h,
     });
-    boards.position.set(project(-4, 0, 0).sx, boardsBaseY - this.assets.manifest.boards.h);
-    boards.zIndex = project(0, -0.8, 0).depth;
+    boards.position.set(boardsL.sx, boardsL.sy - this.assets.manifest.boards.h);
+    boards.zIndex = boardsL.depth;
     worldSorted.addChild(boards);
 
     for (const dx of [35, 62]) {
@@ -202,7 +208,7 @@ export class PitchLayer {
       worldSorted.addChild(sprite);
       this.blades.push({ sprite, wx: x, wy: y, phase: rng.range(0, 6.28), base: scale, disturb: 0, pushSign: 1 });
     };
-    for (let i = 0; i < 420; i++) {
+    for (let i = 0; i < 560; i++) {
       plant(rng.range(0.5, PITCH.length - 0.5), rng.range(0.5, PITCH.width - 0.5), rng.range(0.55, 0.9), 0.8);
     }
     for (let x = -0.2; x < PITCH.length + 0.2; x += rng.range(0.4, 0.9)) {
@@ -222,34 +228,37 @@ export class PitchLayer {
     }
   }
 
-  // A real goal box: aluminium frame on the line, back frame raised a few px
-  // (a faked second oblique axis so the camera "sees into" the box), and nets
-  // strung strand by strand — redrawn live so they sway and swish
+  // A real goal box in perspective: two distinct posts, a crossbar that runs
+  // slanted toward the vanishing point, a raised back frame, and nets strung
+  // strand by strand — redrawn live so they sway and swish
   private buildGoal(worldSorted: Container, side: 'left' | 'right') {
     const cx = side === 'left' ? 0 : PITCH.length;
     const sgn = side === 'left' ? -1 : 1;
     const yFar = PITCH.width / 2 - PITCH.goalWidth / 2;
     const yNear = PITCH.width / 2 + PITCH.goalWidth / 2;
     const H = PITCH.goalHeight;
-    const LIFT = 7; // screen px the box back edge rises — sells the depth
+    const LIFT = 7; // extra screen px the box back edge rises — sells the depth
+    const bx = cx + sgn * PITCH.goalDepth;
 
-    const frontX = project(cx, yFar, 0).sx;
-    const backX = project(cx + sgn * PITCH.goalDepth, yFar, 0).sx;
-    const farTopY = project(cx, yFar, H).sy;
-    const farGroundY = project(cx, yFar, 0).sy;
-    const nearTopY = project(cx, yNear, H).sy;
-    const nearGroundY = project(cx, yNear, 0).sy;
+    const fFarT = project(cx, yFar, H);
+    const fFarG = project(cx, yFar, 0);
+    const fNearT = project(cx, yNear, H);
+    const fNearG = project(cx, yNear, 0);
+    const bFarT: Pt = [project(bx, yFar, H).sx, project(bx, yFar, H).sy - LIFT];
+    const bFarG = project(bx, yFar, 0);
+    const bNearT: Pt = [project(bx, yNear, H).sx, project(bx, yNear, H).sy - LIFT];
+    const bNearG = project(bx, yNear, 0);
 
     // Everything at far-post depth draws behind a ball inside the goal;
     // the near-side net and frame hang in front of it
     const farBundle = new Container();
-    farBundle.zIndex = project(cx, yFar, 0).depth - 0.5;
+    farBundle.zIndex = fFarG.depth - 0.5;
     const nearBundle = new Container();
-    nearBundle.zIndex = project(cx, yNear, 0).depth + 0.5;
+    nearBundle.zIndex = fNearG.depth + 0.5;
 
     // The box interior falls into shadow before the net catches light
     const inner = new Graphics();
-    inner.poly([frontX, farTopY, backX, farTopY - LIFT, backX, nearGroundY, frontX, nearGroundY])
+    inner.poly([fFarT.sx, fFarT.sy, bFarT[0], bFarT[1], bNearG.sx, bNearG.sy, fNearG.sx, fNearG.sy])
       .fill({ color: 0x081209, alpha: 0.3 });
     farBundle.addChild(inner);
 
@@ -261,34 +270,48 @@ export class PitchLayer {
       rig.panels.push(p);
       this.drawPanel(p, 0);
     };
-    panel([frontX, farTopY], [backX, farTopY - LIFT], [frontX, nearTopY], [backX, nearTopY - LIFT], 0.34, 1, 0.3, farBundle);
-    panel([frontX, farTopY], [backX, farTopY - LIFT], [frontX, farGroundY], [backX, farGroundY], 0.55, 1.6, 1, farBundle);
-    panel([frontX, nearTopY], [backX, nearTopY - LIFT], [frontX, nearGroundY], [backX, nearGroundY], 0.6, 1.6, 1, nearBundle);
+    panel([fFarT.sx, fFarT.sy], bFarT, [fNearT.sx, fNearT.sy], bNearT, 0.34, 1, 0.3, farBundle);
+    panel([fFarT.sx, fFarT.sy], bFarT, [fFarG.sx, fFarG.sy], [bFarG.sx, bFarG.sy], 0.55, 1.6, 1, farBundle);
+    panel([fNearT.sx, fNearT.sy], bNearT, [fNearG.sx, fNearG.sy], [bNearG.sx, bNearG.sy], 0.6, 1.6, 1, nearBundle);
 
-    // Back frame: grey stanchion bar the net hangs from
-    const backBar = new TilingSprite({ texture: this.assets.goalBar, width: 3, height: nearGroundY - (farTopY - LIFT) });
-    backBar.position.set(backX - 1.5, farTopY - LIFT);
-    backBar.tint = 0x9fa8b0;
-    farBundle.addChild(backBar);
+    // Back frame: grey stanchions at both back corners + the top slat
+    const backFrame = new Graphics();
+    backFrame.rect(bFarT[0] - 1, bFarT[1], 2, bFarG.sy - bFarT[1]).fill({ color: 0x9fa8b0, alpha: 0.95 });
+    backFrame.rect(bNearT[0] - 1, bNearT[1], 2, bNearG.sy - bNearT[1]).fill({ color: 0x9fa8b0, alpha: 0.95 });
+    backFrame.moveTo(bFarT[0], bFarT[1]).lineTo(bNearT[0], bNearT[1])
+      .stroke({ width: 2, color: 0x9fa8b0, alpha: 0.9 });
+    farBundle.addChild(backFrame);
 
     // Roof edges running back from each post top — the lines that sell the box
     const farEdge = new Graphics();
-    farEdge.moveTo(frontX, farTopY).lineTo(backX, farTopY - LIFT).stroke({ width: 1.5, color: 0xe4e7de, alpha: 0.9 });
+    farEdge.moveTo(fFarT.sx, fFarT.sy).lineTo(bFarT[0], bFarT[1]).stroke({ width: 1.5, color: 0xe4e7de, alpha: 0.9 });
     farBundle.addChild(farEdge);
     const nearEdge = new Graphics();
-    nearEdge.moveTo(frontX, nearTopY).lineTo(backX, nearTopY - LIFT).stroke({ width: 1.5, color: 0xe4e7de, alpha: 0.9 });
+    nearEdge.moveTo(fNearT.sx, fNearT.sy).lineTo(bNearT[0], bNearT[1]).stroke({ width: 1.5, color: 0xe4e7de, alpha: 0.9 });
     nearBundle.addChild(nearEdge);
 
-    // Mouth frame seen edge-on: posts + crossbar form one aluminium bar,
-    // with cap blocks marking the joints
-    const mouthBar = new TilingSprite({ texture: this.assets.goalBar, width: 4, height: nearGroundY - farTopY + 1 });
-    mouthBar.position.set(frontX - 2, farTopY);
-    nearBundle.addChild(mouthBar);
+    // The frame proper: far post behind play, slanted crossbar + near post in
+    // front — finally two posts and a bar, not one flat stripe
+    const farPost = new TilingSprite({ texture: this.assets.goalBar, width: 3, height: fFarG.sy - fFarT.sy });
+    farPost.position.set(fFarT.sx - 1.5, fFarT.sy);
+    farPost.tint = 0xe8e8e2;
+    farBundle.addChild(farPost);
+
+    const crossbar = new Graphics();
+    crossbar.moveTo(fFarT.sx, fFarT.sy).lineTo(fNearT.sx, fNearT.sy).stroke({ width: 3.5, color: 0xf7f7f2 });
+    crossbar.moveTo(fFarT.sx, fFarT.sy + 1.5).lineTo(fNearT.sx, fNearT.sy + 1.5)
+      .stroke({ width: 1, color: 0xb9bcb2, alpha: 0.8 });
+    nearBundle.addChild(crossbar);
+
+    const nearPost = new TilingSprite({ texture: this.assets.goalBar, width: 4, height: fNearG.sy - fNearT.sy });
+    nearPost.position.set(fNearT.sx - 2, fNearT.sy);
+    nearBundle.addChild(nearPost);
+
     const caps = new Graphics();
-    caps.rect(frontX - 2.5, farTopY - 1, 5, 3).fill(0xffffff);
-    caps.rect(frontX - 2.5, nearTopY - 1, 5, 3).fill(0xffffff);
-    caps.rect(frontX - 2.5, farGroundY - 1, 5, 2).fill(0xd9d9cf);
-    caps.rect(frontX - 3, nearGroundY - 1, 6, 2).fill(0x30352f);
+    caps.rect(fFarT.sx - 2, fFarT.sy - 1, 4, 3).fill(0xffffff);
+    caps.rect(fNearT.sx - 2.5, fNearT.sy - 1, 5, 3).fill(0xffffff);
+    caps.rect(fFarG.sx - 2, fFarG.sy - 1, 4, 2).fill(0xd9d9cf);
+    caps.rect(fNearG.sx - 3, fNearG.sy - 1, 6, 2).fill(0x30352f);
     nearBundle.addChild(caps);
 
     worldSorted.addChild(farBundle);
