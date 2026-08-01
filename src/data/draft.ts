@@ -32,12 +32,14 @@ export interface Draft {
   turn: number;     // index into order; >= order.length = done
 }
 
-export function createDraft(first: 0 | 1, size = 11): Draft {
+export function createDraft(first: 0 | 1, size = 11, snake = true): Draft {
   const order: (0 | 1)[] = [];
   let a: 0 | 1 = first;
   for (let round = 0; round < size; round++) {
     order.push(a, a === 0 ? 1 : 0);
-    a = a === 0 ? 1 : 0; // snake: the pair flips every round
+    // snake (ABBA) for the market's money game; the wheel takes honest
+    // one-each turns so nobody watches the CPU spin three in a row
+    if (snake) a = a === 0 ? 1 : 0;
   }
   const side = (): DraftSide => ({ budget: budgetFor(size), picks: [], quota: quotaFor(size), size });
   return {

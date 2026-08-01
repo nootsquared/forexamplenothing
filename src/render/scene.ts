@@ -90,6 +90,11 @@ export class Scene {
     this.keeperAimState = state;
   }
 
+  // Penalty sight — non-null while the human shooter picks his bin
+  setPenaltyAim(state: { col: number; row: number } | null) {
+    this.hud.setPenaltyAim(state);
+  }
+
   // Match clock for the HUD; empty string hides it (endless kickabout)
   setClock(text: string) {
     this.hud.setClock(text);
@@ -186,11 +191,12 @@ export class Scene {
       if (e.kind === 'kickoff') this.hud.announce('KICK OFF');
       if (e.kind === 'half') this.hud.announce('HALF TIME');
       if (e.kind === 'fulltime') this.hud.announce('FULL TIME');
+      if (e.kind === 'foul') this.hud.announce(e.penalty ? 'PENALTY!' : 'FOUL!');
       if (e.kind === 'restart') {
         this.hud.announce(
           e.restart === 'corner' ? 'CORNER KICK' :
           e.restart === 'goalkick' ? 'GOAL KICK' :
-          e.restart === 'offside' ? 'OFFSIDE!' : 'THROW IN',
+          e.restart === 'freekick' ? 'FREE KICK' : 'THROW IN',
         );
       }
       if (e.kind === 'goal') {

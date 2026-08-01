@@ -238,7 +238,7 @@ export class Brain {
       return;
     }
 
-    if (this.bb.phase === 'defend') return this.decideDefending(me);
+    if (this.bb.phase === 'defend') return this.decideDefending(world, me);
     if (this.bb.phase === 'loose') {
       if (this.bb.chaserIdxs[0] === this.idx) {
         this.intent = { kind: 'chase', sprint: true };
@@ -278,22 +278,61 @@ export class Brain {
     }
 
     const isWinger = me.id.role === 'FW' && Math.abs(me.id.anchor.y - 0.5) > 0.27;
+    const isWideDF = me.id.role === 'DF' && Math.abs(me.id.anchor.y - 0.5) > 0.3;
+    const carrierForJobs = this.bb.possessorIdx !== null ? world.players[this.bb.possessorIdx] : null;
     const candidates: { p: Vec2; bonus: number }[] = [{ p: this.wanderedAnchor(), bonus: 0 }];
     if (me.id.role !== 'DF') {
       candidates.push({ p: add(me.pos, add(scale(fwd, 11), vec(0, (goal.y - me.pos.y) * 0.35))), bonus: 0.1 }); // through
       candidates.push({ p: vec(ball.x + fwd.x * 13, (ball.y + anchor.y) / 2), bonus: 0 });                      // channel
       candidates.push({ p: add(anchor, scale(fwd, -6)), bonus: 0 });                                            // drop
       candidates.push({ p: add(ball, add(scale(fwd, 7), vec(0, anchor.y > ball.y ? 6 : -6))), bonus: 0 });      // support
+      // probe BOTH half-spaces ahead of the ball — the gap nobody fills is
+      // exactly the run the carrier is begging for
+      candidates.push({ p: vec(ball.x + fwd.x * 12, ball.y - 12), bonus: 0.15 });
+      candidates.push({ p: vec(ball.x + fwd.x * 12, ball.y + 12), bonus: 0.15 });
       if (isWinger) {
         // Hold the chalk high: width is the winger's whole job
         const wideY = me.id.anchor.y < 0.5 ? 3.5 : PITCH.width - 3.5;
         candidates.push({ p: vec(clamp(ball.x + fwd.x * 9, 4, PITCH.length - 4), wideY), bonus: 0.7 });
       }
+      // ball living wide: a central body attacks the FAR POST for the cutback
+      if (Math.abs(ball.y - PITCH.width / 2) > 16 && !isWinger && this.bb.axisOf(ball.x) > 58) {
+        const farY = PITCH.width / 2 + (ball.y < PITCH.width / 2 ? 7 : -7);
+        candidates.push({ p: vec(goal.x - fwd.x * 7, farY), bonus: 0.55 });
+      }
+      // third man: a teammate is taking a pass RIGHT NOW — run the layer
+      // beyond him so the next ball has somewhere to go before it exists
+      const rcv = this.bb.calledReceiver;
+      if (rcv >= 0 && rcv !== this.idx && dist(world.players[rcv].pos, me.pos) < 20) {
+        const beyond = add(world.players[rcv].pos, scale(fwd, 10));
+        const marker = this.nearestBelieved(me.pos, 6);
+        const slide = marker ? scale(norm(sub(me.pos, marker)), 4) : vec(0, 0);
+        candidates.push({ p: add(beyond, slide), bonus: 0.6 });
+      }
     } else {
       candidates.push({ p: add(anchor, scale(fwd, 4)), bonus: 0 });
+      // the OVERLAP: a wide defender bombs outside his winger when the ball
+      // works his flank in the final two-thirds
+      if (isWideDF && Math.sign(ball.y - PITCH.width / 2) === Math.sign(me.id.anchor.y - 0.5) && this.bb.axisOf(ball.x) > 42) {
+        const chalkY = me.id.anchor.y < 0.5 ? 3.5 : PITCH.width - 3.5;
+        candidates.push({ p: vec(clamp(ball.x + fwd.x * 12, 4, PITCH.length - 4), chalkY), bonus: 0.55 });
+      }
     }
 
-    const carrier = this.bb.possessorIdx !== null ? world.players[this.bb.possessorIdx] : null;
+    // The support auction's elected jobs override taste: the NEAR man shows
+    // at a 45 behind the ball, the DEPTH man stretches the last line — the
+    // triangle around the carrier always exists because someone OWNS each leg
+    if (this.bb.supportNearIdx === this.idx && carrierForJobs) {
+      const side = me.pos.y > carrierForJobs.pos.y ? 1 : -1;
+      candidates.push({ p: add(carrierForJobs.pos, add(scale(fwd, -6), vec(0, side * 7))), bonus: 1.0 });
+    }
+    if (this.bb.supportDepthIdx === this.idx) {
+      const lineAxis = clamp(this.bb.offsideAxis - 0.6, this.bb.axisOf(ball.x) + 6, 108);
+      const lineX = this.bb.team === 0 ? lineAxis : PITCH.length - lineAxis;
+      candidates.push({ p: vec(lineX, (goal.y + me.pos.y) / 2), bonus: 0.85 });
+    }
+
+    const carrier = carrierForJobs;
     let best = anchor;
     let bestScore = -Infinity;
     for (const c of candidates) {
@@ -321,9 +360,12 @@ export class Brain {
     const far = dist(me.pos, best) > 10;
     this.intent = { kind: 'goto', target: best, sprint: far && (me.id.role === 'FW' || this.rng.next() < 0.25) };
     this.commit = 0.9 + this.rng.next() * 1.2;
+    // An elected support job re-reads the play twice a second — the triangle
+    // tracks the carrier instead of chasing where he used to be
+    if (this.bb.supportNearIdx === this.idx || this.bb.supportDepthIdx === this.idx) this.commit = 0.5;
   }
 
-  private decideDefending(me: PlayerBody) {
+  private decideDefending(world: World, me: PlayerBody) {
     if (this.bb.presserIdx === this.idx) {
       this.intent = { kind: 'chase', sprint: true };
       return;
@@ -332,18 +374,26 @@ export class Brain {
       this.intent = { kind: 'cover' };
       return;
     }
-    // Zonal anchor, warped goal-side of the nearest believed threat in my zone
+    // Zonal anchor, warped goal-side of the nearest believed threat in my
+    // zone — then a step INTO the ball line, because the pass he's waiting
+    // for is the one to kill before it exists
     const anchor = this.wanderedAnchor();
     let target = anchor;
+    let marking = false;
     let bestD = 8;
     for (const opp of this.believedOpponents()) {
       const d = dist(opp, anchor);
       if (d < bestD) {
         bestD = d;
         target = add(opp, scale(norm(sub(this.bb.goalWeDefend(), opp)), 1.4));
+        marking = true;
       }
     }
-    this.intent = { kind: 'goto', target, sprint: dist(me.pos, target) > 12 };
+    if (marking) {
+      const toBall = sub(world.ball.pos, target);
+      if (len(toBall) > 2) target = add(target, scale(norm(toBall), 1.1));
+    }
+    this.intent = { kind: 'goto', target: this.clampPitch(target), sprint: dist(me.pos, target) > 12 };
   }
 
   // On the ball: shoot when the lane shows, feed the runs, drive the flank,

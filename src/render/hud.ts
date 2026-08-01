@@ -25,10 +25,17 @@ export class Hud {
   private scoreText: PixelText;
   private scoreTabs = new Graphics();
   private lastScore = '';
+  private penAim = new Graphics();
+  private penHint: PixelText;
+  private penState: { col: number; row: number } | null = null;
+  private penPulse = 0;
 
   constructor(assets: GameAssets) {
     this.sprintLabel = new PixelText(assets, 2, 0x9aa2b0);
     this.sprintLabel.text = 'SPRINT';
+    this.penHint = new PixelText(assets, 2, 0xffe27a);
+    this.penHint.text = 'WASD PICK A BIN - ENTER SHOOTS';
+    this.penHint.visible = false;
 
     this.clockText = new PixelText(assets, 3, 0xfff3c4);
 
@@ -40,7 +47,15 @@ export class Hud {
     this.banner.visible = false;
 
     this.scoreText = new PixelText(assets, 4);
-    this.root.addChild(this.scoreTabs, this.scoreText, this.clockText, this.sprintLabel, this.sprintBar, this.toast, this.banner);
+    this.root.addChild(this.scoreTabs, this.scoreText, this.clockText, this.sprintLabel, this.sprintBar, this.penAim, this.penHint, this.toast, this.banner);
+  }
+
+  // The spot-kick sight: a pixel goal mouth split into six bins. The shooter
+  // walks the gold bracket around; everything else stays out of the way.
+  setPenaltyAim(state: { col: number; row: number } | null) {
+    this.penState = state;
+    this.penHint.visible = state !== null;
+    if (!state) this.penAim.clear();
   }
 
   setClock(text: string) {
@@ -99,6 +114,49 @@ export class Hud {
 
   update(dt: number, w: number, h: number) {
     void w; void h;
+    // The penalty sight draws itself over the play: chunky white frame like
+    // the real goal furniture, six dark bins, the chosen one burning gold
+    this.penPulse += dt * 6;
+    if (this.penState) {
+      const g = this.penAim;
+      const binW = 64;
+      const binH = 44;
+      const frameW = binW * 3;
+      const frameH = binH * 2;
+      const x0 = Math.round(w / 2 - frameW / 2);
+      const y0 = Math.round(h * 0.3 - frameH / 2);
+      g.clear();
+      g.rect(x0 - 8, y0 - 8, frameW + 16, frameH + 12).fill({ color: 0x0a0e14, alpha: 0.55 });
+      // posts and bar, pixel-chunky
+      g.rect(x0 - 6, y0 - 6, frameW + 12, 6).fill({ color: 0xf2f5fa, alpha: 0.95 });
+      g.rect(x0 - 6, y0, 6, frameH + 4).fill({ color: 0xf2f5fa, alpha: 0.95 });
+      g.rect(x0 + frameW, y0, 6, frameH + 4).fill({ color: 0xf2f5fa, alpha: 0.95 });
+      for (let c = 0; c < 3; c++) {
+        for (let r = 0; r < 2; r++) {
+          const bx = x0 + c * binW;
+          const by = y0 + r * binH;
+          const sel = this.penState.col === c && this.penState.row === r;
+          g.rect(bx + 2, by + 2, binW - 4, binH - 4).fill({ color: sel ? 0x2a2410 : 0x10141c, alpha: sel ? 0.85 : 0.5 });
+          // net weave hint
+          for (let nx = bx + 6; nx < bx + binW - 4; nx += 8) g.rect(nx, by + 2, 1, binH - 4).fill({ color: 0xffffff, alpha: 0.06 });
+          for (let ny = by + 6; ny < by + binH - 4; ny += 8) g.rect(bx + 2, ny, binW - 4, 1).fill({ color: 0xffffff, alpha: 0.06 });
+          if (sel) {
+            const glow = 0.6 + 0.4 * Math.sin(this.penPulse);
+            const arm = 10;
+            const t = 3;
+            for (const [cx, cy, aw, ah] of [
+              [bx + 2, by + 2, arm, t], [bx + 2, by + 2, t, arm],
+              [bx + binW - 2 - arm, by + 2, arm, t], [bx + binW - 2 - t, by + 2, t, arm],
+              [bx + 2, by + binH - 2 - t, arm, t], [bx + 2, by + binH - 2 - arm, t, arm],
+              [bx + binW - 2 - arm, by + binH - 2 - t, arm, t], [bx + binW - 2 - t, by + binH - 2 - arm, t, arm],
+            ] as [number, number, number, number][]) {
+              g.rect(cx, cy, aw, ah).fill({ color: 0xffd95e, alpha: glow });
+            }
+          }
+        }
+      }
+      this.penHint.centerAt(w / 2, y0 + frameH + 18);
+    }
     // The sprint tank: twelve beveled cells that drain body by body — mint
     // legs, gold taxes, red empty (sprint locks below 5%). The next cell to
     // refill breathes while you recover; the whole rack shudders when locked.

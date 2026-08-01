@@ -23,7 +23,7 @@ describe('the save contest', () => {
 
 describe('the world cup class', () => {
   it('is exactly the pool the draft was promised', () => {
-    expect(POOL.length).toBe(195);
+    expect(POOL.length).toBe(203);
     const byRole = { GK: 0, DF: 0, MF: 0, FW: 0 };
     const names = new Set<string>();
     for (const [name, role, ovr, pace, agility, control, power, number] of POOL) {
@@ -39,8 +39,8 @@ describe('the world cup class', () => {
       expect(number).toBeGreaterThanOrEqual(1);
       expect(number).toBeLessThanOrEqual(26);
     }
-    expect(names.size).toBe(195); // nobody signed twice
-    expect(byRole).toEqual({ GK: 18, DF: 47, MF: 64, FW: 66 });
+    expect(names.size).toBe(203); // nobody signed twice
+    expect(byRole).toEqual({ GK: 19, DF: 44, MF: 70, FW: 70 });
   });
 
   it('every rarity shelf is stocked for every role, so the wheel always pays out', () => {

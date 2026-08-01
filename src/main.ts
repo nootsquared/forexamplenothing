@@ -64,6 +64,7 @@ async function boot() {
   let passHints: number[] = [];
   let hintClock = 0;
   let keeperAiming = false;
+  let penAim: { col: number; row: number } | null = null; // the shooter's chosen bin
   const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2, clicked: false, moved: false };
   const drag = { active: false, anchorX: 0, anchorY: 0 };
   const DRAG_FULL_PX = 260;
@@ -207,6 +208,7 @@ async function boot() {
       awayProfile: AI_PROFILES[setup.difficulty],
     });
     scene = new Scene(app, assets, match.world, loop);
+    if (import.meta.env.DEV) (window as unknown as { __match?: Match }).__match = match; // dev console handle
     match.world.players.forEach((p, i) => scene!.addPlayer(p.id.team === 0 ? 'home' : 'away', match!.names[i], p.id.number));
     scene.setVariant(MOODS[menu.moodIdx]);
     scene.toast(toss === 0 ? 'RED WINS THE TOSS' : 'BLUE WINS THE TOSS');
@@ -219,6 +221,7 @@ async function boot() {
     controls = new LocalControls();
     humanIdle = Infinity;
     keeperAiming = false;
+    penAim = null;
     halfCountdown = 0;
     drag.active = false;
     mouseKick = null;
@@ -232,8 +235,32 @@ async function boot() {
   }
 
   // ---- input plumbing ----------------------------------------------------
+  // The penalty sight eats UI keys first: WASD/arrows walk the bin, Enter
+  // pulls the trigger. Any key it doesn't claim falls through to the screens.
+  const penaltyKey = (code: string): boolean => {
+    if (screenName !== 'match' || paused || !penAim || !match || !scene) return false;
+    const pen = match.world.penalty;
+    if (pen?.phase !== 'aiming' || pen.team !== 0) return false;
+    const move: Record<string, [number, number]> = {
+      KeyA: [-1, 0], ArrowLeft: [-1, 0], KeyD: [1, 0], ArrowRight: [1, 0],
+      KeyW: [0, -1], ArrowUp: [0, -1], KeyS: [0, 1], ArrowDown: [0, 1],
+    };
+    if (move[code]) {
+      penAim.col = clamp(penAim.col + move[code][0], 0, 2);
+      penAim.row = clamp(penAim.row + move[code][1], 0, 1);
+      audio.ui('move');
+      return true;
+    }
+    if (code === 'Enter') {
+      match.world.takePenalty((penAim.col - 1) as -1 | 0 | 1, penAim.row === 0);
+      penAim = null;
+      scene.setPenaltyAim(null);
+      return true;
+    }
+    return false;
+  };
   const uiKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyF', 'KeyX'];
-  for (const code of uiKeys) kb.onPress(code, () => activeScreen?.key(code));
+  for (const code of uiKeys) kb.onPress(code, () => { if (!penaltyKey(code)) activeScreen?.key(code); });
   kb.onPress('Space', () => activeScreen?.key('Space'));
   kb.onPress('Escape', () => {
     if (screenName === 'menu') return activeScreen?.key('Escape'); // menu pages or match setup
@@ -340,19 +367,39 @@ async function boot() {
       input.tackle = true;
     }
 
-    // YOUR body is always yours — an empty input means he holds, not plays on
-    const overrides: Record<number, PlayerInput> = { [cursor.idx]: input };
+    // YOUR body is always yours — an empty input means he holds, not plays on.
+    // While you aim a penalty the body waits on the spot; the keys own the sight.
+    const penMine = world.penalty?.phase === 'aiming' && world.penalty.team === 0;
+    const overrides: Record<number, PlayerInput> = {
+      [cursor.idx]: penMine ? { move: vec(), sprint: false, kickCharging: false, kickReleased: null } : input,
+    };
     if (keeperAiming) overrides[gkIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+    // A team-0 ball rolling AT your keeper is a backpass in flight: he stands
+    // ready for his hands — his brain may not panic-boot it while it arrives
+    if (!keeperAiming && gkIdx >= 0 && cursor.idx !== gkIdx && world.restartLock <= 0 &&
+        world.lastTouch?.team === 0 && world.ball.speed() > 1.5) {
+      const gk = world.players[gkIdx];
+      const toGk = vec(gk.pos.x - world.ball.pos.x, gk.pos.y - world.ball.pos.y);
+      const dGk = Math.hypot(toGk.x, toGk.y);
+      const sp = world.ball.speed();
+      const closing = dGk > 1e-4 ? (world.ball.vel.x * toGk.x + world.ball.vel.y * toGk.y) / dGk : 0;
+      const missBy = dGk > 1e-4 ? Math.abs(world.ball.vel.x * toGk.y - world.ball.vel.y * toGk.x) / sp : 99;
+      if (dGk < 15 && closing > 1.5 && missBy < 2.4) {
+        overrides[gkIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+      }
+    }
     advanceMatch(match, dt, overrides);
     cursor.update(world, match.teamBrains[0], dt);
     matchAudio.tick(match, cursor.idx, dt);
 
-    // A backpass into your keeper's hands opens his distribution sight too —
-    // recycling through the goalie is a real tool, not a brain-driven shuffle
+    // A ball your own team plays back to the keeper is HIS — always. The
+    // moment it arrives in his reach he takes it into his hands and the
+    // distribution sight opens. Recycling through the goalie is a real tool.
     gkHoldCooldown = Math.max(0, gkHoldCooldown - dt);
-    if (!keeperAiming && humanIdle < 2.5 && gkHoldCooldown <= 0 && world.restartLock <= 0 &&
-        gkIdx >= 0 && match.teamBrains[0].possessorIdx === gkIdx && world.ball.speed() < 5 &&
-        dist(world.players[gkIdx].pos, world.ball.pos) < 1.3) {
+    if (!keeperAiming && gkHoldCooldown <= 0 && world.restartLock <= 0 && gkIdx >= 0 &&
+        world.lastTouch?.team === 0 && world.ball.z < 1.2 && world.ball.speed() < 9 &&
+        dist(world.players[gkIdx].pos, world.ball.pos) < 1.6 &&
+        world.ball.pos.x < 18 && Math.abs(world.ball.pos.y - 37) < 21.5) {
       world.gkPickup(gkIdx);
       keeperAiming = true;
       world.holdLock = true;
@@ -367,6 +414,15 @@ async function boot() {
       if ((caught || goalKick) && humanIdle < 2.5) {
         keeperAiming = true;
         world.holdLock = true;
+      }
+      // YOUR restarts belong to YOU: throw-ins, corners and free kicks hand
+      // you the taker and the game waits for your delivery — no gray body
+      // ever plays your dead ball for you
+      if (e.kind === 'restart' && e.team === 0 && e.taker >= 0 && e.restart !== 'goalkick') cursor.assign(e.taker);
+      if (e.kind === 'kickoff' && e.team === 0 && e.taker >= 0) cursor.assign(e.taker);
+      // A penalty for US: you become the shooter and the sight opens
+      if (e.kind === 'foul' && e.penalty && world.penalty?.team === 0) {
+        cursor.assign(world.penalty.shooterIdx);
       }
       if (e.kind === 'fulltime') fulltimeDelay = 1.5;
       if (e.kind === 'half') halfCountdown = 4.3; // HALF TIME banner first, then 3-2-1
@@ -388,6 +444,16 @@ async function boot() {
         audio.play('whistle-kickoff');
       }
     }
+    // The penalty sight rides the world's state — it opens for your spot
+    // kicks and folds away the instant the ball is struck or the play dies
+    if (penMine || (world.penalty?.phase === 'aiming' && world.penalty.team === 0)) {
+      if (!penAim) penAim = { col: 2, row: 1 };
+      scene.setPenaltyAim(penAim);
+    } else if (penAim) {
+      penAim = null;
+      scene.setPenaltyAim(null);
+    }
+
     if (keeperAiming) {
       const gk = world.players[gkIdx];
       if (humanIdle >= 6 || world.restartLock <= 0) {

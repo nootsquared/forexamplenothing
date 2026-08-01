@@ -10,7 +10,7 @@ const KICK_BUFFER = 0.28;    // released kick fires as soon as the ball is in re
 const BALL_KEEPOUT = 0.52;   // body ring past the ball's DRAWN edge — sprites never interpenetrate
 const CONTACT_RANGE = 0.6;   // a real foot's reach — the ball is NEVER played from further
 const STEER_RANGE = 1.0;     // toe-stretch reach while veering onto a new line
-const SPRINT_REACH = 0.85;   // the full-pace toe stretch — sprinting never shrinks your feet
+const SPRINT_REACH = 1.0;    // the full-pace toe stretch — sprinting never shrinks your feet
 const COLLECT_RANGE = 1.35;  // the sole-drag around the body on a hard turn reaches further
 const CHOP_RANGE = 0.85;     // planting a cut stretches the leg a touch further
 const CUSHION_RANGE = 1.0;   // stretching to kill a ball arriving with pace
@@ -40,31 +40,45 @@ export class World {
   restartExclusion = 0;
   // Who takes the next kickoff — the toss winner opens, the conceder resumes
   kickoffTeam: 0 | 1 = 0;
-  // Offside: players caught beyond the second-last defender when a teammate
-  // kicked — the flag goes up if one of them touches the ball next
-  private offsideFlags: number[] = [];
-  private offsideTeam: 0 | 1 | null = null;
-  private sinceRestart = 0; // restart deliveries are exempt, like the real law
-  private lastTouchKey = '';
   // An aiming keeper pins the beat open (capped — nobody stalls a match)
   holdLock = false;
+  // Which keeper has the ball IN HAND right now (-1 = nobody) — set by a
+  // catch or a pickup, cleared by his launch or the beat lapsing
+  holdingGk = -1;
   private holdT = 0;
   private rng = new Rng(20260731);
   private goalScored = false;
   private goalResetT = 0;
   // A goal buys the scorers a window to lose their minds before the spot
   celebration: { team: 0 | 1; scorer: number; t: number } | null = null;
+  // The spot kick: shooter vs keeper, everyone else outside the box. 'aiming'
+  // freezes the world for the choice; 'flight' rides the dive to its verdict.
+  penalty: { team: 0 | 1; shooterIdx: number; keeperIdx: number; phase: 'aiming' | 'flight'; diveDir: number; t: number } | null = null;
+  private foulCooldown = 0;      // the whistle stays occasional, never a fest
+  private lungeRolled = new Set<number>(); // one foul roll per lunge, not per tick
 
   step(dt: number, inputs: PlayerInput[]) {
     this.events.length = 0;
-    this.sinceRestart = Math.max(0, this.sinceRestart - dt);
+    this.foulCooldown = Math.max(0, this.foulCooldown - dt);
     this.ball.savePrev();
     for (const p of this.players) p.savePrev();
+
+    // The spot kick owns time: aiming pins the dead-ball beat open, and the
+    // flight keeps the keeper committed to the dive he guessed
+    if (this.penalty?.phase === 'aiming') this.restartLock = Math.max(this.restartLock, 0.06);
+    if (this.penalty?.phase === 'flight') {
+      const pen = this.penalty;
+      pen.t -= dt;
+      const gk = this.players[pen.keeperIdx];
+      if (pen.t > 0.45) gk.vel = vec(gk.vel.x, pen.diveDir * 8.2);
+      if (pen.t <= 0) this.penalty = null;
+    }
 
     const ballLive = this.restartLock <= 0;
     this.players.forEach((p, i) => {
       const input = inputs[i] ?? { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
       p.update(dt, input, this.events);
+      if (p.lungeTimer <= 0) this.lungeRolled.delete(i);
       if (!ballLive) return;
       this.handleKick(p, input, dt, i);
       this.resolveLunge(p, i);
@@ -72,6 +86,24 @@ export class World {
       this.collideBall(p, i);
     });
     this.separateBodies();
+
+    // While the spot kick is being aimed, the duel holds its marks — the
+    // shooter over the ball, the keeper on his line, no brain wanders off
+    if (this.penalty?.phase === 'aiming') {
+      const pen = this.penalty;
+      const sgn = pen.team === 0 ? 1 : -1;
+      const goalX = pen.team === 0 ? PITCH.length : 0;
+      const sp = this.players[pen.shooterIdx];
+      sp.pos = vec(goalX - sgn * 12.7, PITCH.width / 2);
+      sp.vel = vec();
+      sp.facing = vec(sgn, 0);
+      if (pen.keeperIdx >= 0) {
+        const gk = this.players[pen.keeperIdx];
+        gk.pos = vec(goalX - sgn * 0.6, PITCH.width / 2);
+        gk.vel = vec();
+        gk.facing = vec(-sgn, 0);
+      }
+    }
 
     if (ballLive) {
       this.ball.update(dt, this.surface, this.events);
@@ -87,6 +119,7 @@ export class World {
       if (this.restartLock <= 0) {
         this.holdLock = false;
         this.holdT = 0;
+        this.holdingGk = -1;
       }
       this.ball.vel = vec();
       this.ball.savePrev();
@@ -96,7 +129,10 @@ export class World {
     if (ballLive && this.restartExclusion > 0 && this.ball.speed() > 2) this.restartExclusion = 0;
     if (this.restartExclusion > 0 && this.lastTouch) {
       for (const p of this.players) {
-        if (p.id.team === this.lastTouch.team) continue;
+        // during a spot kick BOTH teams hold the ring — only the duel stays in
+        if (this.penalty?.phase === 'aiming') {
+          if (p === this.players[this.penalty.shooterIdx] || p === this.players[this.penalty.keeperIdx]) continue;
+        } else if (p.id.team === this.lastTouch.team) continue;
         const away = sub(p.pos, this.ball.pos);
         const d = len(away);
         if (d < this.restartExclusion) {
@@ -105,55 +141,8 @@ export class World {
         }
       }
     }
-    this.checkOffside();
     this.collideGoalFrames();
     this.handleGoalsAndBounds(dt);
-  }
-
-  // At the kick: who's standing beyond the second-last defender AND the ball,
-  // in the opponent's half? They're the ones who may not touch it next.
-  private snapshotOffside(kickerIdx: number) {
-    this.offsideFlags = [];
-    this.offsideTeam = null;
-    if (this.sinceRestart > 0) return; // no offside straight from a restart
-    const team = this.players[kickerIdx].id.team;
-    const ax = (x: number) => (team === 0 ? x : PITCH.length - x);
-    const oppAxes = this.players
-      .filter((p) => p.id.team !== team)
-      .map((p) => ax(p.pos.x))
-      .sort((a, b) => b - a);
-    const line = Math.max(PITCH.length / 2, oppAxes[1] ?? PITCH.length, ax(this.ball.pos.x));
-    this.offsideTeam = team;
-    this.players.forEach((p, i) => {
-      if (p.id.team !== team || i === kickerIdx || p.id.role === 'GK') return;
-      if (ax(p.pos.x) > line + 0.2) this.offsideFlags.push(i);
-    });
-  }
-
-  // The next NEW touch judges it: a flagged man playing the ball is offside —
-  // free kick to the defenders from where he touched it
-  private checkOffside() {
-    const lt = this.lastTouch;
-    const key = lt ? `${lt.team}:${lt.idx}` : '';
-    const changed = key !== this.lastTouchKey;
-    this.lastTouchKey = key;
-    if (!changed || !lt || this.offsideTeam === null) return;
-    if (lt.team !== this.offsideTeam) {
-      this.offsideFlags = [];
-      this.offsideTeam = null;
-      return;
-    }
-    if (this.offsideFlags.includes(lt.idx)) {
-      const p = this.players[lt.idx];
-      this.offsideFlags = [];
-      this.offsideTeam = null;
-      this.events.push({ kind: 'offside', x: p.pos.x, y: p.pos.y });
-      this.awardRestart(
-        vec(clamp(p.pos.x, 2, PITCH.length - 2), clamp(p.pos.y, 2, PITCH.width - 2)),
-        lt.team === 0 ? 1 : 0,
-        'offside',
-      );
-    }
   }
 
   // Our keeper scoops up a ball played back into his hands: the game takes
@@ -169,6 +158,7 @@ export class World {
     this.ball.savePrev();
     this.restartLock = 0.85;
     this.restartExclusion = 6.5;
+    this.holdingGk = idx;
     this.lastTouch = { team: p.id.team, idx };
   }
 
@@ -200,8 +190,8 @@ export class World {
     this.restartLock = 0;
     this.holdLock = false;
     this.holdT = 0;
+    this.holdingGk = -1;
     this.restartExclusion = 0;
-    this.sinceRestart = 1.5; // a keeper's delivery is a restart — no offside from it
     p.kickCooldown = 0.5;
     p.touchCooldown = 0.6;
     this.lastTouch = { team: p.id.team, idx };
@@ -228,7 +218,10 @@ export class World {
     // A keeper's dive REACH is his stats: agile hands get to more ball
     const reach = p.id.role === 'GK' ? 0.9 + p.stats.agility * 0.5 : 0.8;
     const handsD = dist(p.pos, this.ball.pos);
-    if (handsD > reach) return;
+    if (handsD > reach) {
+      this.maybeFoul(p, idx); // flew past the ball — did he catch the man?
+      return;
+    }
     // A keeper's lunge is a CONTEST: hands versus pace. A slow ball at his
     // chest dies in the gloves; a rocket at full stretch gets fingertips at
     // best — and the worse he's beaten, the thinner the touch.
@@ -247,6 +240,7 @@ export class World {
         p.touchCooldown = 0.2;
         this.restartLock = 0.85;
         this.restartExclusion = 6.5;
+        this.holdingGk = idx;
         this.events.push({ kind: 'save', x: this.ball.pos.x, y: this.ball.pos.y });
       } else {
         const failFactor = (roll - pCatch) / Math.max(0.05, 1 - pCatch);
@@ -281,6 +275,112 @@ export class World {
     }
     this.lastTouch = { team: p.id.team, idx };
     this.events.push({ kind: 'steal', x: this.ball.pos.x, y: this.ball.pos.y });
+  }
+
+  // A lunge that misses the ball but arrives through the carrier is a foul —
+  // OCCASIONALLY. One roll per lunge, a long grace between whistles, and the
+  // spot decides the sentence: his own box is a penalty, anywhere else a free
+  // kick. Keepers contest with hands and stay out of this entirely.
+  private maybeFoul(p: PlayerBody, idx: number) {
+    if (p.id.role === 'GK' || this.penalty || this.foulCooldown > 0) return;
+    if (this.lungeRolled.has(idx)) return;
+    const carrierIdx = this.possessor();
+    if (carrierIdx === null) return;
+    const carrier = this.players[carrierIdx];
+    if (carrier.id.team === p.id.team || dist(p.pos, carrier.pos) > 0.95) return;
+    this.lungeRolled.add(idx);
+    if (this.rng.next() > 0.3) return; // most late arrivals get away with it
+    p.lungeTimer = 0;
+    p.tackleCooldown = Math.max(p.tackleCooldown, 1.2);
+    this.foulCooldown = 12;
+    const boxDeep = p.id.team === 0 ? carrier.pos.x < 16.5 : carrier.pos.x > PITCH.length - 16.5;
+    const inBox = boxDeep && Math.abs(carrier.pos.y - PITCH.width / 2) < 20.16;
+    this.events.push({ kind: 'foul', x: carrier.pos.x, y: carrier.pos.y, penalty: inBox });
+    if (inBox) {
+      this.beginPenalty(carrier.id.team, carrierIdx);
+    } else {
+      this.awardRestart(
+        vec(clamp(carrier.pos.x, 2, PITCH.length - 2), clamp(carrier.pos.y, 2, PITCH.width - 2)),
+        carrier.id.team,
+        'freekick',
+      );
+    }
+  }
+
+  // The stage set: ball on the spot, the fouled man over it (his keeper mate
+  // never takes one), the keeper alone on his line, everyone else held out
+  beginPenalty(team: 0 | 1, shooterIdx: number) {
+    const goalX = team === 0 ? PITCH.length : 0;
+    const sgn = team === 0 ? 1 : -1;
+    const spot = vec(goalX - sgn * 11, PITCH.width / 2);
+    let shooter = shooterIdx;
+    if (this.players[shooter].id.role === 'GK') {
+      let bestQ = -1;
+      this.players.forEach((p, i) => {
+        if (p.id.team !== team || p.id.role === 'GK') return;
+        const q = p.stats.control * 0.55 + p.stats.power * 0.45;
+        if (q > bestQ) { bestQ = q; shooter = i; }
+      });
+    }
+    let keeper = -1;
+    this.players.forEach((p, i) => {
+      if (p.id.team !== team && p.id.role === 'GK') keeper = i;
+    });
+    this.ball.pos = vec(spot.x, spot.y);
+    this.ball.vel = vec();
+    this.ball.z = 0;
+    this.ball.vz = 0;
+    this.ball.spin = 0;
+    this.ball.savePrev();
+    const sp = this.players[shooter];
+    sp.pos = vec(spot.x - sgn * 1.7, spot.y);
+    sp.vel = vec();
+    sp.facing = vec(sgn, 0);
+    sp.savePrev();
+    if (keeper >= 0) {
+      const gk = this.players[keeper];
+      gk.pos = vec(goalX - sgn * 0.6, PITCH.width / 2);
+      gk.vel = vec();
+      gk.facing = vec(-sgn, 0);
+      gk.savePrev();
+    }
+    this.penalty = { team, shooterIdx: shooter, keeperIdx: keeper, phase: 'aiming', diveDir: 0, t: 0 };
+    this.restartLock = 0.6;
+    this.restartExclusion = 9.15;
+    this.lastTouch = { team, idx: shooter };
+  }
+
+  // The duel resolves through the live sim: the strike flies at the chosen
+  // bin (quality tightens the spray), the keeper commits to a guessed dive,
+  // and the existing hands-versus-pace contest calls catch, parry, or goal.
+  takePenalty(side: -1 | 0 | 1, high: boolean) {
+    const pen = this.penalty;
+    if (!pen || pen.phase !== 'aiming') return;
+    const shooter = this.players[pen.shooterIdx];
+    const goalX = pen.team === 0 ? PITCH.length : 0;
+    const aimY = PITCH.width / 2 + side * (PITCH.goalWidth / 2 - 0.55);
+    const q = clamp(shooter.stats.control * 0.55 + shooter.stats.power * 0.45, 0, 1);
+    const wobble = this.rng.gauss() * (0.018 + (1 - q) * 0.075);
+    const dir = rotate(norm(vec(goalX - this.ball.pos.x, aimY - this.ball.pos.y)), wobble);
+    const speed = 19.5 + q * 4;
+    const flight = 11 / speed;
+    const aimZ = high ? PITCH.goalHeight - 0.5 : 0.12;
+    this.ball.deadenOnLand = false;
+    this.ball.vel = scale(dir, speed);
+    this.ball.vz = (aimZ + 0.5 * GRAVITY * flight * flight) / flight;
+    this.ball.z = 0.01;
+    this.ball.spin = 0;
+    shooter.kickCooldown = 0.6;
+    shooter.touchCooldown = 0.5;
+    // the keeper guesses: near post, far post, or stand his ground
+    const guess = this.rng.next();
+    const dive = guess < 0.4 ? -1 : guess < 0.6 ? 0 : 1;
+    if (pen.keeperIdx >= 0) this.players[pen.keeperIdx].lungeTimer = 0.5;
+    this.penalty = { ...pen, phase: 'flight', diveDir: dive, t: 0.9 };
+    this.restartLock = 0;
+    this.restartExclusion = 0;
+    this.lastTouch = { team: pen.team, idx: pen.shooterIdx };
+    this.events.push({ kind: 'kick', x: this.ball.pos.x, y: this.ball.pos.y, power: 0.95, idx: pen.shooterIdx });
   }
 
   // Bodies shoulder each other aside instead of stacking — 22 solid players
@@ -347,7 +447,6 @@ export class World {
     p.playLock = 0.45;
     this.lastTouch = { team: p.id.team, idx };
     this.events.push({ kind: 'kick', x: this.ball.pos.x, y: this.ball.pos.y, power, idx });
-    this.snapshotOffside(idx);
   }
 
   // Dribbling, built from nothing but real foot-to-ball contacts. Every touch
@@ -408,8 +507,11 @@ export class World {
     // ping-pong forever. Real feet DRAG it around: a stretched sole-roll along
     // the body ring toward the front of the run, then normal touches take over.
     // Only while genuinely steering — an idle body never stirs the ball.
+    // The collect keeps up with the man: at a sprint the ball leaves the boot
+    // faster, so the speed gate scales with the body or a full-tilt turn would
+    // refuse the drag exactly when it's needed most
     const behind = d > 1e-6 && (toBall.x * steer.x + toBall.y * steer.y) / d < 0.1;
-    if (behind && len(input.move) > 0.3 && d < COLLECT_RANGE && this.ball.speed() < 7.5) {
+    if (behind && len(input.move) > 0.3 && d < COLLECT_RANGE && this.ball.speed() < Math.max(7.5, p.speed() * 1.25)) {
       // Aim the collect at a spot ahead-BESIDE the run, on the side the ball
       // already leans: its straight path skims the body ring, the roll-around
       // carries it to the front, and the pivot costs a beat of pace — you
@@ -437,7 +539,9 @@ export class World {
       const soft = p.isCharging || p.pendingKick;
       // Touches stay close: the ball works ahead of the boot, never away from it.
       // Sprint knocks ride barely past stride pace — glued, not booted ahead.
-      const target = pSpeed * (soft ? 0.95 : p.isSprinting ? 1.08 : 1.02) + (soft ? 0.2 : p.isSprinting ? 0.36 : 0.42);
+      // Sprint knocks sit barely past stride pace — the ball stays a boot-length
+      // ahead, so full speed carries the same authority as a walk
+      const target = pSpeed * (soft ? 0.95 : p.isSprinting ? 1.04 : 1.02) + (soft ? 0.2 : p.isSprinting ? 0.3 : 0.42);
       // Every touch CONVERGES on the dominant-foot lane — a point ahead-right
       // of the run — so a ball caught on the wrong foot or the edge of the
       // boot comes back across in a knock or two instead of bleeding away.
@@ -452,7 +556,7 @@ export class World {
         scale(this.ball.vel, MOMENTUM_KEPT),
         scale(rotate(knock, wobble), target * (1 - MOMENTUM_KEPT)),
       );
-      touch(veering ? 0.1 : p.isSprinting ? 0.12 : 0.1, p.isSprinting);
+      touch(0.1, p.isSprinting);
     } else if (d < CONTACT_RANGE && this.ball.speed() > 1.0) {
       // Standing trap: kill most of the pace, let the rest roll off the boot
       this.ball.vel = add(scale(this.ball.vel, 0.25), scale(p.facing, 0.3));
@@ -591,7 +695,7 @@ export class World {
 
   // Place the ball dead, set the right taker walking onto it (the KEEPER for
   // goal kicks), and give the moment a broadcast beat before play resumes
-  private awardRestart(spot: Vec2, team: 0 | 1, restart: 'throwin' | 'corner' | 'goalkick' | 'offside') {
+  private awardRestart(spot: Vec2, team: 0 | 1, restart: 'throwin' | 'corner' | 'goalkick' | 'freekick') {
     let taker = -1;
     let bestD = Infinity;
     this.players.forEach((p, i) => {
@@ -618,9 +722,6 @@ export class World {
     }
     this.restartLock = 1.25;
     this.restartExclusion = restart === 'goalkick' ? 11 : 6.5;
-    this.sinceRestart = 1.5;
-    this.offsideFlags = [];
-    this.offsideTeam = null;
     this.lastTouch = taker >= 0 ? { team, idx: taker } : null;
     this.events.push({ kind: 'restart', taker, team, restart });
   }
@@ -666,9 +767,6 @@ export class World {
     this.lastTouch = taker >= 0 ? { team: this.kickoffTeam, idx: taker } : null;
     this.restartLock = 1.1;         // a kickoff beat before the next chapter
     this.restartExclusion = 9.15;   // the center circle belongs to the taker
-    this.sinceRestart = 1.5;
-    this.offsideFlags = [];
-    this.offsideTeam = null;
     this.events.push({ kind: 'kickoff', team: this.kickoffTeam, taker });
   }
 }

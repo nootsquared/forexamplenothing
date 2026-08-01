@@ -1,14 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { vec } from '../src/core/math';
+import { vec, dist } from '../src/core/math';
 import { createMatch, advanceMatch } from '../src/match';
 import { createDraft, aiPickIndex, pick, pickAcademy, needsOf, canPick, QUOTA, SQUAD_SIZE, quickSplit, toSquad } from '../src/data/draft';
 import { priceOf, PLAYER_POOL } from '../src/data/players';
 import { FORMATIONS } from '../src/data/formations';
 import { Role } from '../src/data/formations';
 import { PITCH } from '../src/sim/constants';
-import { AI_PROFILES, AiProfile } from '../src/ai/blackboard';
+import { AI_PROFILES, AiProfile, SHARP, TeamBrain } from '../src/ai/blackboard';
+import { World } from '../src/sim/world';
+import { PlayerBody } from '../src/sim/player';
+import { Brain } from '../src/ai/brain';
 
 const DT = 1 / 60;
+const archStats = { topSpeed: 6, sprintSpeed: 8.4, accel: 10, agility: 0.8, control: 0.75, power: 0.7 };
 
 describe('the match clock', () => {
   it('runs two halves with a kickoff at the break and a whistle at the end', () => {
@@ -157,21 +161,43 @@ describe('the broadcast ledger', () => {
 });
 
 describe('difficulty wears the brain', () => {
-  it('an easy-profile CPU misplaces more of its passes and defends softer', () => {
-    const run = (profile?: AiProfile) => {
-      const m = createMatch(profile ? { awayProfile: profile } : {});
-      for (let t = 0; t < 110 * 60; t++) advanceMatch(m, DT); // long enough that scatter shows through the noise
-      const s = m.stats;
-      return {
-        awayAcc: s.passesGood[1] / Math.max(1, s.passes[1]),
-        homeAcc: s.passesGood[0] / Math.max(1, s.passes[0]),
-        awayPasses: s.passes[1],
-      };
+  it('an easy press CONTAINS the carrier; a sharp press eats him', () => {
+    // The lever itself, staged clean: one man on the ball, one man pressing
+    const duel = (profile: AiProfile) => {
+      const world = new World();
+      const carrier = new PlayerBody(vec(60, 37), archStats, { team: 0, role: 'MF', anchor: vec(0.5, 0.5), number: 8 });
+      const presser = new PlayerBody(vec(70, 37), archStats, { team: 1, role: 'MF', anchor: vec(0.5, 0.5), number: 6 });
+      world.players.push(carrier, presser);
+      world.ball.pos = vec(60.6, 37);
+      const tb0 = new TeamBrain(0);
+      const tb1 = new TeamBrain(1);
+      tb1.profile = profile;
+      const brain = new Brain(1, tb1);
+      const idleIn = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+      let standoff = 0;
+      let samples = 0;
+      for (let t = 0; t < 60 * 6; t++) {
+        world.ball.pos = vec(60.6, 37); // the carrier shields it in place
+        world.ball.vel = vec();
+        carrier.pos = vec(60, 37);
+        tb0.update(world, DT);
+        tb1.update(world, DT);
+        world.step(DT, [idleIn, brain.tick(world, DT)]);
+        if (t > 60 * 3) { standoff += dist(presser.pos, carrier.pos); samples++; }
+      }
+      return standoff / samples;
     };
-    const easy = run(AI_PROFILES[0]);
-    const sharp = run();
-    expect(easy.awayPasses).toBeGreaterThan(3); // they still play, just worse
-    expect(easy.awayAcc).toBeLessThan(sharp.awayAcc); // scatter costs them balls
-    expect(easy.homeAcc).toBeGreaterThan(0.2); // and the game stays football
+    const easy = duel(AI_PROFILES[0]);
+    const sharp = duel(SHARP);
+    expect(easy).toBeGreaterThan(sharp + 0.7); // the mercy is measured in meters
+    expect(sharp).toBeLessThan(2.2);           // and the razor really arrives
+  });
+
+  it('an easy-profile CPU still plays real football', () => {
+    const m = createMatch({ awayProfile: AI_PROFILES[0] });
+    for (let t = 0; t < 90 * 60; t++) advanceMatch(m, DT);
+    const s = m.stats;
+    expect(s.passes[1]).toBeGreaterThan(3);
+    expect(s.passesGood[0] / Math.max(1, s.passes[0])).toBeGreaterThan(0.2);
   });
 });

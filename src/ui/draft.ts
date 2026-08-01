@@ -153,16 +153,31 @@ class CardBoard extends Container {
     const { W, H } = this;
     g.clear();
     g.rect(0, 0, W, H).fill({ color: 0x0b1c10, alpha: 0.94 });
-    g.rect(0, 0, W, 1).fill({ color: 0xfff8e0, alpha: 0.2 });
-    g.rect(0, H - 1, W, 1).fill({ color: 0x000000, alpha: 0.45 });
-    // mown bands sell it as turf, chalk sells it as a pitch
-    for (let y = 0; y < H; y += 44) g.rect(1, y, W - 2, 22).fill({ color: 0xffffff, alpha: 0.016 });
-    const chalk = { width: 1, color: 0xdfe8da, alpha: 0.28 };
-    g.rect(8, 8, W - 16, H - 16).stroke(chalk);
-    g.moveTo(8, H / 2).lineTo(W - 8, H / 2).stroke(chalk);
-    g.circle(W / 2, H / 2, 26).stroke(chalk);
-    g.rect(W / 2 - 52, 8, 104, 40).stroke(chalk);      // their box, up top
-    g.rect(W / 2 - 52, H - 48, 104, 40).stroke(chalk); // our box, at the bottom
+    // beveled pixel frame, same grammar as the menu panels
+    g.rect(0, 0, W, 2).fill({ color: 0xfff8e0, alpha: 0.16 });
+    g.rect(0, H - 2, W, 2).fill({ color: 0x000000, alpha: 0.5 });
+    g.rect(0, 0, 2, H).fill({ color: 0xfff8e0, alpha: 0.08 });
+    g.rect(W - 2, 0, 2, H).fill({ color: 0x000000, alpha: 0.35 });
+    // mown bands sell it as turf, chunky stepped chalk sells it as a pitch
+    for (let y = 0; y < H; y += 44) g.rect(2, y, W - 4, 22).fill({ color: 0xffffff, alpha: 0.016 });
+    const chalk = (x: number, y: number, w: number, h: number) =>
+      g.rect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)).fill({ color: 0xdfe8da, alpha: 0.3 });
+    const L = 10, R = W - 10, T = 10, B = H - 10;
+    chalk(L, T, R - L, 2); chalk(L, B - 2, R - L, 2);           // goal lines
+    chalk(L, T, 2, B - T); chalk(R - 2, T, 2, B - T);           // touchlines
+    chalk(L, H / 2 - 1, R - L, 2);                              // halfway
+    // the center circle, stepped like a sprite — 2px stones on a squashed ring
+    for (let a = 0; a < 48; a++) {
+      const th = (a / 48) * Math.PI * 2;
+      chalk(W / 2 + Math.cos(th) * 27 - 1, H / 2 + Math.sin(th) * 24 - 1, 2, 2);
+    }
+    chalk(W / 2 - 1, H / 2 - 1, 2, 2);                          // center spot
+    const boxW = Math.min(104, W - 80);
+    chalk(W / 2 - boxW / 2, T, 2, 38); chalk(W / 2 + boxW / 2 - 2, T, 2, 38);
+    chalk(W / 2 - boxW / 2, T + 36, boxW, 2);                   // their box, up top
+    chalk(W / 2 - boxW / 2, B - 38, 2, 38); chalk(W / 2 + boxW / 2 - 2, B - 38, 2, 38);
+    chalk(W / 2 - boxW / 2, B - 38, boxW, 2);                   // our box, at the bottom
+    chalk(W / 2 - 1, T + 26, 2, 2); chalk(W / 2 - 1, B - 28, 2, 2); // penalty spots
   }
 
   setShape(shapeId: string) {
@@ -191,8 +206,8 @@ class CardBoard extends Container {
         for (let j = i + 1; j < this.slots.length; j++) {
           const a = this.slots[i];
           const b = this.slots[j];
-          const ox = cw + 6 - Math.abs(a.x - b.x);
-          const oy = ch + 6 - Math.abs(a.y - b.y);
+          const ox = cw + 10 - Math.abs(a.x - b.x);
+          const oy = ch + 10 - Math.abs(a.y - b.y);
           if (ox <= 0 || oy <= 0) continue;
           moved = true;
           if (ox < oy) {
@@ -227,27 +242,29 @@ class CardBoard extends Container {
     this.slots.forEach((slot, i) => {
       const entry = this.entries[i] ?? null;
       if (!entry) {
+        // a beveled pixel tile with role-colored corner brackets: the open chair
         const empty = new Graphics();
-        // a dashed pixel outline: the slot waiting for its card
-        const dash = 4;
-        for (let x = 0; x < cw - dash; x += dash * 2) {
-          empty.rect(slot.x + x, slot.y, dash, 1).fill({ color: ROLE_TINT[slot.role], alpha: 0.5 });
-          empty.rect(slot.x + x, slot.y + ch - 1, dash, 1).fill({ color: ROLE_TINT[slot.role], alpha: 0.5 });
+        const tint = ROLE_TINT[slot.role];
+        empty.rect(slot.x, slot.y, cw, ch).fill({ color: 0x0a0f16, alpha: 0.8 });
+        empty.rect(slot.x, slot.y, cw, 1).fill({ color: 0xfff8e0, alpha: 0.12 });
+        empty.rect(slot.x, slot.y + ch - 1, cw, 1).fill({ color: 0x000000, alpha: 0.55 });
+        const arm = 8;
+        const brackets: [number, number, number, number][] = [
+          [0, 0, arm, 2], [0, 0, 2, arm], [cw - arm, 0, arm, 2], [cw - 2, 0, 2, arm],
+          [0, ch - 2, arm, 2], [0, ch - arm, 2, arm], [cw - arm, ch - 2, arm, 2], [cw - 2, ch - arm, 2, arm],
+        ];
+        for (const [bx, by, bw, bh] of brackets) {
+          empty.rect(slot.x + bx, slot.y + by, bw, bh).fill({ color: tint, alpha: 0.9 });
         }
-        for (let y = 0; y < ch - dash; y += dash * 2) {
-          empty.rect(slot.x, slot.y + y, 1, dash).fill({ color: ROLE_TINT[slot.role], alpha: 0.5 });
-          empty.rect(slot.x + cw - 1, slot.y + y, 1, dash).fill({ color: ROLE_TINT[slot.role], alpha: 0.5 });
-        }
-        empty.rect(slot.x, slot.y, cw, ch).fill({ color: 0x0a0e14, alpha: 0.35 });
-        const role = new PixelText(this.assets, 2, ROLE_TINT[slot.role]);
+        const role = new PixelText(this.assets, 2, tint);
         role.text = slot.role;
-        role.alpha = 0.6;
+        role.alpha = 0.75;
         role.centerAt(slot.x + cw / 2, slot.y + ch / 2 - 7);
         this.cardLayer.addChild(empty, role);
         return;
       }
       const holder = new Container();
-      holder.addChild(new CardView(this.assets, entry, this.cardS, false));
+      holder.addChild(new CardView(this.assets, entry, this.cardS, true)); // full fine print, even on the board
       holder.position.set(slot.x, slot.y);
       if (this.draggable) {
         holder.eventMode = 'static';
@@ -394,7 +411,7 @@ export class SquadBuilderScreen implements Screen {
     this.clearTransients();
     this.mode = mode;
     this.size = size;
-    this.draft = createDraft(Math.random() < 0.5 ? 0 : 1, size);
+    this.draft = createDraft(Math.random() < 0.5 ? 0 : 1, size, mode === 'draft');
     this.phase = 'toss';
     this.tossT = 0;
     this.myShape = '';
@@ -648,7 +665,7 @@ export class SquadBuilderScreen implements Screen {
     // a beat of showcase: the signing hangs center-stage
     this.cpuReveal?.view.destroy({ children: true });
     const view = new Container();
-    const card = new CardView(this.assets, signed, 3, false);
+    const card = new CardView(this.assets, signed, 3, true);
     card.pivot.set(this.assets.manifest.cards.w * 1.5, 0);
     const cap = new PixelText(this.assets, 3, 0x9cc4f0);
     cap.text = 'CPU SIGNS';
@@ -665,9 +682,9 @@ export class SquadBuilderScreen implements Screen {
     const side = this.draft.sides[forCpu ? 1 : 0];
     const roster = this.draft.pool.filter((p) => p.role === role);
     if (!roster.length || needsOf(side)[role] <= 0) return audio.ui('denied');
-    // the odds — degraded gracefully when a shelf runs bare
+    // the odds, tuned jackpot-generous — degraded gracefully when a shelf runs bare
     const wants = Math.random();
-    let rarity = wants < 0.06 ? 'legend' : wants < 0.22 ? 'epic' : wants < 0.52 ? 'rare' : 'common';
+    let rarity = wants < 0.1 ? 'legend' : wants < 0.38 ? 'epic' : wants < 0.76 ? 'rare' : 'common';
     const has = (r: string) => roster.some((p) => rarityOf(p.ovr) === r);
     const ladder = ['legend', 'epic', 'rare', 'common'];
     while (!has(rarity)) {
@@ -712,7 +729,7 @@ export class SquadBuilderScreen implements Screen {
     // the reveal: his card blooms center-stage
     this.revealCard?.view.destroy({ children: true });
     const view = new Container();
-    const card = new CardView(this.assets, won.p, forCpu ? 2 : 3, !forCpu);
+    const card = new CardView(this.assets, won.p, forCpu ? 2 : 3, true);
     card.pivot.set((this.assets.manifest.cards.w * (forCpu ? 2 : 3)) / 2, 0);
     const cap = new PixelText(this.assets, 3, forCpu ? 0x9cc4f0 : RARITY_TINT[rarity]);
     cap.text = forCpu ? 'CPU PULLS' : rarity.toUpperCase();

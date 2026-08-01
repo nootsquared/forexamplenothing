@@ -1,4 +1,4 @@
-import { vec } from './core/math';
+import { vec, dist, clamp, Vec2 } from './core/math';
 import { World } from './sim/world';
 import { PlayerBody, PlayerInput } from './sim/player';
 import { PITCH } from './sim/constants';
@@ -47,6 +47,10 @@ export interface Match {
   kickoffFirst: 0 | 1;
   // a kicked ball waiting to learn whose boot it finds next
   pendingPass: { team: 0 | 1; idx: number } | null;
+  // a keeper reading the field before his distribution
+  gkHold: { idx: number; t: number };
+  // a CPU shooter composing himself over the spot
+  penaltyT: number;
 }
 
 export function createMatch(config: MatchConfig = {}): Match {
@@ -79,7 +83,49 @@ export function createMatch(config: MatchConfig = {}): Match {
       corners: [0, 0], throwins: [0, 0], goals: {},
     },
     pendingPass: null,
+    gkHold: { idx: -1, t: 0 },
+    penaltyT: 0,
   };
+}
+
+// The CPU keeper's eyes: every teammate scored on lane safety (the tightest
+// opponent to the throwing line), breathing room at the receiver, and field
+// progress — the best man gets the ball, flat and true inside throwing range,
+// high and hanging beyond it. Same radii and scatter the human sight uses.
+export function pickDistribution(world: World, gkIdx: number): { target: Vec2; kind: 'throw' | 'punt'; scatter: number } {
+  const gk = world.players[gkIdx];
+  const team = gk.id.team;
+  const throwR = 24 + 14 * gk.stats.power;
+  const puntR = clamp(60 + 34 * gk.stats.power, 60, 88);
+  let best: Vec2 | null = null;
+  let bestScore = -Infinity;
+  for (const p of world.players) {
+    if (p.id.team !== team || p.id.role === 'GK') continue;
+    const d = dist(gk.pos, p.pos);
+    if (d < 6 || d > puntR) continue;
+    let lane = 30;
+    let room = 30;
+    for (const q of world.players) {
+      if (q.id.team === team) continue;
+      room = Math.min(room, dist(q.pos, p.pos));
+      const t = clamp(((q.pos.x - gk.pos.x) * (p.pos.x - gk.pos.x) + (q.pos.y - gk.pos.y) * (p.pos.y - gk.pos.y)) / (d * d), 0, 1);
+      lane = Math.min(lane, dist(q.pos, vec(gk.pos.x + (p.pos.x - gk.pos.x) * t, gk.pos.y + (p.pos.y - gk.pos.y) * t)));
+    }
+    const progress = team === 0 ? p.pos.x : PITCH.length - p.pos.x;
+    const score = Math.min(lane, 14) * 1.6 + Math.min(room, 12) * 1.4 + progress * 0.35 + (d <= throwR ? 4 : 0);
+    if (score > bestScore) { bestScore = score; best = vec(p.pos.x, p.pos.y); }
+  }
+  // nobody worth finding: hammer it long down the safer flank
+  const target = best ?? vec(
+    clamp(gk.pos.x + (team === 0 ? 42 : -42), 4, PITCH.length - 4),
+    gk.pos.y < PITCH.width / 2 ? PITCH.width * 0.3 : PITCH.width * 0.7,
+  );
+  const d = dist(gk.pos, target);
+  const kind: 'throw' | 'punt' = d <= throwR ? 'throw' : 'punt';
+  const scatter = kind === 'throw'
+    ? (0.8 + d * 0.045) * (1.35 - gk.stats.control * 0.7)
+    : (2.2 + d * 0.075) * (1.45 - gk.stats.control * 0.7);
+  return { target, kind, scatter };
 }
 
 // Was that kick a strike at goal, and would it have gone in? Read the ball's
@@ -110,7 +156,46 @@ export function advanceMatch(match: Match, dt: number, overrides: Record<number,
   match.teamBrains[0].update(match.world, dt);
   match.teamBrains[1].update(match.world, dt);
   const inputs = match.world.players.map((_, i) => overrides[i] ?? match.brains[i].tick(match.world, dt));
+  // A keeper holding the ball STANDS and reads the field — his brain never
+  // walks a charged clearance out of the box (unless a human seat is aiming him)
+  const holdingIdx = match.world.holdingGk;
+  if (holdingIdx >= 0 && !(holdingIdx in overrides)) {
+    inputs[holdingIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+  }
   match.world.step(dt, inputs);
+
+  // ...and after a beat of reading, he DISTRIBUTES: throw or punt to the
+  // safest open teammate, exactly like the human sight would
+  const holding = match.world.holdingGk;
+  if (holding >= 0 && !(holding in overrides)) {
+    match.world.holdLock = true; // the beat stays open while he reads
+    if (match.gkHold.idx !== holding) match.gkHold = { idx: holding, t: 0 };
+    match.gkHold.t += dt;
+    if (match.gkHold.t > 1.15) {
+      const { target, kind, scatter } = pickDistribution(match.world, holding);
+      match.world.gkLaunch(holding, target, kind, scatter);
+      match.gkHold = { idx: -1, t: 0 };
+    }
+  } else if (match.gkHold.idx >= 0) {
+    match.gkHold = { idx: -1, t: 0 };
+  }
+
+  // A CPU penalty takes itself after a breath — corners preferred, the odd
+  // panenka down the middle. A human shooter aims through the UI instead.
+  if (match.world.penalty?.phase === 'aiming') {
+    const pen = match.world.penalty;
+    const humanHasIt = Object.keys(overrides).some((k) => match.world.players[Number(k)]?.id.team === pen.team);
+    if (!humanHasIt) {
+      match.penaltyT += dt;
+      if (match.penaltyT > 1.5) {
+        const r = Math.random();
+        match.world.takePenalty(r < 0.44 ? -1 : r < 0.88 ? 1 : 0, Math.random() < 0.35);
+        match.penaltyT = 0;
+      }
+    }
+  } else {
+    match.penaltyT = 0;
+  }
 
   // The clock: two halves, a break at the turn, a whistle at the end.
   // The referee holds his whistle while the ball lives in either attacking

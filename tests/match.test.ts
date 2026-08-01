@@ -293,42 +293,71 @@ describe('the long punt', () => {
   });
 });
 
-describe('offside', () => {
-  it('a man beyond the second-last defender is flagged when he takes the pass', () => {
+describe('the whistle and the spot', () => {
+  it('a mistimed lunge through the carrier eventually concedes a free kick', () => {
     const world = new World();
-    const passer = new PlayerBody(vec(70, 37), stats, { team: 0, role: 'MF', anchor: vec(0.5, 0.5), number: 8 });
-    const poacher = new PlayerBody(vec(95, 37), stats, { team: 0, role: 'FW', anchor: vec(0.8, 0.5), number: 9 });
-    const lastDef = new PlayerBody(vec(85, 30), stats, { team: 1, role: 'DF', anchor: vec(0.2, 0.4), number: 4 });
-    const gk = new PlayerBody(vec(112, 37), stats, { team: 1, role: 'GK', anchor: vec(0.04, 0.5), number: 1 });
-    world.players.push(passer, poacher, lastDef, gk);
-    world.ball.pos = vec(70.6, 37);
-    world.step(DT, [{ ...idle, move: vec(1, 0), kickReleased: { power: 0.85 } }, idle, idle, idle]);
-    let offside = false;
-    for (let i = 0; i < 60 * 3 && !offside; i++) {
-      // the flagged man attacks his pass, as he would in play
-      const toBall = vec(world.ball.pos.x - poacher.pos.x, world.ball.pos.y - poacher.pos.y);
-      const len = Math.hypot(toBall.x, toBall.y) || 1;
-      world.step(DT, [idle, { ...idle, move: vec(toBall.x / len, toBall.y / len) }, idle, idle]);
-      offside = world.events.some((e) => e.kind === 'offside');
+    const carrier = new PlayerBody(vec(50, 37), stats, { team: 0, role: 'MF', anchor: vec(0.5, 0.5), number: 8 });
+    const hacker = new PlayerBody(vec(49.1, 36.4), stats, { team: 1, role: 'MF', anchor: vec(0.5, 0.5), number: 6 });
+    world.players.push(carrier, hacker);
+    world.ball.pos = vec(50.8, 37); // on the carrier's far side — the lunge finds legs, not ball
+    let foul = false;
+    let freekick = false;
+    for (let t = 0; t < 60 * 60 && !foul; t++) {
+      world.ball.pos = vec(50.8, 37); // the duel stays staged
+      world.ball.vel = vec();
+      carrier.pos = vec(50, 37);
+      hacker.pos = vec(49.15, 36.5);
+      world.step(DT, [idle, { ...idle, tackle: true }]);
+      for (const e of world.events) {
+        if (e.kind === 'foul') foul = true;
+        if (e.kind === 'restart' && e.restart === 'freekick') freekick = true;
+      }
     }
-    expect(offside).toBe(true);
-    expect(world.restartLock).toBeGreaterThan(0); // free kick to the defenders
+    expect(foul).toBe(true);
+    expect(freekick).toBe(true); // mid-pitch foul = free kick, not a penalty
+    expect(world.restartLock).toBeGreaterThan(0);
   });
 
-  it('level with or behind the second-last defender is onside', () => {
+  it('the spot kick: aiming freezes the duel, the strike resolves it live', () => {
     const world = new World();
-    const passer = new PlayerBody(vec(60, 37), stats, { team: 0, role: 'MF', anchor: vec(0.5, 0.5), number: 8 });
-    const runner = new PlayerBody(vec(80, 37), stats, { team: 0, role: 'FW', anchor: vec(0.8, 0.5), number: 9 });
-    const lastDef = new PlayerBody(vec(85, 30), stats, { team: 1, role: 'DF', anchor: vec(0.2, 0.4), number: 4 });
+    const shooter = new PlayerBody(vec(60, 30), { ...stats, control: 0.9, power: 0.9 }, { team: 0, role: 'FW', anchor: vec(0.7, 0.5), number: 9 });
     const gk = new PlayerBody(vec(112, 37), stats, { team: 1, role: 'GK', anchor: vec(0.04, 0.5), number: 1 });
-    world.players.push(passer, runner, lastDef, gk);
-    world.ball.pos = vec(60.6, 37);
-    world.step(DT, [{ ...idle, move: vec(1, 0), kickReleased: { power: 0.7 } }, idle, idle, idle]);
-    let offside = false;
-    for (let i = 0; i < 60 * 3; i++) {
-      world.step(DT, [idle, idle, idle, idle]);
-      if (world.events.some((e) => e.kind === 'offside')) offside = true;
+    world.players.push(shooter, gk);
+    world.beginPenalty(0, 0);
+    expect(world.penalty?.phase).toBe('aiming');
+    for (let t = 0; t < 60; t++) world.step(DT, [idle, idle]);
+    // a full second later the world is still holding its breath
+    expect(world.penalty?.phase).toBe('aiming');
+    expect(world.restartLock).toBeGreaterThan(0);
+    expect(Math.abs(world.ball.pos.x - (PITCH.length - 11))).toBeLessThan(0.01);
+    world.takePenalty(1, false);
+    expect(world.ball.speed()).toBeGreaterThan(15); // the strike is away
+    expect(gk.lungeTimer).toBeGreaterThan(0);       // and the keeper is committed
+    for (let t = 0; t < 60 * 2; t++) world.step(DT, [idle, idle]);
+    expect(world.penalty).toBeNull(); // the duel resolved and cleaned up
+    // a 90-rated striker from the spot: goal, save, or woodwork — never a stall
+    const resolved = world.score.left === 1 || world.restartLock > 0 || world.ball.speed() > 0.5 || world.holdingGk >= 0;
+    expect(resolved).toBe(true);
+  });
+});
+
+describe('the support triangle', () => {
+  it('in possession someone owes the carrier an angle, and someone owes him depth', () => {
+    const match = createMatch({ halfLength: 0 });
+    let attackTicks = 0;
+    let nearHeld = 0;
+    let depthHeld = 0;
+    for (let t = 0; t < 60 * 30; t++) {
+      advanceMatch(match, DT);
+      for (const tb of match.teamBrains) {
+        if (tb.phase !== 'attack' || tb.possessorIdx === null) continue;
+        attackTicks++;
+        if (tb.supportNearIdx >= 0 && tb.supportNearIdx !== tb.possessorIdx) nearHeld++;
+        if (tb.supportDepthIdx >= 0 && tb.supportDepthIdx !== tb.possessorIdx && tb.supportDepthIdx !== tb.supportNearIdx) depthHeld++;
+      }
     }
-    expect(offside).toBe(false);
+    expect(attackTicks).toBeGreaterThan(200);
+    expect(nearHeld / attackTicks).toBeGreaterThan(0.85);  // the safe angle almost always exists
+    expect(depthHeld / attackTicks).toBeGreaterThan(0.75); // and so does the stretch
   });
 });

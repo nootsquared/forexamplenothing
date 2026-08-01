@@ -71,7 +71,7 @@ export class MatchAudio {
           audio.play('crowd-cheer', { vol: 0.7, delay: 0.15 });
           this.hype += 0.5;
           break;
-        case 'offside':
+        case 'foul':
           audio.play('whistle-short');
           audio.play('crowd-ooh', { vol: 0.45, delay: 0.35 });
           break;

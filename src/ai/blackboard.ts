@@ -39,8 +39,16 @@ export class TeamBrain {
   humanIdx = -1;
   // The team's sharpness (difficulty wears this, never their dignity)
   profile: AiProfile = SHARP;
-  // The offside line in OUR attack axis: past this, a run is a flag waiting
+  // The second-last defender's line in OUR attack axis. No offside whistle
+  // exists in this game — the line only disciplines AI runs, so brains time
+  // them instead of camping the six-yard box
   offsideAxis = PITCH.length;
+  // The support auction: in possession the sheet elects the triangle around
+  // the carrier — a NEAR man showing at a safe angle behind the ball, and a
+  // DEPTH runner stretching the last line. Elected men run their job with
+  // conviction; everyone else hunts space freely. Facts, not orders.
+  supportNearIdx = -1;
+  supportDepthIdx = -1;
   private calledFor = 0;
   private anchors: Vec2[] = [];
   private myIdxs: number[] = [];
@@ -89,6 +97,42 @@ export class TeamBrain {
     this.updateCalledPass(world, dt);
     this.updateAnchors(world);
     this.updatePressAuction(world);
+    this.updateSupportAuction(world);
+  }
+
+  // Who owes the carrier an angle, who owes him depth. Sticky by a fifth so
+  // the jobs don't strobe between neighbors every re-elect.
+  private updateSupportAuction(world: World) {
+    if (this.phase !== 'attack' || this.possessorIdx === null) {
+      this.supportNearIdx = -1;
+      this.supportDepthIdx = -1;
+      return;
+    }
+    const carrier = world.players[this.possessorIdx];
+    const carrierAxis = this.axisOf(carrier.pos.x);
+    let near = -1;
+    let nearCost = Infinity;
+    let depth = -1;
+    let depthScore = -Infinity;
+    for (const i of this.myIdxs) {
+      if (i === this.possessorIdx) continue;
+      const p = world.players[i];
+      if (p.id.role === 'GK') continue;
+      const d = dist(p.pos, carrier.pos);
+      // near support: the closest man level-or-behind the ball line — the
+      // safe outball that keeps possession alive under pressure
+      if (this.axisOf(p.pos.x) <= carrierAxis + 3 && d > 3) {
+        const cost = d * (i === this.supportNearIdx ? 0.8 : 1);
+        if (cost < nearCost) { nearCost = cost; near = i; }
+      }
+      // depth: the most advanced non-defender stretches the last line
+      if (p.id.role !== 'DF') {
+        const s = this.axisOf(p.pos.x) + (p.id.role === 'FW' ? 9 : 0) + (i === this.supportDepthIdx ? 4 : 0);
+        if (s > depthScore) { depthScore = s; depth = i; }
+      }
+    }
+    this.supportNearIdx = near;
+    this.supportDepthIdx = depth === near ? -1 : depth;
   }
 
   // The moment one of ours kicks it, name the teammate closest to the ball's
@@ -140,7 +184,7 @@ export class TeamBrain {
     const ballAxis = this.axisOf(ball.x);
     // The back line LIVES with the ball, not with its box: past halfway in
     // possession, still stepped up around it out of possession — space behind
-    // is the offside trap's problem (M3), not a reason to camp the six-yard line
+    // is the covering runner's problem, not a reason to camp the six-yard line
     const defLineAxis = clamp(ballAxis - 6, 12, this.phase === 'attack' ? 60 : 48);
 
     for (const i of this.myIdxs) {
