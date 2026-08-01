@@ -92,6 +92,7 @@ export interface MatchSnap {
   restartLock: number;
   celebration: boolean;
   cursors: Record<number, number>; // seat → body idx (for markers + own camera)
+  suggest: Record<number, number>; // seat → the body E would take (the white chevron)
   events: unknown[];               // SimEvents raised since the last snap
   sidesSwapped: boolean;
 }

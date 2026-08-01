@@ -49,6 +49,12 @@ export class PixelText extends Container {
     return this.widthValue;
   }
 
+  // The rendered cell height — glyph ink plus its baked outline rows
+  get textHeight(): number {
+    const cellH = this.font === 'micro' ? this.assets.manifest.font.micro.cellH : this.assets.manifest.font.cellH;
+    return cellH * this.pxScale;
+  }
+
   // Typewriter materialize: 0..1 shows the word letter by letter, the newest
   // glyph landing from a pixel above — motion ON the grid, never a smear
   set reveal(t: number) {

@@ -13,6 +13,9 @@ export interface Seat {
   ready: boolean;
   lastInput: NetInput | null; // freshest input while a match runs
   switchPressed: boolean;     // E arrived since last tick
+  // a kick release LATCHES until the sim consumes it — packets outrun ticks,
+  // and a release overwritten before its tick would eat the pass
+  pendingKick: { power: number; x: number; y: number } | null;
 }
 
 const DEFAULT_NATIONS: [string, string] = ['bra', 'arg'];
@@ -22,13 +25,14 @@ export class Party {
   nations: [string, string] = [...DEFAULT_NATIONS];
   teamNames: [string, string] = ['', ''];   // '' = wear the nation's name
   mode: 'quick' | 'draft' | 'gamble' = 'quick';
+  half = 120; // seconds per half — the host's console sets it
   phase: 'teams' | 'draft' | 'match' = 'teams';
   onChange: () => void = () => {};          // host UI refresh hook
   onSeatJoined: (seat: number) => void = () => {}; // a fresh face walked in
   onGuestDraft: (seat: number, action: { kind: 'roll'; role: string } | { kind: 'shape'; id: string }) => void = () => {};
 
   constructor(public net: NetSession, hostName: string, public nationIds: string[]) {
-    this.seats.set(0, { seat: 0, name: hostName, team: null, ready: false, lastInput: null, switchPressed: false });
+    this.seats.set(0, { seat: 0, name: hostName, team: null, ready: false, lastInput: null, switchPressed: false, pendingKick: null });
   }
 
   // The captain of a team is its longest-standing member — first in, armband on
@@ -101,7 +105,7 @@ export class Party {
       teamNames: [...this.teamNames],
       mode: this.mode,
       size: 11,
-      half: 120,
+      half: this.half,
       difficulty: 1,
     };
   }
@@ -115,7 +119,7 @@ export class Party {
   attach(): void {
     this.net.onMessage = (m) => {
       if (m.t === 'peer-joined') {
-        this.seats.set(m.seat, { seat: m.seat, name: m.name, team: null, ready: false, lastInput: null, switchPressed: false });
+        this.seats.set(m.seat, { seat: m.seat, name: m.name, team: null, ready: false, lastInput: null, switchPressed: false, pendingKick: null });
         this.publish();
         this.onSeatJoined(m.seat);
       } else if (m.t === 'peer-left') {
@@ -143,6 +147,7 @@ export class Party {
         const s = this.seats.get(seat);
         if (s) {
           if (msg.input.sw) s.switchPressed = true;
+          if (msg.input.kp > 0) s.pendingKick = { power: msg.input.kp, x: msg.input.kx, y: msg.input.ky };
           s.lastInput = msg.input;
         }
         break;

@@ -38,12 +38,14 @@ export class MatchAudio {
     this.mood = moodId;
   }
 
-  tick(match: Match, heroIdx: number, dt: number) {
+  // `events` defaults to the live sim's buffer; a net GUEST passes the batch
+  // drained from snapshots instead — its own world never steps or clears
+  tick(match: Match, heroIdx: number, dt: number, events = match.world.events) {
     const world = match.world;
     // at the break the half whistle speaks and the countdown owns the restart
-    const atTheBreak = world.events.some((e) => e.kind === 'half');
+    const atTheBreak = events.some((e) => e.kind === 'half');
 
-    for (const e of world.events) {
+    for (const e of events) {
       switch (e.kind) {
         case 'kick': {
           const name = e.power < 0.45 ? 'kick-soft' : e.power < 0.75 ? 'kick-mid' : 'kick-hard';

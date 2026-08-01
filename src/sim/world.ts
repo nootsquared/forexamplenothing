@@ -105,6 +105,15 @@ export class World {
     });
     this.separateBodies();
 
+    // Nobody plays in the stands: bodies live on the pitch plus a whisker of
+    // apron — except inside the goal mouth, where keepers chase balls in
+    for (const p of this.players) {
+      const inMouth = Math.abs(p.pos.y - PITCH.width / 2) < PITCH.goalWidth / 2 + 0.6;
+      const xPad = inMouth ? PITCH.goalDepth : 0.4;
+      p.pos.x = clamp(p.pos.x, -xPad, PITCH.length + xPad);
+      p.pos.y = clamp(p.pos.y, -0.4, PITCH.width + 0.4);
+    }
+
     // While the spot kick is being aimed, the duel holds its marks — the
     // shooter over the ball, the keeper on his line, no brain wanders off
     if (this.penalty?.phase === 'aiming') {
@@ -742,8 +751,9 @@ export class World {
     if (taker >= 0) {
       const p = this.players[taker];
       const inward = norm(sub(vec(PITCH.length / 2, PITCH.width / 2), spot));
-      // Near the spot, not ON it — the taker walks the last steps during the beat
-      p.pos = sub(vec(spot.x, spot.y), scale(inward, 1.6));
+      // Near the spot, not ON it — and always INSIDE the field of play; a
+      // throw-in taker who spawns in the stands is a broadcast incident
+      p.pos = add(vec(spot.x, spot.y), scale(inward, 1.2));
       p.vel = vec();
       p.facing = inward;
       p.savePrev();

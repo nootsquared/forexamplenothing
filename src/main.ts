@@ -83,7 +83,7 @@ async function boot() {
   let guestSwitch = false;                           // E queued for the next packet
   let guestSeatNames: Record<number, string> = {};
   let lastStartConfig: NetStartConfig | null = null; // late joiners get the stage too
-  let myName = localStorage.getItem('golazo-name') ?? '';
+  let myName = ''; // asked fresh every time — his call, no stored defaults
   const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2, clicked: false, moved: false };
   const drag = { active: false, anchorX: 0, anchorY: 0 };
   const DRAG_FULL_PX = 260;
@@ -147,7 +147,7 @@ async function boot() {
   menu.onQuick = () => { setupScreen.begin('quick'); show(setupScreen); };
   menu.onDraft = () => { setupScreen.begin('draft'); show(setupScreen); };
   menu.onGamble = () => { setupScreen.begin('gamble'); show(setupScreen); };
-  menu.onOnline = () => { onlineScreen.begin(myName ? 'gate' : 'name', myName); show(onlineScreen); };
+  menu.onOnline = () => { onlineScreen.begin('name', ''); show(onlineScreen); };
 
   // ---- the party line ----------------------------------------------------
   function leaveOnline() {
@@ -166,7 +166,6 @@ async function boot() {
 
   onlineScreen.onNamed = (name) => {
     myName = name;
-    localStorage.setItem('golazo-name', name);
     onlineScreen.begin('gate', name);
   };
   onlineScreen.onHost = () => {
@@ -197,7 +196,7 @@ async function boot() {
       if (m.t === 'lobby' && net) { if (screenName === 'menu') onlineScreen.setLobby(m.state, net.seat, false); return; }
       if (m.t === 'start') { void guestStartMatch(m.config); return; }
       if (m.t === 'snap') { snapPlayer?.push(m.snap); return; }
-      if (m.t === 'end') return; // the room closes right behind it
+      if (m.t === 'end') { if (screenName === 'match') backToLobby(); return; }
     };
     net.onClosed = () => { if (netRole === 'guest') leaveOnline(); };
     net.join(code, myName || 'PLAYER');
@@ -206,12 +205,51 @@ async function boot() {
   onlineScreen.onNation = (dir) => { if (netRole === 'host') party?.cycleNation(0, dir); else net?.send({ t: 'nation', dir }); };
   onlineScreen.onRename = (name) => { if (netRole === 'host') party?.renameTeam(0, name); else net?.send({ t: 'teamname', name }); };
   onlineScreen.onReady = () => {
-    if (netRole !== 'guest' || !net) return;
+    if (netRole === 'host' && party) {
+      const me = party.seats.get(0);
+      if (me) party.setReady(0, !me.ready);
+      return;
+    }
+    if (!net) return;
     const me = onlineScreen.lobby?.seats.find((s) => s.seat === net!.seat);
     net.send({ t: 'ready', ready: !me?.ready });
   };
   onlineScreen.onStart = () => hostStartOnline();
   onlineScreen.onLeave = () => leaveOnline();
+  onlineScreen.onMode = () => {
+    if (!party) return;
+    party.mode = party.mode === 'quick' ? 'draft' : party.mode === 'draft' ? 'gamble' : 'quick';
+    party.publish();
+  };
+  onlineScreen.onHalf = () => {
+    if (!party) return;
+    const choices = [60, 120, 180, 300];
+    party.half = choices[(choices.indexOf(party.half) + 1) % choices.length];
+    party.publish();
+  };
+
+  // Full time online: the ROOM lives on — everyone returns to the lobby for
+  // the rematch instead of the party dying with the whistle
+  function backToLobby() {
+    scene?.destroy();
+    scene = null;
+    match = null;
+    matchAudio.end();
+    snapPlayer = netRole === 'guest' ? new SnapPlayer() : null;
+    seatCursors.clear();
+    lastStartConfig = null;
+    screenName = 'menu';
+    paused = false;
+    ensureAttract();
+    if (netRole === 'host' && party) {
+      party.phase = 'teams';
+      for (const seat of party.seats.values()) seat.ready = false;
+      onlineScreen.setLobby(party.snap(), 0, true);
+      party.publish();
+    }
+    show(onlineScreen);
+    routeMusic();
+  }
   // typed characters flow into name/code/team-name fields
   window.addEventListener('keydown', (e) => {
     if (activeScreen === onlineScreen && onlineScreen.textKey(e)) e.preventDefault();
@@ -236,12 +274,18 @@ async function boot() {
     }
   };
   draftScreen.onDone = (home, homeShape, away, awayShape) => {
+    if (netRole === 'host' && pendingDress) {
+      const dress = pendingDress;
+      pendingDress = null;
+      launchOnline(dress, home, homeShape, away, awayShape);
+      return;
+    }
     startMatch(home, homeShape, scaleSquad(away, DIFF_SCALE[setup.difficulty]), awayShape);
   };
   pauseScreen.onResume = () => pauseScreen.close(); // slide out, then release
   pauseScreen.onClosed = () => { paused = false; scene?.setHudVisible(true); show(null); };
   pauseScreen.onQuit = () => toMenu();
-  statsScreen.onDone = () => toMenu();
+  statsScreen.onDone = () => { if (netRole === 'host') backToLobby(); else toMenu(); };
   menu.onMood = (i) => attract?.scene.setVariant(MOODS[i]);
   menu.onFps = (cap) => { loop.fpsCap = cap; };
 
@@ -292,9 +336,10 @@ async function boot() {
   const ballIsMine = () => {
     if (!match || !cursor) return false;
     if (netRole === 'guest') {
-      // a guest's world never thinks — proximity to the snapped ball decides
+      // a guest's world never thinks — proximity to the snapped ball decides,
+      // with slack for the interpolation buffer's lag
       const myIdx = snapPlayer?.latest?.cursors[net?.seat ?? -1] ?? -1;
-      return myIdx >= 0 && dist(match.world.players[myIdx].pos, match.world.ball.pos) < 3.5;
+      return myIdx >= 0 && dist(match.world.players[myIdx].pos, match.world.ball.pos) < 5;
     }
     const poss = match.teamBrains[0].possessorIdx;
     if (poss !== null && match.world.players[poss].id.team !== 0) return false;
@@ -305,8 +350,21 @@ async function boot() {
   // aid — keeper sight, penalty bins, drag pass — keeps working unchanged),
   // nations dress the teams, seated friends become cursors, and the whole
   // stage description ships to every guest.
-  function hostStartOnline() {
-    if (!party || !net || !party.allReady()) return;
+  // The wardrobe and seating a match needs, from the party as it stands.
+  // The host's claimed side becomes SIM TEAM 0 so every local aid (keeper
+  // sight, penalty bins, drag pass) keeps working unchanged.
+  interface OnlineDress {
+    kits: [string, string];
+    nations: [string, string];
+    teamNames: [string, string];
+    seatTeams: Record<number, 0 | 1>;
+    seatNames: Record<number, string>;
+    halfLength: number;
+  }
+  let pendingDress: OnlineDress | null = null; // set while captains draft
+
+  function buildOnlineDress(): OnlineDress | null {
+    if (!party) return null;
     const lob = party.snap();
     const hostTeam = party.seats.get(0)?.team ?? 0;
     const flip = hostTeam === 1;
@@ -320,43 +378,53 @@ async function boot() {
     const [r1, g1, b1] = rgb(n1.color);
     const clash = Math.hypot(r0 - r1, g0 - g1, b0 - b1) < 95;
     const kitKey = (file: string) => file.replace('players-', '').replace('.png', '');
-    const kits: [string, string] = [kitKey(n0.sheets.h), kitKey(clash ? n1.sheets.a : n1.sheets.h)];
-    const shapes = formationsOfSize(11);
-    const homeShape = shapes[Math.min(1, shapes.length - 1)];
-    const awayShape = shapes[0];
-    const [homeStars, awayStars] = quickSplit(11);
-    const homeSquad = toSquad(homeStars, FORMATIONS[homeShape]);
-    const awaySquad = toSquad(awayStars, FORMATIONS[awayShape]);
-    const toss: 0 | 1 = Math.random() < 0.5 ? 0 : 1;
     const seatTeams: Record<number, 0 | 1> = {};
     const seatNames: Record<number, string> = {};
-    for (const s of party.seats.values()) {
-      if (s.team !== null) seatTeams[s.seat] = simTeamOf(s.team);
-      seatNames[s.seat] = s.name;
+    for (const st of party.seats.values()) {
+      if (st.team !== null) seatTeams[st.seat] = simTeamOf(st.team);
+      seatNames[st.seat] = st.name;
     }
-    const config: NetStartConfig = {
-      halfLength: 120,
-      homeShape, awayShape, homeSquad, awaySquad, kits,
+    return {
+      kits: [kitKey(n0.sheets.h), kitKey(clash ? n1.sheets.a : n1.sheets.h)],
       nations: [n0.id, n1.id],
       teamNames: [lob.teamNames[flip ? 1 : 0] || n0.name, lob.teamNames[flip ? 0 : 1] || n1.name],
       seatTeams, seatNames,
+      halfLength: party.half,
+    };
+  }
+
+  // Ship the stage to every guest and raise the curtain locally
+  function launchOnline(dress: OnlineDress, homeSquad: SquadPlayer[], homeShape: string, awaySquad: SquadPlayer[], awayShape: string) {
+    if (!party || !net) return;
+    const toss: 0 | 1 = Math.random() < 0.5 ? 0 : 1;
+    const config: NetStartConfig = {
+      halfLength: dress.halfLength,
+      homeShape, awayShape, homeSquad, awaySquad,
+      kits: dress.kits, nations: dress.nations, teamNames: dress.teamNames,
+      seatTeams: dress.seatTeams, seatNames: dress.seatNames,
       kickoffFirst: toss,
     };
     void (async () => {
-      await loadNationSheets(assets, [n0.sheets.h, n0.sheets.a, n1.sheets.h, n1.sheets.a]);
+      const nations = assets.manifest.nations;
+      const files = dress.nations.flatMap((id) => {
+        const n = nations.find((x) => x.id === id);
+        return n ? [n.sheets.h, n.sheets.a] : [];
+      });
+      await loadNationSheets(assets, files);
       party!.phase = 'match';
       lastStartConfig = config;
       party!.broadcast({ t: 'start', config });
-      startMatch(homeSquad, homeShape, awaySquad, awayShape, { kits, halfLength: config.halfLength, kickoffFirst: toss });
+      startMatch(homeSquad, homeShape, awaySquad, awayShape, { kits: dress.kits, halfLength: dress.halfLength, kickoffFirst: toss });
       seatCursors.clear();
       netTick = 0;
       pendingNetEvents = [];
-      for (const s of party!.seats.values()) {
-        if (s.seat === 0 || s.team === null || !match) continue;
-        const st = simTeamOf(s.team);
-        const c = new TeamCursor(st, match.world);
-        c.isCaptain = party!.captainOf(s.team) === s.seat;
-        seatCursors.set(s.seat, { cursor: c, team: st });
+      for (const st of party!.seats.values()) {
+        if (st.seat === 0 || st.team === null || !match) continue;
+        const simT = dress.seatTeams[st.seat];
+        if (simT === undefined) continue;
+        const c = new TeamCursor(simT, match.world);
+        c.isCaptain = party!.captainOf(st.team) === st.seat;
+        seatCursors.set(st.seat, { cursor: c, team: simT });
       }
       wireSeatClaims();
       // penalties for a side with no LOCAL human take themselves
@@ -364,6 +432,29 @@ async function boot() {
       if (party!.seats.get(0)?.team === null) auto.add(0);
       if (match) match.autoPenaltyTeams = auto;
     })();
+  }
+
+  function hostStartOnline() {
+    if (!party || !net || !party.allReady()) return;
+    const dress = buildOnlineDress();
+    if (!dress) return;
+    if (party.mode === 'quick') {
+      const shapes = formationsOfSize(11);
+      const homeShape = shapes[Math.min(1, shapes.length - 1)];
+      const awayShape = shapes[0];
+      const [homeStars, awayStars] = quickSplit(11);
+      launchOnline(dress, toSquad(homeStars, FORMATIONS[homeShape]), homeShape, toSquad(awayStars, FORMATIONS[awayShape]), awayShape);
+      return;
+    }
+    // draft and gamble: the host runs the war room (his side by hand, the
+    // other by CPU for now) while guests hold in the lobby
+    pendingDress = dress;
+    party.phase = 'draft';
+    party.publish();
+    draftScreen.begin(11, party.mode);
+    screenName = 'draft';
+    show(draftScreen);
+    routeMusic();
   }
 
   // No two hands on one body, ever — every cursor refuses the others' bodies
@@ -386,6 +477,7 @@ async function boot() {
       awaySquad: config.awaySquad, awayShape: config.awayShape,
       halfLength: config.halfLength, kickoffFirst: config.kickoffFirst,
     });
+    match.world.events.length = 0; // a guest's world never steps — nothing may linger
     scene = new Scene(app, assets, match.world, loop);
     if (import.meta.env.DEV) {
       (window as unknown as { __match?: Match; __net?: object }).__match = match;
@@ -428,9 +520,11 @@ async function boot() {
     snapPlayer.apply(match.world, dt);
     const evs = snapPlayer.drainEvents();
     if (evs.length) scene.handleEvents(evs);
+    matchAudio.tick(match, Math.max(0, myIdx), dt, evs);
     const snap = snapPlayer.latest;
     if (snap) {
       if (myIdx >= 0) scene.setControlled(myIdx);
+      scene.setSwitchTarget(snap.suggest?.[net.seat] ?? -1);
       const tags: Record<number, string> = {};
       for (const [seatStr, idx] of Object.entries(snap.cursors)) {
         const seat = Number(seatStr);
@@ -448,7 +542,6 @@ async function boot() {
       const pull = resolveDrag();
       scene.setKickDrag(pull && myIdx >= 0 ? { from: match.world.players[myIdx].pos, dir: pull.dir, power: pull.power } : null);
     } else scene.setKickDrag(null);
-    matchAudio.tick(match, Math.max(0, myIdx), dt);
     mouse.clicked = false;
   }
 
@@ -646,10 +739,21 @@ async function boot() {
         const s = party.seats.get(seat);
         if (!s) { seatCursors.delete(seat); continue; }
         if (s.switchPressed) { sc.cursor.manualSwitch(); s.switchPressed = false; }
-        overrides[sc.cursor.idx] = s.lastInput
+        const seatIn = s.lastInput
           ? unpackInput(s.lastInput)
           : { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
-        if (s.lastInput && s.lastInput.kp > 0) s.lastInput = { ...s.lastInput, kp: 0 }; // a release fires once
+        // the latched release fires exactly once, whatever the packet timing
+        if (s.pendingKick) {
+          seatIn.kickReleased = {
+            power: s.pendingKick.power,
+            aimOffset: 0,
+            aimAt: s.pendingKick.x || s.pendingKick.y ? vec(s.pendingKick.x, s.pendingKick.y) : undefined,
+          };
+          s.pendingKick = null;
+        } else if (seatIn.kickReleased) {
+          seatIn.kickReleased = null; // stale kp in a repeated packet never double-fires
+        }
+        overrides[sc.cursor.idx] = seatIn;
       }
     }
     if (keeperAiming) overrides[gkIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
@@ -679,8 +783,12 @@ async function boot() {
       netTick++;
       if (netTick % 2 === 0) {
         const cursors: Record<number, number> = { 0: cursor.idx };
-        for (const [seat, sc] of seatCursors) cursors[seat] = sc.cursor.idx;
-        party.broadcast({ t: 'snap', snap: takeSnap(match, netTick, cursors, pendingNetEvents) });
+        const suggest: Record<number, number> = { 0: cursor.suggested };
+        for (const [seat, sc] of seatCursors) {
+          cursors[seat] = sc.cursor.idx;
+          suggest[seat] = sc.cursor.suggested;
+        }
+        party.broadcast({ t: 'snap', snap: takeSnap(match, netTick, cursors, suggest, pendingNetEvents) });
         pendingNetEvents = [];
       }
       const tags: Record<number, string> = {};
@@ -710,7 +818,7 @@ async function boot() {
     for (const e of world.events) {
       const caught = e.kind === 'save' && world.lastTouch?.team === 0 && world.lastTouch.idx === gkIdx;
       const goalKick = e.kind === 'restart' && e.team === 0 && e.taker === gkIdx;
-      if ((caught || goalKick) && humanIdle < 2.5) {
+      if ((caught || goalKick) && humanIdle < 8) {
         keeperAiming = true;
         world.holdLock = true;
       }
@@ -727,7 +835,10 @@ async function boot() {
       if (e.kind === 'foul' && e.penalty && world.penalty?.team === 0) {
         cursor.assign(world.penalty.shooterIdx);
       }
-      if (e.kind === 'fulltime') fulltimeDelay = 1.5;
+      if (e.kind === 'fulltime') {
+        fulltimeDelay = 1.5;
+        if (netRole === 'host' && party) party.broadcast({ t: 'end', score: [world.score.left, world.score.right] });
+      }
       if (e.kind === 'half') halfCountdown = 4.3; // HALF TIME banner first, then 3-2-1
       if (e.kind === 'goal' && e.scorer >= 0) scene.toast(`${match.names[e.scorer]}!`);
     }

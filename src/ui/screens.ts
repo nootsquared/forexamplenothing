@@ -95,6 +95,7 @@ export class MenuScreen implements Screen {
     this.page = page;
     this.list.sel = 0; // a fresh page starts at its top
     this.crumb.text = page === 'root' ? 'MAIN MENU' : page === 'play' ? 'PLAY' : 'SETTINGS';
+    this.crumb.centerAt(this.w / 2, this.h * 0.42); // a new word, a new center
     this.refresh(animate);
   }
 

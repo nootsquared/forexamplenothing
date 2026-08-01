@@ -267,10 +267,10 @@ export class PixelList {
     if (!this.marker.visible) this.marker.position.y = selY; // first light: no glide
     this.marker.position.x = selX - 16;
     this.marker.visible = this.rows.length > 0;
-    // a quiet band under the live row — the eye lands before it reads
+    // a quiet band under the live row — even air above and below the word
     this.selBar.clear();
     if (selV) {
-      this.selBar.rect(selX - 22, selY - 4, selW + 40, this.rowH - 6)
+      this.selBar.rect(selX - 22, selY - 5, selW + 40, this.scale * 7 + 10)
         .fill({ color: 0xffd95e, alpha: 0.07 });
     }
     this.onSelect();

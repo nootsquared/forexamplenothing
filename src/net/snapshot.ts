@@ -9,7 +9,7 @@ import { MatchSnap } from './net';
 
 const q = (v: number) => Math.round(v * 100) / 100;
 
-export function takeSnap(match: Match, tick: number, cursors: Record<number, number>, events: SimEvent[]): MatchSnap {
+export function takeSnap(match: Match, tick: number, cursors: Record<number, number>, suggest: Record<number, number>, events: SimEvent[]): MatchSnap {
   const w = match.world;
   return {
     tick,
@@ -26,54 +26,72 @@ export function takeSnap(match: Match, tick: number, cursors: Record<number, num
     restartLock: q(w.restartLock),
     celebration: !!w.celebration,
     cursors,
+    suggest,
     events,
     sidesSwapped: w.sidesSwapped,
   };
 }
 
-// A guest holds the last two snapshots and glides between them at 60Hz —
-// the renderer's own frame interpolation smooths whatever is left.
+// A guest rides a short interpolation BUFFER: it renders the match ~3 sim
+// ticks behind the freshest snapshot and glides through the timeline, so
+// network jitter never reads as chop. The renderer's own frame alpha
+// smooths whatever is left.
+const BUFFER_TICKS = 3;   // ~50ms behind truth — invisible, and jitter-proof
+const MAX_SNAPS = 24;
+
 export class SnapPlayer {
-  private prev: MatchSnap | null = null;
-  private next: MatchSnap | null = null;
-  private t = 0; // seconds since `next` arrived
+  private snaps: MatchSnap[] = [];
+  private renderTick = -1;
   pendingEvents: SimEvent[] = [];
   latest: MatchSnap | null = null;
 
   push(snap: MatchSnap) {
-    this.prev = this.next;
-    this.next = snap;
+    this.snaps.push(snap);
+    if (this.snaps.length > MAX_SNAPS) this.snaps.shift();
     this.latest = snap;
-    this.t = 0;
+    if (this.renderTick < 0) this.renderTick = snap.tick - BUFFER_TICKS;
     this.pendingEvents.push(...(snap.events as SimEvent[]));
   }
 
-  // Advance the guest's world one render tick toward the freshest truth
+  // Advance the guest's clock and pose the world on the buffered timeline
   apply(world: World, dt: number) {
-    if (!this.next) return;
-    this.t += dt;
-    const a = this.prev;
-    const b = this.next;
-    // two snaps ≈ 1/30s apart; glide across that gap, then hold
-    const k = a ? Math.min(1, this.t / (2 / 60)) : 1;
+    const newest = this.latest;
+    if (!newest || this.snaps.length === 0) return;
+    this.renderTick += dt * 60;
+    // never run ahead of truth, never trail into stale history
+    this.renderTick = Math.min(this.renderTick, newest.tick - 1);
+    this.renderTick = Math.max(this.renderTick, newest.tick - BUFFER_TICKS * 3);
+
+    // the pair of snaps bracketing the render clock
+    let a = this.snaps[0];
+    let b = this.snaps[this.snaps.length - 1];
+    for (let i = 0; i < this.snaps.length - 1; i++) {
+      if (this.snaps[i].tick <= this.renderTick && this.snaps[i + 1].tick >= this.renderTick) {
+        a = this.snaps[i];
+        b = this.snaps[i + 1];
+        break;
+      }
+    }
+    const span = Math.max(1, b.tick - a.tick);
+    const k = Math.min(1, Math.max(0, (this.renderTick - a.tick) / span));
     const lerp = (x: number, y: number) => x + (y - x) * k;
 
     world.ball.savePrev();
     for (const p of world.players) p.savePrev();
 
-    world.ball.pos.x = a ? lerp(a.ball[0], b.ball[0]) : b.ball[0];
-    world.ball.pos.y = a ? lerp(a.ball[1], b.ball[1]) : b.ball[1];
-    world.ball.z = a ? lerp(a.ball[2], b.ball[2]) : b.ball[2];
+    world.ball.pos.x = lerp(a.ball[0], b.ball[0]);
+    world.ball.pos.y = lerp(a.ball[1], b.ball[1]);
+    world.ball.z = lerp(a.ball[2], b.ball[2]);
     world.ball.vel.x = b.ball[3];
     world.ball.vel.y = b.ball[4];
     world.ball.vz = b.ball[5];
 
     world.players.forEach((p, i) => {
-      const pa = a?.players[i];
+      const pa = a.players[i];
       const pb = b.players[i];
-      if (!pb) return;
-      p.pos.x = pa ? lerp(pa[0], pb[0]) : pb[0];
-      p.pos.y = pa ? lerp(pa[1], pb[1]) : pb[1];
+      if (!pb || !pa) return;
+      p.pos.x = lerp(pa[0], pb[0]);
+      p.pos.y = lerp(pa[1], pb[1]);
       p.vel.x = pb[2];
       p.vel.y = pb[3];
       p.facing.x = pb[4];
@@ -82,10 +100,10 @@ export class SnapPlayer {
       p.isCharging = pb[7] > 0;
     });
 
-    world.score.left = b.score[0];
-    world.score.right = b.score[1];
-    world.restartLock = b.restartLock;
-    world.sidesSwapped = b.sidesSwapped;
+    world.score.left = newest.score[0];
+    world.score.right = newest.score[1];
+    world.restartLock = newest.restartLock;
+    world.sidesSwapped = newest.sidesSwapped;
   }
 
   // Events surface exactly once, in arrival order
