@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { vec, dist } from '../src/core/math';
 import { createMatch, advanceMatch } from '../src/match';
-import { createDraft, aiPickIndex, pick, pickAcademy, needsOf, canPick, QUOTA, SQUAD_SIZE, quickSplit, toSquad } from '../src/data/draft';
+import { createDraft, aiPickIndex, pick, pickAcademy, needsOf, canPick, QUOTA, SQUAD_SIZE, quickSplit, toSquad, quotaOfShape } from '../src/data/draft';
 import { priceOf, PLAYER_POOL } from '../src/data/players';
 import { FORMATIONS } from '../src/data/formations';
 import { Role } from '../src/data/formations';
@@ -93,6 +93,14 @@ describe('the draft', () => {
     side.budget = 40;
     const star = PLAYER_POOL[0]; // 36M+ superstar
     expect(canPick(side, star)).toBe(false); // 10 slots left would go unpaid
+  });
+
+  it('a called shape rewrites the quota — needs track the BOARD, not a template', () => {
+    const draft = createDraft(0, 11, false); // the wheel's honest one-each turns
+    draft.sides[0].quota = quotaOfShape(FORMATIONS['4-5-1']);
+    const needs = needsOf(draft.sides[0]);
+    expect(needs).toEqual({ GK: 1, DF: 4, MF: 5, FW: 1 }); // one striker wanted, not two
+    expect(quotaOfShape(FORMATIONS['3-4-3'])).toEqual({ GK: 1, DF: 3, MF: 4, FW: 3 });
   });
 
   it('quick match deals the stars into two full XIs that field on any shape', () => {

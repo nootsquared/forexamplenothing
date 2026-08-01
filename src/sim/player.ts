@@ -120,8 +120,10 @@ export class PlayerBody {
     if (this.speed() > 0.6) this.facing = norm(this.vel);
     else if (wantDir) this.facing = wantDir;
 
+    // Sprint is a rhythm, not a one-shot: ~13s of burn from full, and jogging
+    // earns it back fast enough that the burst is always in the tank
     this.stamina = clamp(
-      this.stamina + (this.isSprinting ? -0.11 : this.speed() < 2 ? 0.09 : 0.05) * dt,
+      this.stamina + (this.isSprinting ? -0.075 : this.speed() < 2 ? 0.16 : 0.08) * dt,
       0,
       1,
     );

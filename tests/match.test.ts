@@ -293,29 +293,106 @@ describe('the long punt', () => {
   });
 });
 
+describe('the dead ball knows its end', () => {
+  const cast = () => [
+    new PlayerBody(vec(3, 37), stats, { team: 0, role: 'GK', anchor: vec(0.04, 0.5), number: 1 }),
+    new PlayerBody(vec(30, 30), stats, { team: 0, role: 'DF', anchor: vec(0.2, 0.4), number: 4 }),
+    new PlayerBody(vec(102, 37), stats, { team: 1, role: 'GK', anchor: vec(0.04, 0.5), number: 1 }),
+    new PlayerBody(vec(30, 44), stats, { team: 1, role: 'FW', anchor: vec(0.8, 0.6), number: 9 }),
+  ];
+  const overEnd = (world: World, x: number, byTeam: 0 | 1, byIdx: number) => {
+    world.lastTouch = { team: byTeam, idx: byIdx };
+    world.ball.pos = vec(x, 10); // well clear of the goal mouth
+    world.ball.vel = vec(x < 50 ? -8 : 8, 0);
+    world.step(DT, []);
+    return world.events.find((e) => e.kind === 'restart');
+  };
+
+  it('first half: an attacker over the end line concedes the goal kick', () => {
+    const world = new World();
+    world.players.push(...cast());
+    const e = overEnd(world, -0.3, 1, 3); // team 1 attacks -x and overhits
+    expect(e && e.kind === 'restart' && e.restart).toBe('goalkick');
+    expect(e && e.kind === 'restart' && e.team).toBe(0);
+  });
+
+  it('first half: a defender over his own line concedes the corner', () => {
+    const world = new World();
+    world.players.push(...cast());
+    const e = overEnd(world, -0.3, 0, 1); // team 0 defends left and turns it over
+    expect(e && e.kind === 'restart' && e.restart).toBe('corner');
+    expect(e && e.kind === 'restart' && e.team).toBe(1);
+  });
+
+  it('second half: the ends swapped, and the calls swap with them', () => {
+    const goalKick = new World();
+    goalKick.players.push(...cast());
+    goalKick.swapSides(); // the break — team 0 now defends the RIGHT end
+    const e = overEnd(goalKick, PITCH.length + 0.3, 1, 3);
+    expect(e && e.kind === 'restart' && e.restart).toBe('goalkick');
+    expect(e && e.kind === 'restart' && e.team).toBe(0);
+
+    const corner = new World();
+    corner.players.push(...cast());
+    corner.swapSides();
+    const e2 = overEnd(corner, -0.3, 1, 3); // team 1 now defends left and turns it over
+    expect(e2 && e2.kind === 'restart' && e2.restart).toBe('corner');
+    expect(e2 && e2.kind === 'restart' && e2.team).toBe(0);
+  });
+
+  it('the taker stands BEHIND the dead ball, never between it and the field', () => {
+    const world = new World();
+    world.players.push(...cast());
+    const e = overEnd(world, -0.3, 0, 1); // corner for team 1 at the near-left flag
+    expect(e && e.kind === 'restart' && e.taker).toBeGreaterThanOrEqual(0);
+    if (e && e.kind === 'restart') {
+      const taker = world.players[e.taker];
+      const center = vec(PITCH.length / 2, PITCH.width / 2);
+      expect(dist(taker.pos, center)).toBeGreaterThan(dist(world.ball.pos, center));
+      expect(dist(taker.pos, world.ball.pos)).toBeLessThan(2); // still on the ball
+    }
+  });
+});
+
 describe('the whistle and the spot', () => {
-  it('a mistimed lunge through the carrier eventually concedes a free kick', () => {
+  it('a mistimed lunge mid-pitch NEVER whistles — free kicks are gone, play on', () => {
     const world = new World();
     const carrier = new PlayerBody(vec(50, 37), stats, { team: 0, role: 'MF', anchor: vec(0.5, 0.5), number: 8 });
     const hacker = new PlayerBody(vec(49.1, 36.4), stats, { team: 1, role: 'MF', anchor: vec(0.5, 0.5), number: 6 });
     world.players.push(carrier, hacker);
     world.ball.pos = vec(50.8, 37); // on the carrier's far side — the lunge finds legs, not ball
-    let foul = false;
-    let freekick = false;
-    for (let t = 0; t < 60 * 60 && !foul; t++) {
+    for (let t = 0; t < 60 * 60; t++) {
       world.ball.pos = vec(50.8, 37); // the duel stays staged
       world.ball.vel = vec();
       carrier.pos = vec(50, 37);
       hacker.pos = vec(49.45, 36.7); // through the MAN, nowhere near the ball
       world.step(DT, [idle, { ...idle, tackle: true }]);
       for (const e of world.events) {
-        if (e.kind === 'foul') foul = true;
-        if (e.kind === 'restart' && e.restart === 'freekick') freekick = true;
+        expect(e.kind).not.toBe('foul'); // outside the box the referee waves on
       }
     }
-    expect(foul).toBe(true);
-    expect(freekick).toBe(true); // mid-pitch foul = free kick, not a penalty
-    expect(world.restartLock).toBeGreaterThan(0);
+    expect(world.penalty).toBeNull();
+  });
+
+  it('the same crime inside the box still concedes the penalty', () => {
+    const world = new World();
+    const carrier = new PlayerBody(vec(106, 37), stats, { team: 0, role: 'FW', anchor: vec(0.9, 0.5), number: 9 });
+    const hacker = new PlayerBody(vec(105.1, 36.4), stats, { team: 1, role: 'DF', anchor: vec(0.2, 0.5), number: 4 });
+    const gk = new PlayerBody(vec(112, 37), stats, { team: 1, role: 'GK', anchor: vec(0.04, 0.5), number: 1 });
+    world.players.push(carrier, hacker, gk);
+    let penalty = false;
+    for (let t = 0; t < 60 * 120 && !penalty; t++) {
+      world.ball.pos = vec(106.8, 37); // staged deep in team 1's box
+      world.ball.vel = vec();
+      carrier.pos = vec(106, 37);
+      hacker.pos = vec(105.45, 36.7); // through the MAN, nowhere near the ball
+      world.step(DT, [idle, { ...idle, tackle: true }, idle]);
+      for (const e of world.events) {
+        if (e.kind === 'foul' && e.penalty) penalty = true;
+      }
+    }
+    expect(penalty).toBe(true);
+    expect(world.penalty?.phase).toBe('aiming');
   });
 
   it('the spot kick: aiming freezes the duel, the strike resolves it live', () => {

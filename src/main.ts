@@ -21,7 +21,7 @@ import { MOODS } from './render/variants';
 import { Screen, MenuScreen, SetupScreen, PauseScreen, StatsScreen, MatchSetup, fmtClock } from './ui/screens';
 import { SquadBuilderScreen } from './ui/draft';
 import { OnlineScreen } from './ui/online';
-import { NetSession, NetStartConfig } from './net/net';
+import { NetSession, NetStartConfig, DraftCtl } from './net/net';
 import { Party, packInput, unpackInput } from './net/party';
 import { takeSnap, SnapPlayer } from './net/snapshot';
 import { loadNationSheets } from './render/assets';
@@ -181,6 +181,13 @@ async function boot() {
         party.onSeatJoined = (seat) => {
           if (screenName === 'match' && lastStartConfig) net?.to(seat, { t: 'start', config: lastStartConfig });
         };
+        // guest captains play the war room through the host's referee desk
+        party.onGuestDraft = (seat, action) => {
+          if (screenName === 'draft') draftScreen.remoteIntent(seat, action);
+        };
+        party.onSeatLeft = (seat) => {
+          if (screenName === 'draft') draftScreen.seatLeft(seat);
+        };
         onlineScreen.setLobby(party.snap(), 0, true);
       }
     };
@@ -195,6 +202,27 @@ async function boot() {
       if (m.t === 'room-closed') return leaveOnline();
       if (m.t === 'lobby' && net) { if (screenName === 'menu') onlineScreen.setLobby(m.state, net.seat, false); return; }
       if (m.t === 'start') { void guestStartMatch(m.config); return; }
+      if (m.t === 'draft') {
+        // the war room, mirrored: captains act through intents, everyone
+        // else watches the same boards fill in real time
+        const op = m.op;
+        if (op.k === 'begin' && net) {
+          draftScreen.beginMirror(op, net.seat, (action) => net?.send({ t: 'draft', action }));
+          screenName = 'draft';
+          show(draftScreen);
+          routeMusic();
+        } else if (op.k === 'abort') {
+          if (screenName === 'draft') {
+            audio.ui('back');
+            screenName = 'menu';
+            show(onlineScreen);
+            routeMusic();
+          }
+        } else if (screenName === 'draft') {
+          draftScreen.applyRemoteOp(op);
+        }
+        return;
+      }
       if (m.t === 'snap') { snapPlayer?.push(m.snap); return; }
       if (m.t === 'end') { if (screenName === 'match') backToLobby(); return; }
     };
@@ -281,6 +309,24 @@ async function boot() {
       return;
     }
     startMatch(home, homeShape, scaleSquad(away, DIFF_SCALE[setup.difficulty]), awayShape);
+  };
+  // Walking out of the war room: offline goes home; an online host folds the
+  // draft and brings the whole party back to the lobby — the room lives on
+  draftScreen.onBack = () => {
+    audio.ui('back');
+    if (netRole === 'host' && party) {
+      draftScreen.abortOnline();
+      pendingDress = null;
+      party.phase = 'teams';
+      for (const seat of party.seats.values()) seat.ready = false;
+      screenName = 'menu';
+      onlineScreen.setLobby(party.snap(), 0, true);
+      party.publish();
+      show(onlineScreen);
+      routeMusic();
+      return;
+    }
+    toMenu();
   };
   pauseScreen.onResume = () => pauseScreen.close(); // slide out, then release
   pauseScreen.onClosed = () => { paused = false; scene?.setHudVisible(true); show(null); };
@@ -415,6 +461,11 @@ async function boot() {
       lastStartConfig = config;
       party!.broadcast({ t: 'start', config });
       startMatch(homeSquad, homeShape, awaySquad, awayShape, { kits: dress.kits, halfLength: dress.halfLength, kickoffFirst: toss });
+      // set pieces belong to the true captain — the host included
+      const hostTeam = party!.seats.get(0)?.team;
+      if (cursor && hostTeam !== null && hostTeam !== undefined) {
+        cursor.isCaptain = party!.captainOf(hostTeam) === 0;
+      }
       seatCursors.clear();
       netTick = 0;
       pendingNetEvents = [];
@@ -446,12 +497,33 @@ async function boot() {
       launchOnline(dress, toSquad(homeStars, FORMATIONS[homeShape]), homeShape, toSquad(awayStars, FORMATIONS[awayShape]), awayShape);
       return;
     }
-    // draft and gamble: the host runs the war room (his side by hand, the
-    // other by CPU for now) while guests hold in the lobby
+    // draft and gamble: the whole room walks into the war room. Each side is
+    // run by its CAPTAIN — the first person who claimed that shirt, host or
+    // guest alike — and only a shirt nobody claimed goes to the CPU.
     pendingDress = dress;
+    const flip = party.seats.get(0)?.team === 1;
+    const ctl = ([0, 1] as const).map((side) => {
+      const partyTeam = (flip ? 1 - side : side) as 0 | 1;
+      const cap = party!.captainOf(partyTeam);
+      return cap === 0 ? { kind: 'local' as const }
+        : cap > 0 ? { kind: 'remote' as const, seat: cap }
+        : { kind: 'cpu' as const };
+    }) as [DraftCtl, DraftCtl];
+    const capNames = ctl.map((c) =>
+      c.kind === 'local' ? (myName || 'HOST').toUpperCase()
+      : c.kind === 'remote' ? (party!.seats.get(c.seat)?.name ?? 'CAPTAIN').toUpperCase()
+      : 'CPU') as [string, string];
     party.phase = 'draft';
     party.publish();
-    draftScreen.begin(11, party.mode);
+    draftScreen.beginOnlineHost({
+      mode: party.mode as 'draft' | 'gamble',
+      first: Math.random() < 0.5 ? 0 : 1,
+      ctl,
+      teamNames: dress.teamNames,
+      capNames,
+      seatSides: dress.seatTeams,
+      sendOp: (op) => party?.broadcast({ t: 'draft', op }),
+    });
     screenName = 'draft';
     show(draftScreen);
     routeMusic();
@@ -618,7 +690,10 @@ async function boot() {
     if (activeScreen === onlineScreen) return leaveOnline(); // walk out of the party
     if (screenName === 'match' && netRole === 'guest') return leaveOnline(); // a guest can always leave
     if (screenName === 'menu') return activeScreen?.key('Escape'); // menu pages or match setup
-    if (screenName === 'draft') { audio.ui('back'); return toMenu(); } // walk out of the war room
+    if (screenName === 'draft') {
+      if (netRole === 'guest') return leaveOnline(); // a guest walks out of the party
+      return draftScreen.onBack(); // host folds to the lobby; offline goes home
+    }
     if (screenName !== 'match' || !match || match.finished) return;
     if (paused) {
       pauseScreen.close(); // slide out; onClosed releases the match
@@ -679,9 +754,11 @@ async function boot() {
     if (!drag.active) return;
     drag.active = false;
     const pull = resolveDrag();
-    if (!pull || !match || !cursor) return; // a stray click is not a kick
-    const hero = match.world.players[cursor.idx];
-    mouseKick = { power: pull.power, aimAt: vec(hero.pos.x + pull.dir.x * 30, hero.pos.y + pull.dir.y * 30) };
+    if (!pull || !match) return; // a stray click is not a kick
+    // aim FROM THE BALL — the kick leaves the ball, and on a guest tab the
+    // local cursor is a bystander (his true body lives in the snapshots)
+    const origin = match.world.ball.pos;
+    mouseKick = { power: pull.power, aimAt: vec(origin.x + pull.dir.x * 30, origin.y + pull.dir.y * 30) };
   });
 
   // The keeper launches, and control moves to the man his ball was for
@@ -858,6 +935,13 @@ async function boot() {
         audio.play('whistle-kickoff');
       }
     }
+    // The sight is never a missed beat: as long as OUR keeper still holds his
+    // ball (goal kick, catch, pickup), waking the hands reopens the menu
+    if (!keeperAiming && gkIdx >= 0 && world.holdingGk === gkIdx && humanIdle < 2.5) {
+      keeperAiming = true;
+      world.holdLock = true;
+    }
+
     // The penalty sight rides the world's state — it opens for your spot
     // kicks and folds away the instant the ball is struck or the play dies
     if (penMine || (world.penalty?.phase === 'aiming' && world.penalty.team === 0)) {

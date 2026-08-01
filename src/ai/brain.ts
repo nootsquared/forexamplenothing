@@ -210,10 +210,18 @@ export class Brain {
           target: this.clampPitch(add(world.ball.pos, scale(out, world.restartExclusion + 2.5))),
           sprint: false,
         };
+      } else if (world.lastTouch?.idx === this.idx) {
+        this.intent = { kind: 'chase', sprint: false };
       } else {
-        this.intent = world.lastTouch?.idx === this.idx
-          ? { kind: 'chase', sprint: false }
-          : { kind: 'goto', target: this.wanderedAnchor(), sprint: false };
+        // teammates give the taker AIR too — an anchor squeezed onto the dead
+        // ball (corners drag the whole elastic shape there) holds 8m off it
+        let spot = this.wanderedAnchor();
+        const off = sub(spot, world.ball.pos);
+        if (len(off) < 8) {
+          const out = len(off) > 1e-4 ? norm(off) : norm(sub(this.bb.goalWeDefend(), world.ball.pos));
+          spot = this.clampPitch(add(world.ball.pos, scale(out, 8)));
+        }
+        this.intent = { kind: 'goto', target: spot, sprint: false };
       }
       return;
     }

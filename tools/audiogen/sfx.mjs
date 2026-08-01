@@ -46,23 +46,27 @@ function whistlePhrase(peeps) {
 }
 
 // ------------------------------------------------------------------ the ball
-// A kick is three layers: the boot's low body, the strike's click, and a
-// leather 'thock'. Power raises pitch, snap and length together.
+// A kick is LEATHER, not a drum: a fast low punch that dies quickly, a bright
+// strike click, and a mid 'thwack' band that carries the contact. Power
+// raises pitch, snap and bite together — never a hollow boom.
 function kickThump(power) {
-  const dur = 0.16 + power * 0.08;
-  const out = secs(dur + 0.25);
-  const f0 = 130 + power * 70;
-  const body = osc(dur, (t) => 50 + (f0 - 50) * Math.exp(-t * 26), 'sine');
-  shape(body, ad(0.002, dur * 0.85, 2.4));
+  const dur = 0.1 + power * 0.05;
+  const out = secs(dur + 0.2);
+  const f0 = 150 + power * 90;
+  const body = osc(dur, (t) => 58 + (f0 - 58) * Math.exp(-t * 42), 'sine');
+  shape(body, ad(0.0015, dur * 0.6, 2.8));
   const rng = makeRng(7 + Math.round(power * 100));
-  const click = onePoleHP(noise(0.012, rng), 1400);
-  shape(click, ad(0.0005, 0.01, 2));
-  const thock = bandpass(noise(0.05, rng), 240 + power * 180, 1.1);
-  shape(thock, ad(0.001, 0.045, 2));
-  addInto(out, body, 0, 0.95);
-  addInto(out, click, 0, 0.22 + power * 0.3);
-  addInto(out, thock, 0, 0.5 + power * 0.3);
-  return normalize(softClip(out, 1.5), 0.82);
+  const click = onePoleHP(noise(0.014, rng), 2100);
+  shape(click, ad(0.0004, 0.012, 2));
+  const thwack = bandpass(noise(0.045, rng), 620 + power * 520, 1.6);
+  shape(thwack, ad(0.0008, 0.038, 2.2));
+  const thock = bandpass(noise(0.05, rng), 300 + power * 220, 1.2);
+  shape(thock, ad(0.001, 0.04, 2));
+  addInto(out, body, 0, 0.68);
+  addInto(out, click, 0, 0.32 + power * 0.34);
+  addInto(out, thwack, 0, 0.6 + power * 0.35);
+  addInto(out, thock, 0, 0.44 + power * 0.24);
+  return normalize(softClip(out, 1.6), 0.82);
 }
 
 function ballBounce() {

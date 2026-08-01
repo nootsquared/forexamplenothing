@@ -14,6 +14,31 @@ export interface NetInput {
   sw: boolean;  // switch (E) pressed this frame
 }
 
+// The war room over the wire. A guest CAPTAIN sends intents; the host is the
+// only referee — it validates, converts each intent into an op, applies it to
+// its own draft and broadcasts it, and every mirror replays the same op on an
+// identical replica. Deterministic state, one authority, zero drift.
+export type DraftIntent =
+  | { k: 'shape'; id: string }                    // my formation call
+  | { k: 'sign'; poolIdx: number }                // draft mode: buy this man
+  | { k: 'academy' }                              // draft mode: take a junior
+  | { k: 'roll'; role: string }                   // gamble mode: spin this shelf
+  | { k: 'arrange'; slots: (number | null)[] };   // my board layout (slot → pick)
+
+// Who runs a war-room side: the host's own hands, a guest seat, or the CPU
+export type DraftCtl = { kind: 'local' } | { kind: 'remote'; seat: number } | { kind: 'cpu' };
+
+export type DraftOp =
+  | { k: 'begin'; mode: 'draft' | 'gamble'; size: number; first: 0 | 1;
+      ctl: [DraftCtl, DraftCtl]; teamNames: [string, string]; capNames: [string, string];
+      seatSides: Record<number, 0 | 1> }
+  | { k: 'shape'; side: 0 | 1; id: string }
+  | { k: 'sign'; side: 0 | 1; poolIdx: number }
+  | { k: 'academy'; side: 0 | 1; role: string }
+  | { k: 'roll'; side: 0 | 1; role: string; winnerPoolIdx: number; seed: number }
+  | { k: 'cpu'; side: 0 | 1 }   // a captain walked out — the CPU takes his chair
+  | { k: 'abort' };             // the host called the whole thing off
+
 // guest → host
 export type GuestMsg =
   | { t: 'hello'; name: string }
@@ -21,14 +46,14 @@ export type GuestMsg =
   | { t: 'nation'; dir: 1 | -1 }
   | { t: 'teamname'; name: string }
   | { t: 'ready'; ready: boolean }
-  | { t: 'draft'; action: { kind: 'roll'; role: string } | { kind: 'shape'; id: string } }
+  | { t: 'draft'; action: DraftIntent }
   | { t: 'input'; input: NetInput };
 
 // host → guests
 export type HostMsg =
   | { t: 'lobby'; state: LobbySnap }
   | { t: 'start'; config: NetStartConfig }
-  | { t: 'draft'; view: DraftSnap }
+  | { t: 'draft'; op: DraftOp }
   | { t: 'snap'; snap: MatchSnap }
   | { t: 'end'; score: [number, number] };
 
@@ -67,18 +92,6 @@ export interface NetStartConfig {
   seatTeams: Record<number, 0 | 1>;
   seatNames: Record<number, string>;
   kickoffFirst: 0 | 1;
-}
-
-// A read-only picture of the war room for remote screens
-export interface DraftSnap {
-  mode: 'draft' | 'gamble';
-  turn: number;
-  order: (0 | 1)[];
-  myShapeSide: (0 | 1)[];         // unused filler for alignment
-  phase: string;
-  sides: { picks: { name: string; ovr: number; role: string; nation: string; number: number }[]; budget: number }[];
-  shapes: [string, string];
-  rolling: { role: string; forSide: 0 | 1 } | null;
 }
 
 // One tick of truth for every client renderer

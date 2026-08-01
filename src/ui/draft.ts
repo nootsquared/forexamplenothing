@@ -2,27 +2,36 @@ import { Container, Graphics, Rectangle, Sprite } from 'pixi.js';
 import { GameAssets } from '../render/assets';
 import { PixelText } from '../render/pixelText';
 import { audio } from '../audio/engine';
+import { Rng } from '../core/rng';
 import { Reveal, centerShade } from './kit';
 import { Screen } from './screens';
 import { StarPlayer, rarityOf, academyPlayer } from '../data/players';
 import { FORMATIONS, Role, STYLES, formationsOf } from '../data/formations';
 import { SquadPlayer } from '../data/roster';
+import { DraftCtl, DraftIntent, DraftOp } from '../net/net';
 import {
-  Draft, createDraft, canPick, pick, pickAcademy, aiPickIndex, needsOf,
-  fillWithAcademy, toSquad, toSquadOrdered, bestOpenSlot,
+  Draft, createDraft, canPick, pick, pickAcademy, aiPickIndex, needsOf, quotaOfShape,
+  fillWithAcademy, toSquadOrdered, bestOpenSlot,
 } from '../data/draft';
 
 // The war room: coin toss → shape call → the market. FIFA-grade cards on the
-// shelf, your XI on a drag-anywhere chalkboard, the CPU building against you
-// in real time. Gamble mode swaps the market for the wheel.
+// shelf, your XI on a drag-anywhere chalkboard, the other bench building
+// against you in real time. Gamble mode swaps the market for the slot reel.
+//
+// Online, the room is OP-DRIVEN: the host is the only referee — every turn
+// (his own, a guest captain's intent, a CPU pick) becomes an op he applies
+// and broadcasts, and every guest replays the same ops on an identical
+// replica. Captains act, everyone else watches the same boards fill.
 
 const RARITY_TINT: Record<string, number> = { legend: 0xffe27a, epic: 0xd9a6ff, rare: 0x9cc4f0, common: 0xc4ccd8 };
 const ROLE_TINT: Record<Role, number> = { GK: 0xf0c552, DF: 0x8ecff0, MF: 0x9ff0b8, FW: 0xff9c8a };
 const FILTERS: (Role | 'ALL')[] = ['ALL', 'GK', 'DF', 'MF', 'FW'];
+const ROLES: Role[] = ['GK', 'DF', 'MF', 'FW'];
 const SHAPE_TIME = 15;
 const PICK_TIME = 30;
-const REEL_SCALE = 2;   // slot cards ride big
-const REEL_GAP = 10;    // air between cards on the strip
+const REMOTE_TIME = 35;  // an absent captain's clock — the room never stalls
+const REEL_SCALE = 2;    // slot cards ride big
+const REEL_GAP = 10;     // air between cards on the strip
 
 const stat99 = (v: number) => String(Math.round(v * 99)).padStart(2, '0');
 
@@ -289,9 +298,25 @@ class CardBoard extends Container {
 // ------------------------------------------------------------ squad builder
 type Phase = 'toss' | 'shape' | 'market' | 'done';
 
+// Everything one sitting of the war room needs to know about who's playing it
+interface WarRoomSetup {
+  mode: 'draft' | 'gamble';
+  size: number;
+  first: 0 | 1;
+  ctl: [DraftCtl, DraftCtl];
+  teamNames: [string, string];
+  capNames: [string, string];
+  mySide: 0 | 1;
+  iAmCaptain: boolean;
+  authority: boolean;
+  sendOp: ((op: DraftOp) => void) | null;
+  sendIntent: ((a: DraftIntent) => void) | null;
+}
+
 export class SquadBuilderScreen implements Screen {
   root = new Container();
   onDone: (home: SquadPlayer[], homeShape: string, away: SquadPlayer[], awayShape: string) => void = () => {};
+  onBack: () => void = () => {}; // Esc and the BACK plate share one exit
 
   private mode: 'draft' | 'gamble' = 'draft';
   private size = 11;
@@ -299,6 +324,17 @@ export class SquadBuilderScreen implements Screen {
   private phase: Phase = 'toss';
   private w = 1280;
   private h = 720;
+
+  // who's who: my view side, the controllers, and whether I referee or mirror
+  private mySide: 0 | 1 = 0;
+  private iAmCaptain = true;
+  private authority = true;
+  private ctl: [DraftCtl, DraftCtl] = [{ kind: 'local' }, { kind: 'cpu' }];
+  private teamNames: [string, string] = ['YOUR SQUAD', 'CPU SQUAD'];
+  private capNames: [string, string] = ['YOU', 'CPU'];
+  private sendOp: ((op: DraftOp) => void) | null = null;
+  private sendIntent: ((a: DraftIntent) => void) | null = null;
+  private opQueue: DraftOp[] = []; // mirror ops parked behind a live reel
 
   // toss
   private tossT = 0;
@@ -309,19 +345,19 @@ export class SquadBuilderScreen implements Screen {
   private shapeClock = SHAPE_TIME;
   private styleCol = 1; // start on BALANCED
   private shapeRow = 0;
-  private myShape = '';
-  private cpuShape = '';
+  private shapes: [string, string] = ['', ''];
   private shapePanels = new Container();
 
   // market
   private pickClock = PICK_TIME;
   private cpuTimer = 0;
+  private remoteClock = REMOTE_TIME;
   private filter: Role | 'ALL' = 'ALL';
   private gridSel = 0;
   private gridScroll = 0;
   private gridCols = 4;
   private gridRows = 2;
-  private arrangement: (number | null)[] = []; // my slot → pick index
+  private arrangements: [(number | null)[], (number | null)[]] = [[], []]; // per side: slot → pick index
   private cpuReveal: { view: Container; t: number } | null = null;
   private flyer: { view: Container; t: number; fx: number; fy: number; tx: number; ty: number } | null = null;
 
@@ -334,7 +370,7 @@ export class SquadBuilderScreen implements Screen {
   private roll: {
     t: number; dur: number; from: number; to: number;
     strip: { p: StarPlayer; poolIdx: number }[]; winStrip: number;
-    forCpu: boolean; role: Role; lastCell: number;
+    side: 0 | 1; role: Role; lastCell: number;
   } | null = null;
   private reelX = 0;
   private reelY = 0;
@@ -365,6 +401,7 @@ export class SquadBuilderScreen implements Screen {
   private filterRow = new Container();
   private focusLayer = new Container();
   private overlay = new Container();
+  private backBtn = new Container();
   private reveal = new Reveal();
 
   constructor(private assets: GameAssets) {
@@ -377,9 +414,7 @@ export class SquadBuilderScreen implements Screen {
     this.coin.scale.set(6);
     this.reelStrip.mask = this.reelMaskG;
     this.myTitle = new PixelText(assets, 3, 0xff9c8a);
-    this.myTitle.text = 'YOUR SQUAD';
     this.cpuTitle = new PixelText(assets, 3, 0x9cc4f0);
-    this.cpuTitle.text = 'CPU SQUAD';
     this.myBudget = new PixelText(assets, 2, 0x9ff0b8);
     this.cpuBudget = new PixelText(assets, 2, 0x8f97a8);
     this.myStats = new PixelText(assets, 2, 0x8f97a8);
@@ -391,11 +426,35 @@ export class SquadBuilderScreen implements Screen {
     this.myPanel.addChild(this.myTitle, this.myBudget, this.myBoard, this.myStats, this.myNeeds);
     this.cpuPanel.addChild(this.cpuTitle, this.cpuBudget, this.cpuBoard);
     this.market.addChild(this.filterRow, this.gridLayer, this.focusLayer);
+    this.buildBackBtn();
     this.root.addChild(
       this.shade, this.header, this.turnText, this.clockBar, this.myPanel, this.cpuPanel,
       this.market, this.shapePanels, this.coin, this.caption,
-      this.reelBack, this.reelStrip, this.reelMaskG, this.reelFront, this.wheelPrompt, this.overlay, this.foot,
+      this.reelBack, this.reelStrip, this.reelMaskG, this.reelFront, this.wheelPrompt, this.overlay,
+      this.backBtn, this.foot,
     );
+  }
+
+  // The one visible exit — Esc rides the same door
+  private buildBackBtn() {
+    const label = new PixelText(this.assets, 2, 0xdfe4ee);
+    label.text = '< BACK';
+    const w = label.textWidth + 22;
+    const h = 26;
+    const g = new Graphics();
+    g.rect(0, 0, w, h).fill({ color: 0x05070b, alpha: 0.95 });
+    g.rect(1, 1, w - 2, h - 2).fill({ color: 0x1b2231 });
+    g.rect(1, 1, w - 2, 2).fill({ color: 0xfff8e0, alpha: 0.2 });
+    g.rect(1, h - 3, w - 2, 2).fill({ color: 0x000000, alpha: 0.5 });
+    label.position.set(11, 6);
+    this.backBtn.addChild(g, label);
+    this.backBtn.eventMode = 'static';
+    this.backBtn.cursor = 'pointer';
+    this.backBtn.hitArea = new Rectangle(0, 0, w, h);
+    this.backBtn.on('pointerover', () => { label.tint = 0xffd95e; });
+    this.backBtn.on('pointerout', () => { label.tint = 0xdfe4ee; });
+    this.backBtn.on('pointertap', () => this.onBack());
+    this.backBtn.position.set(16, 14);
   }
 
   // Every floating showcase, reveal and flyer dies here — no ghosts between
@@ -417,15 +476,65 @@ export class SquadBuilderScreen implements Screen {
   }
 
   // ------------------------------------------------------------- lifecycle
+  // The couch game, exactly as it always was: you against the CPU bench
   begin(size: number, mode: 'draft' | 'gamble') {
+    this.configure({
+      mode, size, first: Math.random() < 0.5 ? 0 : 1,
+      ctl: [{ kind: 'local' }, { kind: 'cpu' }],
+      teamNames: ['YOUR SQUAD', 'CPU SQUAD'], capNames: ['YOU', 'CPU'],
+      mySide: 0, iAmCaptain: true, authority: true, sendOp: null, sendIntent: null,
+    });
+  }
+
+  // The host opens the room's war room and deals everyone in
+  beginOnlineHost(opts: {
+    mode: 'draft' | 'gamble'; first: 0 | 1; ctl: [DraftCtl, DraftCtl];
+    teamNames: [string, string]; capNames: [string, string];
+    seatSides: Record<number, 0 | 1>; sendOp: (op: DraftOp) => void;
+  }) {
+    const localSide = opts.ctl.findIndex((c) => c.kind === 'local');
+    this.configure({
+      mode: opts.mode, size: 11, first: opts.first, ctl: opts.ctl,
+      teamNames: opts.teamNames, capNames: opts.capNames,
+      mySide: (localSide >= 0 ? localSide : 0) as 0 | 1, iAmCaptain: localSide >= 0,
+      authority: true, sendOp: opts.sendOp, sendIntent: null,
+    });
+    opts.sendOp({
+      k: 'begin', mode: opts.mode, size: 11, first: opts.first,
+      ctl: opts.ctl, teamNames: opts.teamNames, capNames: opts.capNames, seatSides: opts.seatSides,
+    });
+  }
+
+  // A guest joins the same room as a mirror: captains act, everyone watches
+  beginMirror(op: Extract<DraftOp, { k: 'begin' }>, mySeat: number, sendIntent: (a: DraftIntent) => void) {
+    const capSide = op.ctl.findIndex((c) => c.kind === 'remote' && c.seat === mySeat);
+    const side = (capSide >= 0 ? capSide : op.seatSides[mySeat] ?? 0) as 0 | 1;
+    this.configure({
+      mode: op.mode, size: op.size, first: op.first, ctl: op.ctl,
+      teamNames: op.teamNames, capNames: op.capNames,
+      mySide: side, iAmCaptain: capSide >= 0,
+      authority: false, sendOp: null, sendIntent,
+    });
+  }
+
+  private configure(setup: WarRoomSetup) {
     this.clearTransients();
-    this.mode = mode;
-    this.size = size;
-    this.draft = createDraft(Math.random() < 0.5 ? 0 : 1, size, mode === 'draft');
+    this.mode = setup.mode;
+    this.size = setup.size;
+    this.mySide = setup.mySide;
+    this.iAmCaptain = setup.iAmCaptain;
+    this.authority = setup.authority;
+    this.ctl = setup.ctl;
+    this.teamNames = setup.teamNames;
+    this.capNames = setup.capNames;
+    this.sendOp = setup.sendOp;
+    this.sendIntent = setup.sendIntent;
+    this.opQueue = [];
+    this.draft = createDraft(setup.first, setup.size, setup.mode === 'draft');
     this.phase = 'toss';
     this.tossT = 0;
-    this.myShape = '';
-    this.cpuShape = '';
+    this.shapes = ['', ''];
+    this.arrangements = [[], []];
     this.styleCol = 1;
     this.shapeRow = 0;
     this.shapeClock = SHAPE_TIME;
@@ -433,43 +542,206 @@ export class SquadBuilderScreen implements Screen {
     this.gridSel = 0;
     this.gridScroll = 0;
     this.roleSel = 0;
-    this.arrangement = [];
-    this.header.text = mode === 'draft' ? 'THE DRAFT' : 'THE SLOTS';
-    this.foot.text = mode === 'draft'
-      ? 'WASD MOVE - ENTER SIGN - F FILTER - X ACADEMY - DRAG CHIPS TO REARRANGE'
-      : 'A D PICK A SHELF - ENTER ROLLS - DRAG CHIPS TO REARRANGE';
+    this.myTitle.text = this.teamNames[this.mySide];
+    this.cpuTitle.text = this.teamNames[1 - this.mySide];
+    this.header.text = setup.mode === 'draft' ? 'THE DRAFT' : 'THE SLOTS';
+    this.foot.text = !this.iAmCaptain
+      ? 'YOUR CAPTAIN RUNS THE WAR ROOM - DRAG CHIPS TO PREVIEW - THE MATCH STARTS WHEN THE BOARDS FILL'
+      : setup.mode === 'draft'
+        ? 'WASD MOVE - ENTER SIGN - F FILTER - X ACADEMY - DRAG CHIPS TO REARRANGE'
+        : 'A D PICK A SHELF - ENTER ROLLS - DRAG CHIPS TO REARRANGE';
+    this.backBtn.visible = this.authority;
     audio.ui('coin');
     this.refreshPanels();
     this.layoutPhase();
   }
 
+  private get curSide(): 0 | 1 {
+    return this.draft.order[this.draft.turn] ?? 0;
+  }
+
   private get myTurn(): boolean {
-    return this.draft.order[this.draft.turn] === 0;
+    return this.iAmCaptain && this.phase === 'market' && this.curSide === this.mySide;
+  }
+
+  private get myShape(): string { return this.shapes[this.mySide]; }
+  private get oppShape(): string { return this.shapes[1 - this.mySide]; }
+  private get arrangement(): (number | null)[] { return this.arrangements[this.mySide]; }
+
+  // Whose hands hold the current pick — for every 'on the clock' line
+  private clockLabel(side: 0 | 1): string {
+    return this.ctl[side].kind === 'cpu' ? 'CPU THINKING' : `${this.capNames[side]} ON THE CLOCK`;
+  }
+
+  // --------------------------------------------------------- the op pipeline
+  // Authority decides → applies + broadcasts. Mirrors receive → replay.
+  private issue(op: DraftOp) {
+    this.applyOp(op);
+    this.sendOp?.(op);
+  }
+
+  // Guest entry: ops arriving mid-reel park until the ride lands
+  applyRemoteOp(op: DraftOp) {
+    if (op.k === 'begin' || op.k === 'abort') return; // the shell handles these
+    if (this.roll) {
+      this.opQueue.push(op);
+      return;
+    }
+    this.applyOp(op);
+  }
+
+  private drainOps() {
+    while (this.opQueue.length && !this.roll) this.applyOp(this.opQueue.shift()!);
+  }
+
+  private applyOp(op: DraftOp) {
+    switch (op.k) {
+      case 'shape': {
+        this.shapes[op.side] = op.id;
+        this.draft.sides[op.side].quota = quotaOfShape(FORMATIONS[op.id]);
+        this.arrangements[op.side] = FORMATIONS[op.id].slots.map(() => null);
+        if (this.phase === 'shape' && this.shapes[0] && this.shapes[1]) {
+          this.enterMarket();
+        } else {
+          this.refreshPanels();
+          if (this.phase === 'shape') this.buildShapePanels(); // locked → waiting line
+        }
+        break;
+      }
+      case 'sign': {
+        const p = this.draft.pool[op.poolIdx];
+        if (!p) break;
+        pick(this.draft, op.poolIdx);
+        this.autoPlace(op.side, this.draft.sides[op.side].picks.length - 1, p.role);
+        if (op.side === this.mySide && this.iAmCaptain) {
+          audio.ui('buy');
+          this.launchFlyer(p);
+        } else {
+          audio.ui('card');
+          this.showcase(op.side, p);
+        }
+        this.afterTurn();
+        break;
+      }
+      case 'academy': {
+        pickAcademy(this.draft, op.role as Role);
+        const side = this.draft.sides[op.side];
+        const junior = side.picks[side.picks.length - 1];
+        this.autoPlace(op.side, side.picks.length - 1, junior.role);
+        audio.ui('card');
+        if (op.side !== this.mySide || !this.iAmCaptain) this.showcase(op.side, junior);
+        this.afterTurn();
+        break;
+      }
+      case 'roll':
+        this.beginRoll(op);
+        break;
+      case 'cpu': {
+        this.ctl[op.side] = { kind: 'cpu' };
+        this.capNames[op.side] = 'CPU';
+        if (this.authority && this.curSide === op.side) this.cpuTimer = 0.9;
+        this.turnRefresh();
+        break;
+      }
+      case 'begin':
+      case 'abort':
+        break;
+    }
+  }
+
+  // The host's referee desk: validate a guest captain's intent, turn it into law
+  remoteIntent(seat: number, intent: DraftIntent) {
+    if (!this.authority) return;
+    const sideIdx = this.ctl.findIndex((c) => c.kind === 'remote' && c.seat === seat);
+    if (sideIdx < 0) return;
+    const side = sideIdx as 0 | 1;
+    if (intent.k === 'shape') {
+      const shape = FORMATIONS[intent.id];
+      if ((this.phase === 'toss' || this.phase === 'shape') && !this.shapes[side] &&
+          shape && shape.slots.length === this.size) {
+        this.issue({ k: 'shape', side, id: intent.id });
+      }
+      return;
+    }
+    if (intent.k === 'arrange') {
+      // his board, his layout — sanitized so a torn packet can't corrupt the XI
+      const shapeId = this.shapes[side];
+      if (!shapeId) return;
+      const picks = this.draft.sides[side].picks.length;
+      const seen = new Set<number>();
+      this.arrangements[side] = FORMATIONS[shapeId].slots.map((_, i) => {
+        const v = intent.slots[i];
+        if (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < picks && !seen.has(v)) {
+          seen.add(v);
+          return v;
+        }
+        return null;
+      });
+      return;
+    }
+    if (this.phase !== 'market' || this.roll || this.curSide !== side) return;
+    if (intent.k === 'sign' && this.mode === 'draft') {
+      const p = this.draft.pool[intent.poolIdx];
+      if (p && canPick(this.draft.sides[side], p)) this.issue({ k: 'sign', side, poolIdx: intent.poolIdx });
+    } else if (intent.k === 'academy' && this.mode === 'draft') {
+      const needs = needsOf(this.draft.sides[side]);
+      const role = ROLES.find((r) => needs[r] > 0);
+      if (role) this.issue({ k: 'academy', side, role });
+    } else if (intent.k === 'roll' && this.mode === 'gamble') {
+      const role = intent.role as Role;
+      if (ROLES.includes(role)) this.issueRoll(side, role);
+    }
+  }
+
+  // A captain walked out mid-draft: his chair goes to the CPU, the room rolls on
+  seatLeft(seat: number) {
+    if (!this.authority) return;
+    ([0, 1] as const).forEach((side) => {
+      const c = this.ctl[side];
+      if (c.kind === 'remote' && c.seat === seat) this.issue({ k: 'cpu', side });
+    });
+  }
+
+  // The host walking out takes the room with him — mirrors return to the lobby
+  abortOnline() {
+    if (this.authority) this.sendOp?.({ k: 'abort' });
   }
 
   // ------------------------------------------------------------- the board
   private swapSlots(a: number, b: number) {
-    const tmp = this.arrangement[a];
-    this.arrangement[a] = this.arrangement[b];
-    this.arrangement[b] = tmp;
+    const arr = this.arrangement;
+    const tmp = arr[a];
+    arr[a] = arr[b];
+    arr[b] = tmp;
+    this.shareArrangement();
     this.refreshPanels();
   }
 
-  private placePick(pickIdx: number, role: Role) {
-    if (!this.myShape) return;
-    const slot = bestOpenSlot(FORMATIONS[this.myShape].slots, this.arrangement, role);
-    if (slot >= 0) this.arrangement[slot] = pickIdx;
+  // Every signing takes the best open chair on its side's board — the same
+  // rule on every machine, so the replicas never argue
+  private autoPlace(side: 0 | 1, pickIdx: number, role: Role) {
+    const shapeId = this.shapes[side];
+    if (!shapeId) return;
+    const arr = this.arrangements[side];
+    const slot = bestOpenSlot(FORMATIONS[shapeId].slots, arr, role);
+    if (slot >= 0) arr[slot] = pickIdx;
+    if (side === this.mySide) this.shareArrangement();
+  }
+
+  // A guest captain's drag-and-drop rides up to the host, where the XI is built
+  private shareArrangement() {
+    if (!this.authority && this.iAmCaptain) this.sendIntent?.({ k: 'arrange', slots: [...this.arrangement] });
   }
 
   private refreshPanels() {
-    const mine = this.draft.sides[0];
-    const cpu = this.draft.sides[1];
+    const mine = this.draft.sides[this.mySide];
+    const opp = this.draft.sides[1 - this.mySide];
     if (this.mode === 'draft') {
       this.myBudget.text = `BUDGET ${mine.budget.toFixed(1)}M`;
-      this.cpuBudget.text = `BUDGET ${cpu.budget.toFixed(1)}M`;
+      this.cpuBudget.text = `BUDGET ${opp.budget.toFixed(1)}M`;
     } else {
       this.myBudget.text = `PULLS LEFT ${this.size - mine.picks.length}`;
-      this.cpuBudget.text = `PULLS LEFT ${this.size - cpu.picks.length}`;
+      this.cpuBudget.text = `PULLS LEFT ${this.size - opp.picks.length}`;
     }
     const needs = needsOf(mine);
     this.myNeeds.text = `NEED GK ${needs.GK} DF ${needs.DF} MF ${needs.MF} FW ${needs.FW}`;
@@ -485,16 +757,13 @@ export class SquadBuilderScreen implements Screen {
         return pi !== null && pi !== undefined ? mine.picks[pi] : null;
       }));
     }
-    if (this.cpuShape) {
-      this.cpuBoard.setShape(this.cpuShape);
-      // pad with throwaway juniors so the auto-assigner has a full XI, then
-      // only the REAL signings earn cards on the board
-      const padded = [...cpu.picks];
-      let padNo = 90;
-      while (padded.length < this.size) padded.push(academyPlayer('MF', padNo++));
-      const xi = toSquad(padded, FORMATIONS[this.cpuShape]);
-      const signed = new Map(cpu.picks.map((p) => [p.name, p]));
-      this.cpuBoard.setEntries(xi.map((sp) => signed.get(sp.name) ?? null));
+    if (this.oppShape) {
+      this.cpuBoard.setShape(this.oppShape);
+      const arr = this.arrangements[1 - this.mySide];
+      this.cpuBoard.setEntries(FORMATIONS[this.oppShape].slots.map((_, i) => {
+        const pi = arr[i];
+        return pi !== null && pi !== undefined ? opp.picks[pi] ?? null : null;
+      }));
     }
   }
 
@@ -534,7 +803,7 @@ export class SquadBuilderScreen implements Screen {
     this.gridLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
     this.reveal.clear();
     const entries = this.pool();
-    const mine = this.draft.sides[0];
+    const mine = this.draft.sides[this.mySide];
     const s = 2;
     const cardW = this.assets.manifest.cards.w * s;
     const cardH = this.assets.manifest.cards.h * s;
@@ -582,13 +851,13 @@ export class SquadBuilderScreen implements Screen {
       const focus = new CardView(this.assets, sel.p, 3, true);
       this.focusLayer.addChild(focus);
       const hint = new PixelText(this.assets, 2, this.myTurn && canPick(mine, sel.p) ? 0x9ff0b8 : 0x5a6070);
-      hint.text = !this.myTurn ? 'CPU ON THE CLOCK' : canPick(mine, sel.p) ? 'ENTER TO SIGN' : 'OUT OF REACH';
+      hint.text = !this.myTurn ? this.clockLabel(this.curSide) : canPick(mine, sel.p) ? 'ENTER TO SIGN' : 'OUT OF REACH';
       hint.centerAt(fw * 1.5, this.assets.manifest.cards.h * 3 + 12);
       this.focusLayer.addChild(hint);
     }
     // the academy shelf: an honest journeyman card, always in stock
     const needs = needsOf(mine);
-    const role = (['GK', 'DF', 'MF', 'FW'] as Role[]).find((r) => needs[r] > 0) ?? 'MF';
+    const role = ROLES.find((r) => needs[r] > 0) ?? 'MF';
     const junior = academyPlayer(role, mine.picks.length + 1);
     junior.name = 'ACADEMY';
     const juniorCard = new CardView(this.assets, junior, 2, true);
@@ -606,28 +875,29 @@ export class SquadBuilderScreen implements Screen {
   }
 
   private trySign(poolIdx: number) {
-    if (this.phase !== 'market' || !this.myTurn) return;
-    const mine = this.draft.sides[0];
+    if (!this.myTurn || this.mode !== 'draft') return;
+    const mine = this.draft.sides[this.mySide];
     const p = this.draft.pool[poolIdx];
     if (!p || !canPick(mine, p)) return audio.ui('denied');
-    pick(this.draft, poolIdx);
-    audio.ui('buy');
-    this.placePick(mine.picks.length - 1, p.role);
-    this.launchFlyer(p);
-    this.pickClock = PICK_TIME;
-    this.advanceTurn();
+    if (this.authority) {
+      this.pickClock = PICK_TIME;
+      this.issue({ k: 'sign', side: this.mySide, poolIdx });
+    } else {
+      this.sendIntent?.({ k: 'sign', poolIdx });
+    }
   }
 
   private signAcademy() {
-    if (this.phase !== 'market' || !this.myTurn || this.mode !== 'draft') return;
-    const needs = needsOf(this.draft.sides[0]);
-    const role = (['GK', 'DF', 'MF', 'FW'] as Role[]).find((r) => needs[r] > 0);
+    if (!this.myTurn || this.mode !== 'draft') return;
+    const needs = needsOf(this.draft.sides[this.mySide]);
+    const role = ROLES.find((r) => needs[r] > 0);
     if (!role) return audio.ui('denied');
-    pickAcademy(this.draft, role);
-    audio.ui('card');
-    this.placePick(this.draft.sides[0].picks.length - 1, role);
-    this.pickClock = PICK_TIME;
-    this.advanceTurn();
+    if (this.authority) {
+      this.pickClock = PICK_TIME;
+      this.issue({ k: 'academy', side: this.mySide, role });
+    } else {
+      this.sendIntent?.({ k: 'academy' });
+    }
   }
 
   // The bought man flies from the shelf onto your board
@@ -646,71 +916,99 @@ export class SquadBuilderScreen implements Screen {
     this.overlay.addChild(view);
   }
 
-  private advanceTurn() {
-    this.refreshPanels();
-    if (this.draft.turn >= this.draft.order.length) {
-      this.finish();
-      return;
-    }
-    this.cpuTimer = this.myTurn ? 0 : 1.1 + Math.random() * 0.8;
-    this.rebuildMarket();
-    this.layoutPhase();
-  }
-
-  private cpuPick() {
-    const cpu = this.draft.sides[1];
-    const i = aiPickIndex(this.draft);
-    let signed: StarPlayer;
-    if (i >= 0) {
-      signed = this.draft.pool[i];
-      pick(this.draft, i);
-    } else {
-      const needs = needsOf(cpu);
-      const role = (['GK', 'DF', 'MF', 'FW'] as Role[]).find((r) => needs[r] > 0) ?? 'MF';
-      pickAcademy(this.draft, role);
-      signed = cpu.picks[cpu.picks.length - 1];
-    }
-    audio.ui('card');
-    // a beat of showcase: the signing hangs center-stage
+  // Another bench signed: the man hangs center-stage under his captain's name
+  private showcase(side: 0 | 1, p: StarPlayer) {
     this.cpuReveal?.view.destroy({ children: true });
     const view = new Container();
-    const card = new CardView(this.assets, signed, 3, true);
+    const card = new CardView(this.assets, p, 3, true);
     card.pivot.set(this.assets.manifest.cards.w * 1.5, 0);
     const cap = new PixelText(this.assets, 3, 0x9cc4f0);
-    cap.text = 'CPU SIGNS';
+    cap.text = `${this.capNames[side]} SIGNS`;
     cap.centerAt(0, -34);
     view.addChild(cap, card);
     view.position.set(this.w / 2, this.h * 0.3);
     this.cpuReveal = { view, t: 1.05 };
     this.overlay.addChild(view);
-    this.advanceTurn();
+  }
+
+  private afterTurn() {
+    this.refreshPanels();
+    if (this.draft.turn >= this.draft.order.length) {
+      this.finish();
+      return;
+    }
+    this.cpuTimer = 1.1 + Math.random() * 0.8;
+    this.remoteClock = REMOTE_TIME;
+    this.pickClock = PICK_TIME;
+    this.rebuildMarket();
+    this.layoutPhase();
+  }
+
+  // The clock (or an empty chair) makes the current side's call
+  private cpuAct(side: 0 | 1) {
+    if (this.mode === 'draft') {
+      const i = aiPickIndex(this.draft);
+      if (i >= 0) {
+        this.issue({ k: 'sign', side, poolIdx: i });
+      } else {
+        const needs = needsOf(this.draft.sides[side]);
+        const role = ROLES.find((r) => needs[r] > 0) ?? 'MF';
+        this.issue({ k: 'academy', side, role });
+      }
+    } else {
+      const needs = needsOf(this.draft.sides[side]);
+      const wants = (['FW', 'MF', 'DF', 'GK'] as Role[]).filter((r) => needs[r] > 0);
+      const role = wants[Math.floor(Math.random() * wants.length)];
+      if (role) this.issueRoll(side, role);
+    }
   }
 
   // -------------------------------------------------------------- the reel
   // The whole shelf shuffled onto one long strip, every man an equal ticket.
-  // A flat roll decides the winner up front; the strip decelerates past the
-  // needle so you WATCH the near-misses right up until it lands.
+  // The authority rolls the winner UP FRONT and ships it with a strip seed;
+  // every screen then rides the same deceleration past the needle.
   private cellW(): number {
     return this.assets.manifest.cards.w * REEL_SCALE + REEL_GAP;
   }
 
-  private startRoll(role: Role, forCpu: boolean) {
-    if (this.roll) return; // one ride at a time — no re-rolling a bad spin
-    const side = this.draft.sides[forCpu ? 1 : 0];
+  private issueRoll(side: 0 | 1, role: Role): boolean {
+    if (this.roll) return false; // one ride at a time — no re-rolling a bad spin
     const roster = this.draft.pool.map((p, poolIdx) => ({ p, poolIdx })).filter((e) => e.p.role === role);
-    if (!roster.length || needsOf(side)[role] <= 0) return audio.ui('denied');
+    if (!roster.length || needsOf(this.draft.sides[side])[role] <= 0) return false;
+    const winner = roster[Math.floor(Math.random() * roster.length)];
+    this.issue({ k: 'roll', side, role, winnerPoolIdx: winner.poolIdx, seed: Math.floor(Math.random() * 0x7fffffff) });
+    return true;
+  }
+
+  private requestRoll(role: Role) {
+    if (this.roll) return;
+    if (!this.myTurn || this.mode !== 'gamble') return audio.ui('denied');
+    if (needsOf(this.draft.sides[this.mySide])[role] <= 0) return audio.ui('denied');
+    if (this.authority) {
+      if (!this.issueRoll(this.mySide, role)) audio.ui('denied');
+    } else {
+      this.sendIntent?.({ k: 'roll', role });
+    }
+  }
+
+  private beginRoll(op: Extract<DraftOp, { k: 'roll' }>) {
+    const role = op.role as Role;
+    const roster = this.draft.pool.map((p, poolIdx) => ({ p, poolIdx })).filter((e) => e.p.role === role);
+    const winner = roster.find((e) => e.poolIdx === op.winnerPoolIdx) ?? roster[0];
+    if (!winner) return;
     this.killReel();
     this.revealCard?.view.destroy({ children: true });
     this.revealCard = null;
-    const winner = roster[Math.floor(Math.random() * roster.length)];
+    const rng = new Rng(op.seed);
     const shuffled = [...roster];
     for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
+      const j = Math.floor(rng.next() * (i + 1));
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
     // tile the shuffle until the strip is long enough to really travel, and
     // land on the winner's LAST appearance so the ride uses the whole road
-    const travel = forCpu ? 16 : 32;
+    const myRide = op.side === this.mySide && this.iAmCaptain;
+    const travel = myRide ? 32 : 16;
     const strip: { p: StarPlayer; poolIdx: number }[] = [];
     while (strip.length < travel + shuffled.length) strip.push(...shuffled);
     let winStrip = strip.length - 1;
@@ -719,80 +1017,93 @@ export class SquadBuilderScreen implements Screen {
     }
     const cell = this.cellW();
     strip.forEach((e, i) => {
-      const card = new CardView(this.assets, e.p, REEL_SCALE, false);
+      const card = new CardView(this.assets, e.p, REEL_SCALE, true); // the fine print rides the reel
       card.position.set(i * cell, 0);
       this.reelStrip.addChild(card);
     });
     this.reelStrip.y = this.reelY;
     // land a touch off-center — a machine stops where physics says, not a ruler
-    const jitter = (Math.random() - 0.5) * 0.5 * (cell - REEL_GAP);
+    const jitter = (rng.next() - 0.5) * 0.5 * (cell - REEL_GAP);
     const center = this.w / 2;
     this.roll = {
       t: 0,
-      dur: forCpu ? 1.4 : 3.4,
+      dur: myRide ? 3.4 : 1.8,
       from: center - (cell - REEL_GAP) / 2,
       to: center - (cell - REEL_GAP) / 2 - winStrip * cell + jitter,
       strip,
       winStrip,
-      forCpu,
+      side: op.side,
       role,
       lastCell: -1,
     };
-    if (!forCpu) audio.ui('select');
+    if (myRide) audio.ui('select');
   }
 
   private resolveRoll() {
     const r = this.roll;
     if (!r) return;
     this.roll = null; // the strip stays frozen on the winner until the next act
-    const side = this.draft.sides[r.forCpu ? 1 : 0];
+    const side = this.draft.sides[r.side];
     const won = r.strip[r.winStrip];
     side.picks.push(won.p);
     this.draft.pool.splice(won.poolIdx, 1);
     this.draft.turn++;
+    this.autoPlace(r.side, side.picks.length - 1, r.role);
     const band = rarityOf(won.p.ovr);
-    audio.ui(band === 'legend' || band === 'epic' ? 'wheel-win' : 'buy');
-    if (!r.forCpu) this.placePick(side.picks.length - 1, r.role);
+    const mine = r.side === this.mySide && this.iAmCaptain;
+    audio.ui(mine ? (band === 'legend' || band === 'epic' ? 'wheel-win' : 'buy') : 'card');
     // the landed card steps forward for its close-up
     this.revealCard?.view.destroy({ children: true });
     const view = new Container();
-    const card = new CardView(this.assets, won.p, r.forCpu ? 2 : 3, true);
-    card.pivot.set((this.assets.manifest.cards.w * (r.forCpu ? 2 : 3)) / 2, 0);
-    const cap = new PixelText(this.assets, 3, r.forCpu ? 0x9cc4f0 : RARITY_TINT[band]);
-    cap.text = r.forCpu ? 'CPU PULLS' : band.toUpperCase();
+    const card = new CardView(this.assets, won.p, mine ? 3 : 2, true);
+    card.pivot.set((this.assets.manifest.cards.w * (mine ? 3 : 2)) / 2, 0);
+    const cap = new PixelText(this.assets, 3, mine ? RARITY_TINT[band] : 0x9cc4f0);
+    cap.text = mine ? band.toUpperCase() : `${this.capNames[r.side]} PULLS`;
     cap.centerAt(0, -34);
     view.addChild(cap, card);
     view.position.set(this.w / 2, this.h * 0.12);
-    this.revealCard = { view, t: r.forCpu ? 0.9 : 1.5 };
+    this.revealCard = { view, t: mine ? 1.5 : 0.9 };
     this.overlay.addChild(view);
-    this.advanceTurn();
+    this.afterTurn();
+    this.drainOps();
   }
 
   // -------------------------------------------------------------- finishing
   private finish() {
     this.phase = 'done';
     this.clearTransients();
-    fillWithAcademy(this.draft.sides[0]);
-    fillWithAcademy(this.draft.sides[1]);
-    const mine = this.draft.sides[0];
-    // any body not yet on the board takes the best open chair
-    mine.picks.forEach((p, i) => {
-      if (!this.arrangement.includes(i)) this.placePick(i, p.role);
-    });
-    const shape = FORMATIONS[this.myShape];
-    const ordered = shape.slots.map((_, si) => {
-      const pi = this.arrangement[si];
-      return pi !== null && pi !== undefined ? mine.picks[pi] : mine.picks.find((_, j) => !this.arrangement.includes(j))!;
-    });
-    this.onDone(
-      toSquadOrdered(ordered, shape), this.myShape,
-      toSquad(this.draft.sides[1].picks, FORMATIONS[this.cpuShape]), this.cpuShape,
-    );
+    if (!this.authority) {
+      // a mirror holds the boards up until the host raises the curtain
+      this.turnText.text = 'SQUADS LOCKED - BOOTS ON';
+      this.turnText.centerAt(this.w / 2, 58);
+      this.layoutPhase();
+      return;
+    }
+    const squadOf = (side: 0 | 1): SquadPlayer[] => {
+      const ds = this.draft.sides[side];
+      fillWithAcademy(ds);
+      const shape = FORMATIONS[this.shapes[side]];
+      const arr = this.arrangements[side];
+      // any body not yet on the board takes the best open chair
+      ds.picks.forEach((p, i) => {
+        if (!arr.includes(i)) {
+          const slot = bestOpenSlot(shape.slots, arr, p.role);
+          if (slot >= 0) arr[slot] = i;
+        }
+      });
+      const ordered = shape.slots.map((_, si) => {
+        const pi = arr[si];
+        return pi !== null && pi !== undefined ? ds.picks[pi] : ds.picks.find((_, j) => !arr.includes(j))!;
+      });
+      return toSquadOrdered(ordered, shape);
+    };
+    this.onDone(squadOf(0), this.shapes[0], squadOf(1), this.shapes[1]);
   }
 
   // ----------------------------------------------------------------- input
   key(code: string) {
     if (this.phase === 'shape') {
+      if (!this.iAmCaptain || this.myShape) return;
       const cols = STYLES.length;
       if (code === 'ArrowLeft' || code === 'KeyA') { this.styleCol = (this.styleCol + cols - 1) % cols; this.shapeRow = 0; audio.ui('move'); this.buildShapePanels(); }
       if (code === 'ArrowRight' || code === 'KeyD') { this.styleCol = (this.styleCol + 1) % cols; this.shapeRow = 0; audio.ui('move'); this.buildShapePanels(); }
@@ -821,31 +1132,64 @@ export class SquadBuilderScreen implements Screen {
       if ((code === 'Enter' || code === 'Space') && entries[this.gridSel]) this.trySign(entries[this.gridSel].poolIdx);
     } else {
       if (this.roll || !this.myTurn) return;
-      const roles: Role[] = ['GK', 'DF', 'MF', 'FW'];
       if (code === 'ArrowLeft' || code === 'KeyA') { this.roleSel = (this.roleSel + 3) % 4; audio.ui('move'); this.layoutPhase(); }
       if (code === 'ArrowRight' || code === 'KeyD') { this.roleSel = (this.roleSel + 1) % 4; audio.ui('move'); this.layoutPhase(); }
-      if (code === 'Enter' || code === 'Space') this.startRoll(roles[this.roleSel], false);
+      if (code === 'Enter' || code === 'Space') this.requestRoll(ROLES[this.roleSel]);
     }
   }
 
   // ----------------------------------------------------------------- phases
   private confirmShape() {
+    if (!this.iAmCaptain || this.myShape) return;
     const list = formationsOf(this.size, STYLES[this.styleCol]);
-    this.myShape = list[this.shapeRow] ?? formationsOf(this.size, 'balanced')[0];
-    const styles = STYLES[Math.floor(Math.random() * STYLES.length)];
-    const cpuList = formationsOf(this.size, styles);
-    this.cpuShape = cpuList[Math.floor(Math.random() * cpuList.length)] ?? this.myShape;
-    this.arrangement = FORMATIONS[this.myShape].slots.map(() => null);
-    this.phase = 'market';
+    const id = list[this.shapeRow] ?? formationsOf(this.size, 'balanced')[0];
     audio.ui('select');
-    this.cpuTimer = this.myTurn ? 0 : 1.2;
+    if (this.authority) this.issue({ k: 'shape', side: this.mySide, id });
+    else this.sendIntent?.({ k: 'shape', id });
+  }
+
+  private enterMarket() {
+    this.phase = 'market';
+    this.cpuTimer = 1.2;
+    this.remoteClock = REMOTE_TIME;
+    this.pickClock = PICK_TIME;
+    audio.ui('select');
     this.refreshPanels();
     this.rebuildMarket(true);
     this.layoutPhase();
   }
 
+  // CPU benches call their shape the moment the coin settles; slow humans
+  // get the shape clock, then the authority calls balanced for them
+  private autoShapes(deadline: boolean) {
+    if (!this.authority) return;
+    ([0, 1] as const).forEach((side) => {
+      if (this.shapes[side]) return;
+      const c = this.ctl[side];
+      if (c.kind === 'cpu') {
+        const style = STYLES[Math.floor(Math.random() * STYLES.length)];
+        const list = formationsOf(this.size, style);
+        this.issue({ k: 'shape', side, id: list[Math.floor(Math.random() * list.length)] ?? formationsOf(this.size, 'balanced')[0] });
+      } else if (deadline) {
+        if (c.kind === 'local') {
+          const list = formationsOf(this.size, STYLES[this.styleCol]);
+          this.issue({ k: 'shape', side, id: list[this.shapeRow] ?? formationsOf(this.size, 'balanced')[0] });
+        } else {
+          this.issue({ k: 'shape', side, id: formationsOf(this.size, 'balanced')[0] });
+        }
+      }
+    });
+  }
+
   private buildShapePanels() {
     this.shapePanels.removeChildren().forEach((c) => c.destroy({ children: true }));
+    if (!this.iAmCaptain || this.myShape) {
+      const wait = new PixelText(this.assets, 3, 0x8f97a8);
+      wait.text = this.myShape ? 'SHAPE LOCKED - WAITING ON THE OTHER BENCH' : 'THE CAPTAINS ARE CALLING THEIR SHAPES';
+      wait.centerAt(this.w / 2, this.h * 0.42);
+      this.shapePanels.addChild(wait);
+      return;
+    }
     const colW = 240;
     const gap = 36;
     const totalW = colW * 3 + gap * 2;
@@ -903,15 +1247,23 @@ export class SquadBuilderScreen implements Screen {
         this.coin.texture = this.assets.coinFrames[winner];
         this.coin.scale.set(6);
         this.coin.position.y = this.h * 0.4;
-        this.caption.text = winner === 0 ? 'YOU PICK FIRST' : 'CPU PICKS FIRST';
+        this.caption.text = winner === this.mySide && this.iAmCaptain
+          ? 'YOU PICK FIRST'
+          : `${this.capNames[winner]} PICKS FIRST`;
         this.caption.centerAt(this.w / 2, this.h * 0.56);
         this.caption.visible = true;
         if (t > 2.4) {
           this.phase = 'shape';
           this.shapeClock = SHAPE_TIME;
           audio.ui('card');
-          this.buildShapePanels();
-          this.layoutPhase();
+          this.autoShapes(false); // CPU benches answer instantly
+          if (this.phase === 'shape') {
+            if (this.shapes[0] && this.shapes[1]) this.enterMarket();
+            else {
+              this.buildShapePanels();
+              this.layoutPhase();
+            }
+          }
         }
       }
       return;
@@ -919,8 +1271,8 @@ export class SquadBuilderScreen implements Screen {
 
     if (this.phase === 'shape') {
       this.shapeClock -= dt;
-      if (this.shapeClock <= 0) this.confirmShape();
-      this.drawClock(this.shapeClock / SHAPE_TIME);
+      if (this.shapeClock <= 0) this.autoShapes(true);
+      this.drawClock(Math.max(0, this.shapeClock) / SHAPE_TIME);
       this.turnRefresh();
       return;
     }
@@ -963,10 +1315,11 @@ export class SquadBuilderScreen implements Screen {
     }
 
     if (this.mode === 'gamble') {
-      // the reel talks you through it: what to do, or whose hands it's in
+      // the reel talks you through it: what to do, or whose hands it's in —
+      // and it steps aside while a landed card takes its close-up
       this.promptPulse += dt * 4;
-      this.wheelPrompt.text = this.roll ? '' :
-        this.myTurn ? 'PICK A SHELF - ENTER ROLLS' : 'CPU AT THE SLOTS';
+      this.wheelPrompt.text = this.roll || this.revealCard ? '' :
+        this.myTurn ? 'PICK A SHELF - ENTER ROLLS' : `${this.capNames[this.curSide]} AT THE SLOTS`;
       this.wheelPrompt.alpha = this.myTurn && !this.roll ? 0.7 + 0.3 * Math.sin(this.promptPulse) : 0.7;
       this.wheelPrompt.centerAt(this.w / 2, this.reelY - 36);
     }
@@ -986,38 +1339,34 @@ export class SquadBuilderScreen implements Screen {
       return;
     }
 
-    if (this.myTurn) {
-      if (this.mode === 'draft') {
-        this.pickClock -= dt;
-        if (this.pickClock < 5.2 && Math.floor(this.pickClock * 2) !== Math.floor((this.pickClock + dt) * 2)) {
-          audio.play('ui-wheel-tick', { vol: 0.7 });
-        }
-        if (this.pickClock <= 0) {
-          // the clock signs for you — best value on the shelf
-          const i = aiPickIndex(this.draft);
-          if (i >= 0) {
-            const p = this.draft.pool[i];
-            pick(this.draft, i);
-            this.placePick(this.draft.sides[0].picks.length - 1, p.role);
-            audio.ui('card');
-          } else {
-            this.signAcademy();
-            return;
+    // the referee's clocks: his own pick timer, the CPU's think, and the
+    // grace an absent captain gets before the clock signs for him
+    if (this.authority && this.draft.turn < this.draft.order.length && !this.roll) {
+      const side = this.curSide;
+      const c = this.ctl[side];
+      if (c.kind === 'local') {
+        if (this.mode === 'draft') {
+          this.pickClock -= dt;
+          if (this.pickClock < 5.2 && Math.floor(this.pickClock * 2) !== Math.floor((this.pickClock + dt) * 2)) {
+            audio.play('ui-wheel-tick', { vol: 0.7 });
           }
-          this.pickClock = PICK_TIME;
-          this.advanceTurn();
+          if (this.pickClock <= 0) {
+            this.pickClock = PICK_TIME;
+            this.cpuAct(side); // the clock signs for you — best value on the shelf
+          } else {
+            this.drawClock(this.pickClock / PICK_TIME);
+          }
         }
-        this.drawClock(this.pickClock / PICK_TIME);
-      }
-    } else if (!this.cpuReveal && !this.revealCard) {
-      this.cpuTimer -= dt;
-      if (this.cpuTimer <= 0) {
-        if (this.mode === 'draft') this.cpuPick();
-        else {
-          const needs = needsOf(this.draft.sides[1]);
-          const wants = (['FW', 'MF', 'DF', 'GK'] as Role[]).filter((r) => needs[r] > 0);
-          const role = wants[Math.floor(Math.random() * wants.length)];
-          if (role) this.startRoll(role, true);
+      } else if (!this.cpuReveal && !this.revealCard) {
+        if (c.kind === 'remote') {
+          this.remoteClock -= dt;
+          if (this.remoteClock <= 0) {
+            this.remoteClock = REMOTE_TIME;
+            this.cpuAct(side);
+          }
+        } else {
+          this.cpuTimer -= dt;
+          if (this.cpuTimer <= 0) this.cpuAct(side);
         }
       }
     }
@@ -1025,10 +1374,13 @@ export class SquadBuilderScreen implements Screen {
   }
 
   private turnRefresh() {
+    if (this.phase === 'done') return; // the lock line stands
     const pickNo = Math.min(this.draft.turn + 1, this.draft.order.length);
     this.turnText.text = this.phase === 'shape'
-      ? 'CALL YOUR SHAPE'
-      : this.myTurn ? `PICK ${pickNo} OF ${this.draft.order.length} - YOUR CALL` : `PICK ${pickNo} OF ${this.draft.order.length} - CPU THINKING`;
+      ? (this.iAmCaptain ? 'CALL YOUR SHAPE' : 'THE CAPTAINS CALL THE SHAPES')
+      : this.myTurn
+        ? `PICK ${pickNo} OF ${this.draft.order.length} - YOUR CALL`
+        : `PICK ${pickNo} OF ${this.draft.order.length} - ${this.clockLabel(this.curSide)}`;
     this.turnText.centerAt(this.w / 2, 58);
   }
 
@@ -1059,8 +1411,10 @@ export class SquadBuilderScreen implements Screen {
     if (!reelOn && this.reelStrip.children.length) this.killReel();
     this.turnText.visible = this.phase !== 'toss';
     this.myPanel.visible = this.phase !== 'toss';
-    this.cpuPanel.visible = this.phase === 'market';
-    this.clockBar.visible = this.phase === 'shape' || (this.phase === 'market' && this.mode === 'draft' && this.myTurn);
+    this.cpuPanel.visible = this.phase === 'market' || this.phase === 'done';
+    this.clockBar.visible = this.phase === 'shape' ||
+      (this.phase === 'market' && this.mode === 'draft' && this.myTurn && this.authority);
+    this.backBtn.visible = this.authority && this.phase !== 'done';
     if (reelOn) {
       this.buildRoleButtons();
     } else {
@@ -1113,18 +1467,17 @@ export class SquadBuilderScreen implements Screen {
   private buildRoleButtons() {
     this.roleButtons?.destroy({ children: true });
     const wrap = new Container();
-    const roles: Role[] = ['GK', 'DF', 'MF', 'FW'];
-    const needs = needsOf(this.draft.sides[0]);
+    const needs = needsOf(this.draft.sides[this.mySide]);
     // a filled shelf hands the selector to the next open role
-    if (needs[roles[this.roleSel]] <= 0) {
-      const open = roles.findIndex((r) => needs[r] > 0);
+    if (needs[ROLES[this.roleSel]] <= 0) {
+      const open = ROLES.findIndex((r) => needs[r] > 0);
       if (open >= 0) this.roleSel = open;
     }
     const BW = 108;
     const BH = 62;
     const GAP = 18;
-    roles.forEach((r, i) => {
-      const active = i === this.roleSel;
+    ROLES.forEach((r, i) => {
+      const active = i === this.roleSel && this.myTurn;
       const open = needs[r] > 0;
       const b = new Container();
       const g = new Graphics();
@@ -1148,8 +1501,7 @@ export class SquadBuilderScreen implements Screen {
       b.cursor = 'pointer';
       b.on('pointertap', () => {
         this.roleSel = i;
-        if (open) this.startRoll(r, false);
-        else audio.ui('denied');
+        this.requestRoll(r); // the turn gate answers — nobody rolls out of turn
       });
       wrap.addChild(b);
     });

@@ -56,6 +56,14 @@ export function needsOf(side: DraftSide): Record<Role, number> {
   return left;
 }
 
+// The quota a chosen shape ACTUALLY demands — once the formation is called,
+// needs track the board (a 4-5-1 wants one striker, not the template's two)
+export function quotaOfShape(shape: Formation): Record<Role, number> {
+  const q: Record<Role, number> = { GK: 0, DF: 0, MF: 0, FW: 0 };
+  for (const s of shape.slots) q[s.role]++;
+  return q;
+}
+
 // A pick is legal if the role is still needed and paying for it leaves
 // enough to fill every remaining slot from the academy
 export function canPick(side: DraftSide, player: StarPlayer): boolean {

@@ -200,8 +200,7 @@ export class Scene {
       if (e.kind === 'restart') {
         this.hud.announce(
           e.restart === 'corner' ? 'CORNER KICK' :
-          e.restart === 'goalkick' ? 'GOAL KICK' :
-          e.restart === 'freekick' ? 'FREE KICK' : 'THROW IN',
+          e.restart === 'goalkick' ? 'GOAL KICK' : 'THROW IN',
         );
       }
       if (e.kind === 'goal') {

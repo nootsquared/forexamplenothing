@@ -1,4 +1,4 @@
-import { NetSession, LobbySnap, SeatSnap, GuestMsg, HostMsg, NetInput } from './net';
+import { NetSession, LobbySnap, SeatSnap, GuestMsg, HostMsg, NetInput, DraftIntent } from './net';
 import { PlayerInput } from '../sim/player';
 import { vec } from '../core/math';
 
@@ -10,6 +10,7 @@ export interface Seat {
   seat: number;            // 0 = host
   name: string;
   team: 0 | 1 | null;
+  claimedAt: number;       // claim-order stamp — first to claim wears the armband
   ready: boolean;
   lastInput: NetInput | null; // freshest input while a match runs
   switchPressed: boolean;     // E arrived since last tick
@@ -29,18 +30,23 @@ export class Party {
   phase: 'teams' | 'draft' | 'match' = 'teams';
   onChange: () => void = () => {};          // host UI refresh hook
   onSeatJoined: (seat: number) => void = () => {}; // a fresh face walked in
-  onGuestDraft: (seat: number, action: { kind: 'roll'; role: string } | { kind: 'shape'; id: string }) => void = () => {};
+  onSeatLeft: (seat: number) => void = () => {};   // ...and one walked out
+  onGuestDraft: (seat: number, action: DraftIntent) => void = () => {};
+  private claimSeq = 1; // ticket roll for claim order
 
   constructor(public net: NetSession, hostName: string, public nationIds: string[]) {
-    this.seats.set(0, { seat: 0, name: hostName, team: null, ready: false, lastInput: null, switchPressed: false, pendingKick: null });
+    this.seats.set(0, { seat: 0, name: hostName, team: null, claimedAt: 0, ready: false, lastInput: null, switchPressed: false, pendingKick: null });
   }
 
-  // The captain of a team is its longest-standing member — first in, armband on
+  // The captain of a team is whoever CLAIMED it first — first in the shirt,
+  // armband on. The host joining late stands in line like anyone else.
   captainOf(team: 0 | 1): number {
+    let cap = -1;
+    let at = Infinity;
     for (const s of this.seats.values()) {
-      if (s.team === team) return s.seat; // Map preserves insertion order
+      if (s.team === team && s.claimedAt < at) { at = s.claimedAt; cap = s.seat; }
     }
-    return -1;
+    return cap;
   }
 
   humansOn(team: 0 | 1): Seat[] {
@@ -49,10 +55,11 @@ export class Party {
 
   claim(seat: number, team: 0 | 1 | null) {
     const s = this.seats.get(seat);
-    if (!s) return;
+    if (!s || s.team === team) return;
     // a team holds at most 11 humans — one body each
     if (team !== null && this.humansOn(team).length >= 11) return;
     s.team = team;
+    s.claimedAt = team === null ? 0 : this.claimSeq++;
     s.ready = false;
     this.publish();
   }
@@ -119,12 +126,13 @@ export class Party {
   attach(): void {
     this.net.onMessage = (m) => {
       if (m.t === 'peer-joined') {
-        this.seats.set(m.seat, { seat: m.seat, name: m.name, team: null, ready: false, lastInput: null, switchPressed: false, pendingKick: null });
+        this.seats.set(m.seat, { seat: m.seat, name: m.name, team: null, claimedAt: 0, ready: false, lastInput: null, switchPressed: false, pendingKick: null });
         this.publish();
         this.onSeatJoined(m.seat);
       } else if (m.t === 'peer-left') {
         this.seats.delete(m.seat);
         this.publish();
+        this.onSeatLeft(m.seat);
       } else if (m.t === 'from') {
         this.onGuest(m.seat, m.msg);
       }

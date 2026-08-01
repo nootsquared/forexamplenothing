@@ -305,9 +305,10 @@ export class World {
   }
 
   // A lunge that misses the ball but arrives through the carrier is a foul —
-  // OCCASIONALLY. One roll per lunge, a long grace between whistles, and the
-  // spot decides the sentence: his own box is a penalty, anywhere else a free
-  // kick. Keepers contest with hands and stay out of this entirely.
+  // but the whistle only points to the SPOT. Outside the box the referee
+  // waves play on (free kicks are gone — the arcade never stops mid-pitch);
+  // inside it, the full penalty theater. Keepers contest with hands and stay
+  // out of this entirely.
   private maybeFoul(p: PlayerBody, idx: number) {
     if (p.id.role === 'GK' || this.penalty || this.foulCooldown > 0) return;
     if (this.lungeRolled.has(idx)) return;
@@ -315,30 +316,23 @@ export class World {
     if (carrierIdx === null) return;
     const carrier = this.players[carrierIdx];
     if (carrier.id.team === p.id.team || dist(p.pos, carrier.pos) > 0.85) return;
+    const defSign = this.attackSign(p.id.team);
+    const boxDeep = defSign > 0 ? carrier.pos.x < 16.5 : carrier.pos.x > PITCH.length - 16.5;
+    const inBox = boxDeep && Math.abs(carrier.pos.y - PITCH.width / 2) < 20.16;
+    if (!inBox) return; // play on — no mid-pitch ceremony
     this.lungeRolled.add(idx);
     if (this.rng.next() > 0.16) return; // almost every late arrival gets away with it
     p.lungeTimer = 0;
     p.tackleCooldown = Math.max(p.tackleCooldown, 1.2);
     this.foulCooldown = 25; // the whistle is an event, not a rhythm
-    const defSign = this.attackSign(p.id.team);
     // the victim goes DOWN — sprawled, shoved, and briefly out of the game.
     // Half theater, half truth: it sells the whistle and it's funny to watch.
     carrier.lungeTimer = Math.max(carrier.lungeTimer, 0.9);
     carrier.vel = add(carrier.vel, scale(norm(sub(carrier.pos, p.pos)), 3.6));
     carrier.touchCooldown = Math.max(carrier.touchCooldown, 0.8);
     this.events.push({ kind: 'tackle', x: carrier.pos.x, y: carrier.pos.y });
-    const boxDeep = defSign > 0 ? carrier.pos.x < 16.5 : carrier.pos.x > PITCH.length - 16.5;
-    const inBox = boxDeep && Math.abs(carrier.pos.y - PITCH.width / 2) < 20.16;
-    this.events.push({ kind: 'foul', x: carrier.pos.x, y: carrier.pos.y, penalty: inBox });
-    if (inBox) {
-      this.beginPenalty(carrier.id.team, carrierIdx);
-    } else {
-      this.awardRestart(
-        vec(clamp(carrier.pos.x, 2, PITCH.length - 2), clamp(carrier.pos.y, 2, PITCH.width - 2)),
-        carrier.id.team,
-        'freekick',
-      );
-    }
+    this.events.push({ kind: 'foul', x: carrier.pos.x, y: carrier.pos.y, penalty: true });
+    this.beginPenalty(carrier.id.team, carrierIdx);
   }
 
   // The stage set: ball on the spot, the fouled man over it (his keeper mate
@@ -714,7 +708,8 @@ export class World {
     if (b.pos.y > PITCH.width + 0.2) return this.awardRestart(vec(clamp(b.pos.x, 1, PITCH.length - 1), PITCH.width - 0.3), this.throwInTeam(), 'throwin');
     if (!inMouth && (b.pos.x < -0.25 || b.pos.x > PITCH.length + 0.25)) {
       const leftEnd = b.pos.x < 0;
-      const defender: 0 | 1 = leftEnd ? 0 : 1;
+      // the team DEFENDING the crossed end — honest across the halftime swap
+      const defender: 0 | 1 = (this.attackSign(0) > 0) === leftEnd ? 0 : 1;
       if (this.lastTouch && this.lastTouch.team === defender) {
         // Corner for the attackers, from the corner arc they earned
         const cx = leftEnd ? 0.4 : PITCH.length - 0.4;
@@ -732,7 +727,7 @@ export class World {
 
   // Place the ball dead, set the right taker walking onto it (the KEEPER for
   // goal kicks), and give the moment a broadcast beat before play resumes
-  private awardRestart(spot: Vec2, team: 0 | 1, restart: 'throwin' | 'corner' | 'goalkick' | 'freekick') {
+  private awardRestart(spot: Vec2, team: 0 | 1, restart: 'throwin' | 'corner' | 'goalkick') {
     let taker = -1;
     let bestD = Infinity;
     this.players.forEach((p, i) => {
@@ -751,9 +746,9 @@ export class World {
     if (taker >= 0) {
       const p = this.players[taker];
       const inward = norm(sub(vec(PITCH.length / 2, PITCH.width / 2), spot));
-      // Near the spot, not ON it — and always INSIDE the field of play; a
-      // throw-in taker who spawns in the stands is a broadcast incident
-      p.pos = add(vec(spot.x, spot.y), scale(inward, 1.2));
+      // BEHIND the ball, facing the field — his first step plays it inward,
+      // never taps it back over the line he's restarting from
+      p.pos = sub(vec(spot.x, spot.y), scale(inward, 1.0));
       p.vel = vec();
       p.facing = inward;
       p.savePrev();
