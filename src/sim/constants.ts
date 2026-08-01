@@ -1,6 +1,6 @@
 export const PITCH = {
-  length: 105,
-  width: 68,
+  length: 114, // stretched past regulation: the long ball has somewhere to go
+  width: 74,
   goalWidth: 9.8,  // arcade-wide: a keeper GUARDS it, he doesn't blanket it
   goalHeight: 2.7,
   goalDepth: 2.2,

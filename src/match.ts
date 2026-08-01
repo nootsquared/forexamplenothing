@@ -134,8 +134,9 @@ export function advanceMatch(match: Match, dt: number, overrides: Record<number,
   // scored — every number a broadcast graphic would want
   const s = match.stats;
   const world = match.world;
-  const poss = world.possessor();
-  if (poss !== null) s.possession[world.players[poss].id.team]++;
+  // Broadcast possession: the team that last PLAYED the ball owns the tick
+  // (pass flight included), and dead-ball ceremony time counts for nobody
+  if (world.restartLock <= 0 && world.lastTouch) s.possession[world.lastTouch.team]++;
 
   // a waiting pass resolves the moment ANY other boot touches the ball
   const lt = world.lastTouch;

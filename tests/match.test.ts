@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { vec, dist } from '../src/core/math';
+import { PITCH } from '../src/sim/constants';
 import { createMatch, advanceMatch } from '../src/match';
 import { World } from '../src/sim/world';
 import { PlayerBody, PlayerInput } from '../src/sim/player';
@@ -156,7 +157,7 @@ describe('restarts', () => {
     const away = new PlayerBody(vec(60, 60), stats, { team: 1, role: 'MF', anchor: vec(0.5, 0.5), number: 8 });
     world.players.push(home, away);
     world.lastTouch = { team: 0, idx: 0 }; // home put it out
-    world.ball.pos = vec(55, 67.5);
+    world.ball.pos = vec(55, PITCH.width - 0.5);
     world.ball.vel = vec(0, 9);
     let restart: { taker: number; team: 0 | 1 } | null = null;
     for (let i = 0; i < 90 && !restart; i++) {
@@ -167,7 +168,7 @@ describe('restarts', () => {
     expect(restart).not.toBeNull();
     expect(restart!.team).toBe(1);
     expect(restart!.taker).toBe(1);
-    expect(world.ball.pos.y).toBeLessThan(68); // placed on the line, in play
+    expect(world.ball.pos.y).toBeLessThan(PITCH.width); // placed on the line, in play
     expect(world.restartLock).toBeGreaterThan(0);
   });
 
@@ -289,5 +290,45 @@ describe('the long punt', () => {
     for (let t = 0; t < 60 * 5; t++) world.step(DT, []);
     expect(world.ball.pos.x).toBeGreaterThan(74); // deep into their half, box-edge territory
     expect(world.ball.pos.x).toBeLessThan(96);    // and not sailing over the goal line
+  });
+});
+
+describe('offside', () => {
+  it('a man beyond the second-last defender is flagged when he takes the pass', () => {
+    const world = new World();
+    const passer = new PlayerBody(vec(70, 37), stats, { team: 0, role: 'MF', anchor: vec(0.5, 0.5), number: 8 });
+    const poacher = new PlayerBody(vec(95, 37), stats, { team: 0, role: 'FW', anchor: vec(0.8, 0.5), number: 9 });
+    const lastDef = new PlayerBody(vec(85, 30), stats, { team: 1, role: 'DF', anchor: vec(0.2, 0.4), number: 4 });
+    const gk = new PlayerBody(vec(112, 37), stats, { team: 1, role: 'GK', anchor: vec(0.04, 0.5), number: 1 });
+    world.players.push(passer, poacher, lastDef, gk);
+    world.ball.pos = vec(70.6, 37);
+    world.step(DT, [{ ...idle, move: vec(1, 0), kickReleased: { power: 0.85 } }, idle, idle, idle]);
+    let offside = false;
+    for (let i = 0; i < 60 * 3 && !offside; i++) {
+      // the flagged man attacks his pass, as he would in play
+      const toBall = vec(world.ball.pos.x - poacher.pos.x, world.ball.pos.y - poacher.pos.y);
+      const len = Math.hypot(toBall.x, toBall.y) || 1;
+      world.step(DT, [idle, { ...idle, move: vec(toBall.x / len, toBall.y / len) }, idle, idle]);
+      offside = world.events.some((e) => e.kind === 'offside');
+    }
+    expect(offside).toBe(true);
+    expect(world.restartLock).toBeGreaterThan(0); // free kick to the defenders
+  });
+
+  it('level with or behind the second-last defender is onside', () => {
+    const world = new World();
+    const passer = new PlayerBody(vec(60, 37), stats, { team: 0, role: 'MF', anchor: vec(0.5, 0.5), number: 8 });
+    const runner = new PlayerBody(vec(80, 37), stats, { team: 0, role: 'FW', anchor: vec(0.8, 0.5), number: 9 });
+    const lastDef = new PlayerBody(vec(85, 30), stats, { team: 1, role: 'DF', anchor: vec(0.2, 0.4), number: 4 });
+    const gk = new PlayerBody(vec(112, 37), stats, { team: 1, role: 'GK', anchor: vec(0.04, 0.5), number: 1 });
+    world.players.push(passer, runner, lastDef, gk);
+    world.ball.pos = vec(60.6, 37);
+    world.step(DT, [{ ...idle, move: vec(1, 0), kickReleased: { power: 0.7 } }, idle, idle, idle]);
+    let offside = false;
+    for (let i = 0; i < 60 * 3; i++) {
+      world.step(DT, [idle, idle, idle, idle]);
+      if (world.events.some((e) => e.kind === 'offside')) offside = true;
+    }
+    expect(offside).toBe(false);
   });
 });

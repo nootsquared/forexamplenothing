@@ -17,12 +17,14 @@ export function priceOf(ovr: number): number {
   return Math.round(0.9 * Math.pow(2, (ovr - 62) / 6) * 10) / 10;
 }
 
-// pace/agility/control/power in 0..1 → the sim's meters-and-seconds stats
+// pace/agility/control/power in 0..1 → the sim's meters-and-seconds stats.
+// Legs run ~15% under the ball's pace on purpose: the PASS is the fast option,
+// and slower play buys everyone time to think between moves.
 function toStats(pace: number, agility: number, control: number, power: number): PlayerStats {
   return {
-    topSpeed: 5.4 + pace * 1.3,
-    sprintSpeed: 7.4 + pace * 1.9,
-    accel: 9 + agility * 2.4,
+    topSpeed: 4.6 + pace * 1.1,
+    sprintSpeed: 6.3 + pace * 1.6,
+    accel: 8.4 + agility * 2.2,
     agility,
     control,
     power,

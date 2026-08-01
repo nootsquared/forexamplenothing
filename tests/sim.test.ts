@@ -212,14 +212,14 @@ describe('goals', () => {
     const striker = new PlayerBody(vec(60, 34), stats, { team: 0, role: 'FW', anchor: vec(0.7, 0.5), number: 9 });
     world.players.push(p, striker);
     p.pos = vec(80, 50); // wandered far from the kickoff spot
-    world.ball.pos = vec(2, 34);
+    world.ball.pos = vec(2, PITCH.width / 2);
     world.ball.vel = vec(-14, 0);
     runSteps(world, [idle, idle], 60 * 5);
     expect(world.score.right).toBe(1);
-    expect(world.ball.pos.x).toBeCloseTo(52.5, 1);
+    expect(world.ball.pos.x).toBeCloseTo(PITCH.length / 2, 1);
     expect(p.pos.x).toBeCloseTo(30, 1); // back home for the restart
     expect(p.pos.y).toBeCloseTo(20, 1);
-    expect(striker.pos.x).toBeCloseTo(51, 0); // the central forward stands over the ball
+    expect(striker.pos.x).toBeCloseTo(PITCH.length / 2 - 1.5, 0); // the central forward stands over the ball
   });
 
   it('a shot wide of the mouth stays in play', () => {
@@ -233,11 +233,11 @@ describe('goals', () => {
 });
 
 describe('goal frames are solid', () => {
-  const NEAR_NET_Y = 34 + PITCH.goalWidth / 2; // south side netting of the left goal
+  const NEAR_NET_Y = PITCH.width / 2 + PITCH.goalWidth / 2; // south side netting of the left goal
 
   it('a player cannot walk out through the side netting', () => {
     const world = new World();
-    const p = new PlayerBody(vec(-1, 34), stats); // standing inside the goal mouth
+    const p = new PlayerBody(vec(-1, PITCH.width / 2), stats); // standing inside the goal mouth
     world.players.push(p);
     runSteps(world, [{ ...idle, move: vec(0, 1) }], 180); // shove south into the net
     expect(p.pos.y).toBeLessThan(NEAR_NET_Y - 0.2);
@@ -245,7 +245,7 @@ describe('goal frames are solid', () => {
 
   it('a scored ball stays caught in the net box until the reset', () => {
     const world = new World();
-    world.ball.pos = vec(2, 34);
+    world.ball.pos = vec(2, PITCH.width / 2);
     world.ball.vel = vec(-16, 4); // scores, then tries to burst out the side
     for (let i = 0; i < 45; i++) {
       world.step(1 / 60, []);

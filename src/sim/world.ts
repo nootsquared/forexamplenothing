@@ -33,6 +33,12 @@ export class World {
   restartExclusion = 0;
   // Who takes the next kickoff — the toss winner opens, the conceder resumes
   kickoffTeam: 0 | 1 = 0;
+  // Offside: players caught beyond the second-last defender when a teammate
+  // kicked — the flag goes up if one of them touches the ball next
+  private offsideFlags: number[] = [];
+  private offsideTeam: 0 | 1 | null = null;
+  private sinceRestart = 0; // restart deliveries are exempt, like the real law
+  private lastTouchKey = '';
   // An aiming keeper pins the beat open (capped — nobody stalls a match)
   holdLock = false;
   private holdT = 0;
@@ -42,6 +48,7 @@ export class World {
 
   step(dt: number, inputs: PlayerInput[]) {
     this.events.length = 0;
+    this.sinceRestart = Math.max(0, this.sinceRestart - dt);
     this.ball.savePrev();
     for (const p of this.players) p.savePrev();
 
@@ -89,8 +96,55 @@ export class World {
         }
       }
     }
+    this.checkOffside();
     this.collideGoalFrames();
     this.handleGoalsAndBounds(dt);
+  }
+
+  // At the kick: who's standing beyond the second-last defender AND the ball,
+  // in the opponent's half? They're the ones who may not touch it next.
+  private snapshotOffside(kickerIdx: number) {
+    this.offsideFlags = [];
+    this.offsideTeam = null;
+    if (this.sinceRestart > 0) return; // no offside straight from a restart
+    const team = this.players[kickerIdx].id.team;
+    const ax = (x: number) => (team === 0 ? x : PITCH.length - x);
+    const oppAxes = this.players
+      .filter((p) => p.id.team !== team)
+      .map((p) => ax(p.pos.x))
+      .sort((a, b) => b - a);
+    const line = Math.max(PITCH.length / 2, oppAxes[1] ?? PITCH.length, ax(this.ball.pos.x));
+    this.offsideTeam = team;
+    this.players.forEach((p, i) => {
+      if (p.id.team !== team || i === kickerIdx || p.id.role === 'GK') return;
+      if (ax(p.pos.x) > line + 0.2) this.offsideFlags.push(i);
+    });
+  }
+
+  // The next NEW touch judges it: a flagged man playing the ball is offside —
+  // free kick to the defenders from where he touched it
+  private checkOffside() {
+    const lt = this.lastTouch;
+    const key = lt ? `${lt.team}:${lt.idx}` : '';
+    const changed = key !== this.lastTouchKey;
+    this.lastTouchKey = key;
+    if (!changed || !lt || this.offsideTeam === null) return;
+    if (lt.team !== this.offsideTeam) {
+      this.offsideFlags = [];
+      this.offsideTeam = null;
+      return;
+    }
+    if (this.offsideFlags.includes(lt.idx)) {
+      const p = this.players[lt.idx];
+      this.offsideFlags = [];
+      this.offsideTeam = null;
+      this.events.push({ kind: 'offside', x: p.pos.x, y: p.pos.y });
+      this.awardRestart(
+        vec(clamp(p.pos.x, 2, PITCH.length - 2), clamp(p.pos.y, 2, PITCH.width - 2)),
+        lt.team === 0 ? 1 : 0,
+        'offside',
+      );
+    }
   }
 
   // Distribution from the keeper's hands: a THROW is flat and true, a PUNT is
@@ -122,6 +176,7 @@ export class World {
     this.holdLock = false;
     this.holdT = 0;
     this.restartExclusion = 0;
+    this.sinceRestart = 1.5; // a keeper's delivery is a restart — no offside from it
     p.kickCooldown = 0.5;
     p.touchCooldown = 0.6;
     this.lastTouch = { team: p.id.team, idx };
@@ -249,6 +304,7 @@ export class World {
     p.playLock = 0.45;
     this.lastTouch = { team: p.id.team, idx };
     this.events.push({ kind: 'kick', x: this.ball.pos.x, y: this.ball.pos.y, power, idx });
+    this.snapshotOffside(idx);
   }
 
   // Dribbling, built from nothing but real foot-to-ball contacts. Every touch
@@ -482,7 +538,7 @@ export class World {
 
   // Place the ball dead, set the right taker walking onto it (the KEEPER for
   // goal kicks), and give the moment a broadcast beat before play resumes
-  private awardRestart(spot: Vec2, team: 0 | 1, restart: 'throwin' | 'corner' | 'goalkick') {
+  private awardRestart(spot: Vec2, team: 0 | 1, restart: 'throwin' | 'corner' | 'goalkick' | 'offside') {
     let taker = -1;
     let bestD = Infinity;
     this.players.forEach((p, i) => {
@@ -509,6 +565,9 @@ export class World {
     }
     this.restartLock = 1.25;
     this.restartExclusion = restart === 'goalkick' ? 11 : 6.5;
+    this.sinceRestart = 1.5;
+    this.offsideFlags = [];
+    this.offsideTeam = null;
     this.lastTouch = taker >= 0 ? { team, idx: taker } : null;
     this.events.push({ kind: 'restart', taker, team, restart });
   }
@@ -553,6 +612,9 @@ export class World {
     this.lastTouch = taker >= 0 ? { team: this.kickoffTeam, idx: taker } : null;
     this.restartLock = 1.1;         // a kickoff beat before the next chapter
     this.restartExclusion = 9.15;   // the center circle belongs to the taker
+    this.sinceRestart = 1.5;
+    this.offsideFlags = [];
+    this.offsideTeam = null;
     this.events.push({ kind: 'kickoff', team: this.kickoffTeam, taker });
   }
 }

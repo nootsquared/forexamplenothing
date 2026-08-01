@@ -5,6 +5,7 @@ import { createDraft, aiPickIndex, pick, pickAcademy, needsOf, canPick, QUOTA, S
 import { priceOf, TOP_50 } from '../src/data/players';
 import { FORMATIONS } from '../src/data/formations';
 import { Role } from '../src/data/formations';
+import { PITCH } from '../src/sim/constants';
 import { AI_PROFILES, AiProfile } from '../src/ai/blackboard';
 
 const DT = 1 / 60;
@@ -20,7 +21,7 @@ describe('the match clock', () => {
         if (e.kind === 'half') {
           sawHalf = true;
           // the break resets everyone to the center-spot ceremony
-          expect(match.world.ball.pos.x).toBeCloseTo(52.5, 0);
+          expect(match.world.ball.pos.x).toBeCloseTo(PITCH.length / 2, 0);
           expect(match.half).toBe(2);
         }
         if (e.kind === 'fulltime') sawFulltime = true;
@@ -38,7 +39,7 @@ describe('the match clock', () => {
     world.restartLock = 0; // skip the opening ceremony; stage the finish
     world.restartExclusion = 0;
     world.lastTouch = { team: 0, idx: 9 };
-    world.ball.pos = vec(104.5, 34);
+    world.ball.pos = vec(PITCH.length - 0.5, PITCH.width / 2);
     world.ball.vel = vec(15, 0);
     let scorer = -1;
     for (let t = 0; t < 30 && scorer < 0; t++) {

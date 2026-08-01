@@ -24,7 +24,7 @@ const VISION_NEAR = 12;   // meters: sensed all around, no cone needed
 const VISION_FAR = 40;    // meters: seen only inside the facing cone
 const VISION_HALF_ANGLE = 1.92; // ~110° each side
 const BELIEF_MAX_AGE = 2.5;
-const OPP_EST_SPEED = 8;  // how fast everyone assumes an opponent can run
+const OPP_EST_SPEED = 6.8; // how fast everyone assumes an opponent can run
 const OPP_REACTION = 0.25; // seconds before that opponent gets moving
 
 type Intent =
@@ -278,6 +278,8 @@ export class Brain {
         + this.rng.next() * 0.4; // dither so 11 brains never lockstep
       const nearestMate = this.nearestTeammateDist(world, target);
       if (nearestMate < 7) s -= (7 - nearestMate) * 0.6; // spread out — bunching kills plays
+      // A run beyond the second-last defender is a flag, not a run
+      if (this.bb.phase === 'attack' && this.bb.axisOf(target.x) > this.bb.offsideAxis - 0.4) s -= 2.5;
       if (carrier && carrier !== me) {
         // The carrier needs AIR, not company: never crowd him, and if I'm
         // already on top of him, runs that open the gap score higher
@@ -356,7 +358,7 @@ export class Brain {
     for (const p of settling ? [] : world.players) {
       if (p === me || p.id.team !== me.id.team || p.id.role === 'GK') continue;
       const d = dist(me.pos, p.pos);
-      if (d < 4 || d > 40) continue;
+      if (d < 4 || d > 48) continue;
       const speedWanted = clamp(10 + d * 0.5, 11, 23);
       const meet = leadTarget(me.pos, p.pos, p.vel, speedWanted);
       const margin = passMargin(me.pos, meet, speedWanted, opps);
@@ -371,8 +373,9 @@ export class Brain {
       // that's the pass the whole move was for
       const shotDist = dist(meet, goal);
       if (shotDist < 20) s += (20 - shotDist) * 0.03 + this.shotLane(meet, goal) * 0.55;
-      if (d < 8) s -= 0.25;                                // micro-passes are a last resort
-      if (d > 14 && margin > 0.5) s += 0.3;                // the switch, the cross, the raking ball
+      if (d < 8) s -= 0.35;                                // micro-passes are a last resort
+      if (d > 14 && margin > 0.5) s += 0.3;                // the switch, the cross
+      if (d > 26 && margin > 0.55) s += 0.4;               // the RAKING diagonal across the map
       if (marked < 2 && !(pressure > 0.5 && progress < 0)) s -= 0.5; // he's wearing a defender
       if (world.players.indexOf(p) === this.bb.humanIdx) s += 0.5;   // the human's ball, naturally
       if (me.id.role === 'MF' && p.id.role === 'FW') s += 0.25;      // mids feed the line

@@ -1,7 +1,7 @@
 import { makeCanvas, mulberry32, shade, hash2, vnoise } from './lib.mjs';
 import { PX_PER_METER, ISO } from './palettes.mjs';
 
-export const PITCH = { length: 105, width: 68, apron: 6 };
+export const PITCH = { length: 114, width: 74, apron: 6 };
 const M = PX_PER_METER;
 
 // Full pitch + apron: mowing, then a per-pixel blade pass that turns flat paint
@@ -147,13 +147,13 @@ function paintDirtScrapes(ctx, rng, ox, oy) {
     let x, y;
     if (roll < 0.35) { // central corridor
       x = ox + (20 + rng() * 65) * M;
-      y = oy + (22 + rng() * 24) * M;
+      y = oy + (PITCH.width / 2 - 12 + rng() * 24) * M;
     } else if (roll < 0.65) { // goal approaches
-      x = ox + (rng() < 0.5 ? rng() * 22 : 83 + rng() * 22) * M;
-      y = oy + (24 + rng() * 20) * M;
+      x = ox + (rng() < 0.5 ? rng() * 22 : PITCH.length - 22 + rng() * 22) * M;
+      y = oy + (PITCH.width / 2 - 10 + rng() * 20) * M;
     } else { // anywhere, touchline hustle included
-      x = ox + rng() * 105 * M;
-      y = oy + rng() * 68 * M;
+      x = ox + rng() * PITCH.length * M;
+      y = oy + rng() * PITCH.width * M;
     }
     spots.push({ x, y });
   }
@@ -175,12 +175,13 @@ function paintDirtScrapes(ctx, rng, ox, oy) {
 }
 
 function paintWear(ctx, rng, variant, ox, oy) {
+  const cy = PITCH.width / 2;
   const spots = [
-    { x: 52.5, y: 34, r: 6.5, a: 0.1 },
-    { x: 11, y: 34, r: 4.5, a: 0.13 },
-    { x: 94, y: 34, r: 4.5, a: 0.13 },
-    { x: 2.2, y: 34, r: 5.5, a: 0.16 },
-    { x: 102.8, y: 34, r: 5.5, a: 0.16 },
+    { x: PITCH.length / 2, y: cy, r: 6.5, a: 0.1 },
+    { x: 11, y: cy, r: 4.5, a: 0.13 },
+    { x: PITCH.length - 11, y: cy, r: 4.5, a: 0.13 },
+    { x: 2.2, y: cy, r: 5.5, a: 0.16 },
+    { x: PITCH.length - 2.2, y: cy, r: 5.5, a: 0.16 },
   ];
   for (const s of spots) {
     const cx = ox + s.x * M;
@@ -305,8 +306,8 @@ function paintLighting(ctx, variant, w, h) {
   const img = ctx.getImageData(0, 0, w, h);
   const d = img.data;
   const floods = [
-    { x: 12 * M, y: 6 * M }, { x: 105 * M, y: 6 * M },
-    { x: 12 * M, y: 74 * M }, { x: 105 * M, y: 74 * M },
+    { x: 12 * M, y: 6 * M }, { x: (PITCH.length + PITCH.apron) * M, y: 6 * M },
+    { x: 12 * M, y: (PITCH.width + PITCH.apron) * M }, { x: (PITCH.length + PITCH.apron) * M, y: (PITCH.width + PITCH.apron) * M },
   ];
   const floodR = 30 * M;
   for (let y = 0; y < h; y++) {

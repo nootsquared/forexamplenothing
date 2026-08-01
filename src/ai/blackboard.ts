@@ -39,6 +39,8 @@ export class TeamBrain {
   humanIdx = -1;
   // The team's sharpness (difficulty wears this, never their dignity)
   profile: AiProfile = SHARP;
+  // The offside line in OUR attack axis: past this, a run is a flag waiting
+  offsideAxis = PITCH.length;
   private calledFor = 0;
   private anchors: Vec2[] = [];
   private myIdxs: number[] = [];
@@ -76,6 +78,13 @@ export class TeamBrain {
     this.phase = possessor === null
       ? 'loose'
       : world.players[possessor].id.team === this.team ? 'attack' : 'defend';
+
+    // Second-last opponent up the attack axis — the line runs never cross
+    const oppAxes = world.players
+      .filter((p) => p.id.team !== this.team)
+      .map((p) => this.axisOf(p.pos.x))
+      .sort((a, b) => b - a);
+    this.offsideAxis = Math.max(PITCH.length / 2, oppAxes[1] ?? PITCH.length);
 
     this.updateCalledPass(world, dt);
     this.updateAnchors(world);

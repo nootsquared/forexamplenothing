@@ -14,11 +14,12 @@ export interface SquadPlayer {
   stats: PlayerStats;
 }
 
+// Legs sit ~15% under the ball's pace — passing is the fast option
 const ARCHETYPES: Record<Role, PlayerStats> = {
-  GK: { topSpeed: 5.2, sprintSpeed: 7.0, accel: 9, agility: 0.75, control: 0.5, power: 0.65 },
-  DF: { topSpeed: 5.9, sprintSpeed: 8.1, accel: 9.5, agility: 0.6, control: 0.55, power: 0.7 },
-  MF: { topSpeed: 6.1, sprintSpeed: 8.4, accel: 10, agility: 0.75, control: 0.75, power: 0.7 },
-  FW: { topSpeed: 6.3, sprintSpeed: 8.8, accel: 10.5, agility: 0.8, control: 0.7, power: 0.8 },
+  GK: { topSpeed: 4.4, sprintSpeed: 6.0, accel: 8.4, agility: 0.75, control: 0.5, power: 0.65 },
+  DF: { topSpeed: 5.0, sprintSpeed: 6.9, accel: 8.8, agility: 0.6, control: 0.55, power: 0.7 },
+  MF: { topSpeed: 5.2, sprintSpeed: 7.1, accel: 9.3, agility: 0.75, control: 0.75, power: 0.7 },
+  FW: { topSpeed: 5.4, sprintSpeed: 7.5, accel: 9.8, agility: 0.8, control: 0.7, power: 0.8 },
 };
 
 export function buildSquad(formation: Formation, seed: number): SquadPlayer[] {

@@ -180,7 +180,11 @@ export class Scene {
       if (e.kind === 'half') this.hud.announce('HALF TIME');
       if (e.kind === 'fulltime') this.hud.announce('FULL TIME');
       if (e.kind === 'restart') {
-        this.hud.announce(e.restart === 'corner' ? 'CORNER KICK' : e.restart === 'goalkick' ? 'GOAL KICK' : 'THROW IN');
+        this.hud.announce(
+          e.restart === 'corner' ? 'CORNER KICK' :
+          e.restart === 'goalkick' ? 'GOAL KICK' :
+          e.restart === 'offside' ? 'OFFSIDE!' : 'THROW IN',
+        );
       }
       if (e.kind === 'goal') {
         this.hud.goalFlash();

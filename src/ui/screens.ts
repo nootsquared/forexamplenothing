@@ -20,6 +20,8 @@ export interface Screen {
   update?(dt: number): void;
 }
 
+// One crisp left edge for every shade screen; list markers hang in the gutter
+const LEFT = 70;
 const HALF_CHOICES = [60, 120, 180, 300];
 const SIZE_CHOICES = [5, 7, 11];
 const DIFF_NAMES = ['EASY', 'MEDIUM', 'HARD'];
@@ -137,12 +139,12 @@ export class MenuScreen implements Screen {
     stepShade(this.shade, w, h);
     const scale = Math.max(6, Math.min(11, Math.floor((w * 0.3) / this.assets.manifest.title.w)));
     this.title.scale.set(scale);
-    this.title.position.set(64, h * 0.09);
-    this.sub.position.set(70, h * 0.09 + this.title.height + 10);
-    this.ball.position.set(64 + this.title.width + 46, h * 0.175);
-    this.crumb.position.set(70, h * 0.44);
-    this.list.root.position.set(70, h * 0.49);
-    this.foot.position.set(70, h - 44);
+    this.title.position.set(LEFT - scale, h * 0.09); // the bake's 1px outline inset lands ON the edge
+    this.sub.position.set(LEFT, h * 0.09 + this.title.height + 10);
+    this.ball.position.set(LEFT - scale + this.title.width + 46, h * 0.175);
+    this.crumb.position.set(LEFT, h * 0.44);
+    this.list.root.position.set(LEFT - 16, h * 0.49); // labels at LEFT, marker in the gutter
+    this.foot.position.set(LEFT, h - 44);
   }
 }
 
@@ -212,10 +214,10 @@ export class SetupScreen implements Screen {
 
   layout(w: number, h: number) {
     stepShade(this.shade, w, h);
-    this.title.position.set(66, h * 0.14);
-    this.crumb.position.set(70, h * 0.14 + 56);
-    this.list.root.position.set(70, h * 0.34);
-    this.foot.position.set(70, h - 44);
+    this.title.position.set(LEFT, h * 0.14);
+    this.crumb.position.set(LEFT, h * 0.14 + 56);
+    this.list.root.position.set(LEFT - 16, h * 0.34);
+    this.foot.position.set(LEFT, h - 44);
   }
 }
 
@@ -504,25 +506,25 @@ export class PauseScreen implements Screen {
 
   layout(w: number, h: number) {
     stepShade(this.shade, w, h);
-    this.title.position.set(66, h * 0.1);
+    this.title.position.set(LEFT, h * 0.1);
     const scoreY = h * 0.1 + 90;
-    this.score.position.set(70 + 30, scoreY);
+    this.score.position.set(LEFT + 30, scoreY);
     // kit tabs flank the scoreline — who's who at a glance
     this.tabs.clear();
-    this.tabs.rect(70, scoreY + 14, 20, 20).fill(0xc4432f);
-    this.tabs.rect(70, scoreY + 34, 20, 5).fill(0x7e2417);
-    const bx = 70 + 30 + this.score.textWidth + 12;
+    this.tabs.rect(LEFT, scoreY + 14, 20, 20).fill(0xc4432f);
+    this.tabs.rect(LEFT, scoreY + 34, 20, 5).fill(0x7e2417);
+    const bx = LEFT + 30 + this.score.textWidth + 12;
     this.tabs.rect(bx, scoreY + 14, 20, 20).fill(0x3458a8);
     this.tabs.rect(bx, scoreY + 34, 20, 5).fill(0x1c3260);
-    this.clockLine.position.set(70, scoreY + 66); // clear of the score's full glyph height
-    this.list.root.position.set(70, h * 0.42);
+    this.clockLine.position.set(LEFT, scoreY + 66); // clear of the score's full glyph height
+    this.list.root.position.set(LEFT - 16, h * 0.42);
     const storyY = h * 0.42 + 110;
-    this.storyCrumb.position.set(70, storyY);
+    this.storyCrumb.position.set(LEFT, storyY);
     this.statLines.forEach((line, i) => {
-      line.label.position.set(70, storyY + 26 + i * 18);
-      line.value.position.set(70 + 13 * 12, storyY + 26 + i * 18);
+      line.label.position.set(LEFT, storyY + 26 + i * 18);
+      line.value.position.set(LEFT + 13 * 12, storyY + 26 + i * 18);
     });
-    this.foot.position.set(70, h - 44);
+    this.foot.position.set(LEFT, h - 44);
   }
 }
 
