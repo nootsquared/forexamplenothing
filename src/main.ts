@@ -62,7 +62,8 @@ async function boot() {
     const len = Math.hypot(pull.x, pull.y);
     return {
       dir: vec(pull.x / len, pull.y / len),
-      power: clamp(px / DRAG_FULL_PX, 0.14, 1),
+      // shifted range: the shortest pull is what MEDIUM used to be
+      power: 0.45 + clamp(px / DRAG_FULL_PX, 0, 1) * 0.55,
     };
   };
 

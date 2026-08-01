@@ -42,8 +42,10 @@ export class LocalControls {
         this.aimWorld += bend * AIM_RATE * dt;
       }
     } else if (this.wasHeld) {
+      // The human floor sits at what used to be MEDIUM: even a tap is a real
+      // ball — the charge rides the upper half of the range
       kickReleased = {
-        power: clamp(this.chargeT / CHARGE_TIME, 0.12, 1),
+        power: 0.45 + clamp(this.chargeT / CHARGE_TIME, 0, 1) * 0.55,
         aimOffset: this.resolve(move, facing).offset,
       };
       this.chargeT = 0;
