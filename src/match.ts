@@ -16,6 +16,7 @@ export interface MatchConfig {
   homeSquad?: SquadPlayer[]; // aligned to the shape's slots; archetypes otherwise
   awaySquad?: SquadPlayer[];
   halfLength?: number;       // seconds per half; 0 = endless kickabout
+  kickoffFirst?: 0 | 1;      // the coin toss — deterministic 0 unless told
 }
 
 export interface MatchStats {
@@ -42,6 +43,7 @@ export interface Match {
   halfLength: number;
   finished: boolean;
   stats: MatchStats;
+  kickoffFirst: 0 | 1;
   // a kicked ball waiting to learn whose boot it finds next
   pendingPass: { team: 0 | 1; idx: number } | null;
 }
@@ -56,6 +58,9 @@ export function createMatch(config: MatchConfig = {}): Match {
   fieldTeam(world, 1, awayShape, awaySquad);
   const teamBrains: [TeamBrain, TeamBrain] = [new TeamBrain(0), new TeamBrain(1)];
   const brains = world.players.map((p, i) => new Brain(i, teamBrains[p.id.team]));
+  // The opening ceremony: the toss winner's man stands over the ball
+  world.kickoffTeam = config.kickoffFirst ?? 0;
+  world.kickoffReset();
   return {
     world,
     teamBrains,
@@ -64,6 +69,7 @@ export function createMatch(config: MatchConfig = {}): Match {
     half: 1,
     clock: 0,
     halfLength: config.halfLength ?? 0,
+    kickoffFirst: config.kickoffFirst ?? 0,
     finished: false,
     stats: {
       possession: [0, 0], kicks: [0, 0], shots: [0, 0], onTarget: [0, 0],
@@ -111,6 +117,8 @@ export function advanceMatch(match: Match, dt: number, overrides: Record<number,
       if (match.half === 1) {
         match.half = 2;
         match.clock = 0;
+        // the other side opens the second half
+        match.world.kickoffTeam = match.kickoffFirst === 0 ? 1 : 0;
         match.world.kickoffReset();
         match.world.events.push({ kind: 'half' });
       } else {

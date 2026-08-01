@@ -31,6 +31,8 @@ export class World {
   restartLock = 0; // dead-ball beat after a restart is placed
   // The restart law: the other team gives the dead ball this much space
   restartExclusion = 0;
+  // Who takes the next kickoff — the toss winner opens, the conceder resumes
+  kickoffTeam: 0 | 1 = 0;
   // An aiming keeper pins the beat open (capped — nobody stalls a match)
   holdLock = false;
   private holdT = 0;
@@ -69,22 +71,23 @@ export class World {
       if (this.restartLock <= 0) {
         this.holdLock = false;
         this.holdT = 0;
-        this.restartExclusion = 0;
-      }
-      // The other team WALKS out of the mandated space — no jumped restarts
-      if (this.restartExclusion > 0 && this.lastTouch) {
-        for (const p of this.players) {
-          if (p.id.team === this.lastTouch.team) continue;
-          const away = sub(p.pos, this.ball.pos);
-          const d = len(away);
-          if (d < this.restartExclusion) {
-            const out = d < 1e-6 ? vec(1, 0) : norm(away);
-            p.pos = add(p.pos, scale(out, Math.min(12 * dt, this.restartExclusion - d)));
-          }
-        }
       }
       this.ball.vel = vec();
       this.ball.savePrev();
+    }
+    // The restart law holds until the ball is PLAYED, not just until the
+    // beat ends — the taker owns his space for as long as he stands over it
+    if (ballLive && this.restartExclusion > 0 && this.ball.speed() > 2) this.restartExclusion = 0;
+    if (this.restartExclusion > 0 && this.lastTouch) {
+      for (const p of this.players) {
+        if (p.id.team === this.lastTouch.team) continue;
+        const away = sub(p.pos, this.ball.pos);
+        const d = len(away);
+        if (d < this.restartExclusion) {
+          const out = d < 1e-6 ? vec(1, 0) : norm(away);
+          p.pos = add(p.pos, scale(out, Math.min(12 * dt, this.restartExclusion - d)));
+        }
+      }
     }
     this.collideGoalFrames();
     this.handleGoalsAndBounds(dt);
@@ -443,6 +446,7 @@ export class World {
       this.score[side === 'left' ? 'right' : 'left']++;
       this.goalScored = true;
       this.goalResetT = 1.5; // a beat to savor it before the spot restart
+      this.kickoffTeam = side === 'left' ? 0 : 1; // the conceder restarts the game
       this.events.push({ kind: 'goal', side, scorer: this.lastTouch?.idx ?? -1 });
       return;
     }
@@ -514,7 +518,9 @@ export class World {
     this.kickoffReset();
   }
 
-  // Center spot, everyone home, a beat of ceremony — goals and half-time both
+  // Center spot, everyone home — and ONE player of the kickoff team stands
+  // over the ball while the other side holds outside the circle. The game
+  // starts when HE plays it, not with a scramble.
   kickoffReset() {
     this.ball.pos = vec(PITCH.length / 2, PITCH.width / 2);
     this.ball.vel = vec();
@@ -522,7 +528,6 @@ export class World {
     this.ball.vz = 0;
     this.ball.spin = 0;
     this.ball.savePrev();
-    // Everyone jogs back to their kickoff spots — a match, not a scramble
     for (const p of this.players) {
       p.pos = vec(p.home.x, p.home.y);
       p.vel = vec();
@@ -530,8 +535,24 @@ export class World {
       p.stamina = Math.max(p.stamina, 0.6);
       p.savePrev();
     }
-    this.lastTouch = null;
-    this.restartLock = 1.1; // a kickoff beat before the next chapter
-    this.events.push({ kind: 'kickoff' });
+    // The most central forward walks onto the spot for his team
+    let taker = -1;
+    let bestC = Infinity;
+    this.players.forEach((p, i) => {
+      if (p.id.team !== this.kickoffTeam || p.id.role === 'GK') return;
+      const c = Math.abs(p.home.y - PITCH.width / 2) - (p.id.role === 'FW' ? 100 : 0);
+      if (c < bestC) { bestC = c; taker = i; }
+    });
+    if (taker >= 0) {
+      const p = this.players[taker];
+      const sgn = this.kickoffTeam === 0 ? 1 : -1;
+      p.pos = vec(PITCH.length / 2 - sgn * 1.5, PITCH.width / 2);
+      p.facing = vec(sgn, 0);
+      p.savePrev();
+    }
+    this.lastTouch = taker >= 0 ? { team: this.kickoffTeam, idx: taker } : null;
+    this.restartLock = 1.1;         // a kickoff beat before the next chapter
+    this.restartExclusion = 9.15;   // the center circle belongs to the taker
+    this.events.push({ kind: 'kickoff', team: this.kickoffTeam, taker });
   }
 }

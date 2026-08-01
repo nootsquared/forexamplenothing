@@ -35,6 +35,7 @@ export class TeamCursor {
     for (const e of world.events) {
       // Our restart: the ceremony beat announces it, the taker becomes you
       if (e.kind === 'restart' && e.team === this.team && e.taker >= 0) this.take(e.taker);
+      if (e.kind === 'kickoff' && e.team === this.team && e.taker >= 0) this.take(e.taker);
       // A ball leaving YOUR boot is yours to follow
       if (e.kind === 'kick' && e.idx === this.idx) this.myBallT = MY_BALL_WINDOW;
     }

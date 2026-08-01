@@ -144,6 +144,20 @@ export class Brain {
       this.lastPhase = this.bb.phase;
     }
 
+    // Restart law: while THEIR taker owns a dead or unplayed ball, give it
+    // the mandated space — nobody jumps a kickoff or a goal kick
+    if (world.restartExclusion > 0 && world.lastTouch && world.lastTouch.team !== me.id.team &&
+        dist(me.pos, world.ball.pos) < world.restartExclusion + 1.5) {
+      this.kickPlan = null;
+      const away2 = sub(me.pos, world.ball.pos);
+      const out2 = len(away2) > 1e-4 ? norm(away2) : norm(sub(this.bb.goalWeDefend(), world.ball.pos));
+      this.intent = {
+        kind: 'goto',
+        target: this.clampPitch(add(world.ball.pos, scale(out2, world.restartExclusion + 2.5))),
+        sprint: false,
+      };
+      return;
+    }
     // Dead-ball etiquette: the taker walks on, everyone else holds shape —
     // and the OTHER team gives the ball its mandated space. Nobody jumps a
     // goal kick off the keeper's laces.
@@ -496,7 +510,8 @@ export class Brain {
         const goal = this.bb.goalWeDefend();
         const toBall = norm(sub(world.ball.pos, goal));
         target = add(goal, scale(toBall, 0.9 + Math.min(2.2, dist(goal, world.ball.pos) * 0.08)));
-        target.y = clamp(target.y, PITCH.width / 2 - 3, PITCH.width / 2 + 3);
+        const patrol = PITCH.goalWidth / 2 - 0.4; // the keeper works the full mouth
+        target.y = clamp(target.y, PITCH.width / 2 - patrol, PITCH.width / 2 + patrol);
         target.x = clamp(target.x, 0.4, PITCH.length - 0.4);
         break;
       }

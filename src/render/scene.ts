@@ -121,32 +121,34 @@ export class Scene {
     this.glowOn = on;
   }
 
-  // The frame itself: a bold gold band over a dark pixel rim (the same
-  // outline trick the sprites use to pop off the grass), then a crenellated
-  // block row — built once per resize, only its alpha animates
+  // The frame itself: a warm glow BLEEDING in from the edges — three thin
+  // stepped bands fading inward, with bright pixel corner brackets. Built
+  // once per resize; only its alpha breathes.
   private buildGlow(w: number, h: number) {
     this.glowW = w;
     this.glowH = h;
     const g = this.possessionGlow;
-    const q = 8;
-    const gold = 0xffd95e;
-    const rim = 0x3a2c10;
     g.clear();
-    g.rect(0, 0, w, q).fill({ color: gold, alpha: 0.55 });
-    g.rect(0, h - q, w, q).fill({ color: gold, alpha: 0.55 });
-    g.rect(0, q, q, h - 2 * q).fill({ color: gold, alpha: 0.55 });
-    g.rect(w - q, q, q, h - 2 * q).fill({ color: gold, alpha: 0.55 });
-    g.rect(q, q, w - 2 * q, 2).fill({ color: rim, alpha: 0.45 });
-    g.rect(q, h - q - 2, w - 2 * q, 2).fill({ color: rim, alpha: 0.45 });
-    g.rect(q, q, 2, h - 2 * q).fill({ color: rim, alpha: 0.45 });
-    g.rect(w - q - 2, q, 2, h - 2 * q).fill({ color: rim, alpha: 0.45 });
-    for (let x = q + 2; x < w - q * 2; x += q * 2) {
-      g.rect(x, q + 2, q, q).fill({ color: gold, alpha: 0.3 });
-      g.rect(x + q, h - 2 * q - 2, q, q).fill({ color: gold, alpha: 0.3 });
-    }
-    for (let y = q + 2; y < h - q * 2; y += q * 2) {
-      g.rect(q + 2, y + q, q, q).fill({ color: gold, alpha: 0.3 });
-      g.rect(w - 2 * q - 2, y, q, q).fill({ color: gold, alpha: 0.3 });
+    const frame = (inset: number, t: number, color: number, alpha: number) => {
+      g.rect(inset, inset, w - inset * 2, t).fill({ color, alpha });
+      g.rect(inset, h - inset - t, w - inset * 2, t).fill({ color, alpha });
+      g.rect(inset, inset + t, t, h - inset * 2 - t * 2).fill({ color, alpha });
+      g.rect(w - inset - t, inset + t, t, h - inset * 2 - t * 2).fill({ color, alpha });
+    };
+    const q = Math.max(3, Math.round(h / 200)); // glow scales with the screen
+    frame(0, q, 0xffe98f, 0.6);           // the hot edge
+    frame(q, q * 2, 0xffd95e, 0.28);      // the bleed
+    frame(q * 3, q * 3, 0xf0b83f, 0.11);  // the last breath of it
+    // corner brackets, crisp and bright — the viewfinder that says LIVE
+    const L = Math.round(q * 9);
+    const t = q + 2;
+    for (const [cx, cy, dx, dy] of [[0, 0, 1, 1], [w, 0, -1, 1], [0, h, 1, -1], [w, h, -1, -1]] as const) {
+      const x = cx + (dx < 0 ? -L : 0);
+      const y = cy + (dy < 0 ? -t : 0);
+      g.rect(x, y, L, t).fill({ color: 0xfff3c4, alpha: 0.75 });
+      const vx = cx + (dx < 0 ? -t : 0);
+      const vy = cy + (dy < 0 ? -L : 0);
+      g.rect(vx, vy, t, L).fill({ color: 0xfff3c4, alpha: 0.75 });
     }
   }
 

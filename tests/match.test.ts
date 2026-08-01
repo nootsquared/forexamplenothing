@@ -75,6 +75,8 @@ describe('the 22-brain match', () => {
 
   it('the keeper DIVES to smother a driven shot on goal', () => {
     const match = createMatch();
+    match.world.restartLock = 0; // skip the opening ceremony; stage the shot
+    match.world.restartExclusion = 0;
     match.world.ball.pos = vec(13, 34);
     match.world.ball.vel = vec(-17, 0); // drilled dead at the home goal
     let saved = false;

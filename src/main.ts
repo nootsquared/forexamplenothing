@@ -182,12 +182,16 @@ async function boot() {
   function startMatch(homeSquad: SquadPlayer[], homeShape: string, awaySquad: SquadPlayer[], awayShape: string) {
     killAttract();
     scene?.destroy();
-    match = createMatch({ homeSquad, homeShape, awaySquad, awayShape, halfLength: setup.halfLength });
+    const toss: 0 | 1 = Math.random() < 0.5 ? 0 : 1;
+    match = createMatch({ homeSquad, homeShape, awaySquad, awayShape, halfLength: setup.halfLength, kickoffFirst: toss });
     scene = new Scene(app, assets, match.world, loop);
     match.world.players.forEach((p) => scene!.addPlayer(p.id.team === 0 ? 'home' : 'away'));
     scene.setVariant(MOODS[menu.moodIdx]);
+    scene.toast(toss === 0 ? 'RED WINS THE TOSS' : 'BLUE WINS THE TOSS');
     cursor = new TeamCursor(0, match.world);
     cursor.autoMode = menu.autoSwitch;
+    // the opening kickoff event fires before the first frame — hand the taker over now
+    if (toss === 0 && match.world.lastTouch) cursor.assign(match.world.lastTouch.idx);
     gkIdx = match.world.players.findIndex((p) => p.id.team === 0 && p.id.role === 'GK');
     scene.setControlled(cursor.idx);
     controls = new LocalControls();

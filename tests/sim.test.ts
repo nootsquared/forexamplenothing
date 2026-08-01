@@ -3,7 +3,7 @@ import { vec } from '../src/core/math';
 import { World } from '../src/sim/world';
 import { PlayerBody, PlayerInput } from '../src/sim/player';
 import { Ball } from '../src/sim/ball';
-import { SURFACES } from '../src/sim/constants';
+import { PITCH, SURFACES } from '../src/sim/constants';
 
 const idle: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
 const stats = { topSpeed: 5.7, sprintSpeed: 7.7, accel: 6.5, agility: 0.8, control: 0.8, power: 0.75 };
@@ -206,18 +206,20 @@ describe('dribbling', () => {
 });
 
 describe('goals', () => {
-  it('a shot into the mouth scores and play resets to kickoff spots', () => {
+  it('a shot into the mouth scores, play resets home, and a taker mans the spot', () => {
     const world = new World();
     const p = new PlayerBody(vec(30, 20), stats);
-    world.players.push(p);
+    const striker = new PlayerBody(vec(60, 34), stats, { team: 0, role: 'FW', anchor: vec(0.7, 0.5), number: 9 });
+    world.players.push(p, striker);
     p.pos = vec(80, 50); // wandered far from the kickoff spot
     world.ball.pos = vec(2, 34);
     world.ball.vel = vec(-14, 0);
-    runSteps(world, [idle], 60 * 5);
+    runSteps(world, [idle, idle], 60 * 5);
     expect(world.score.right).toBe(1);
     expect(world.ball.pos.x).toBeCloseTo(52.5, 1);
     expect(p.pos.x).toBeCloseTo(30, 1); // back home for the restart
     expect(p.pos.y).toBeCloseTo(20, 1);
+    expect(striker.pos.x).toBeCloseTo(51, 0); // the central forward stands over the ball
   });
 
   it('a shot wide of the mouth stays in play', () => {
@@ -231,7 +233,7 @@ describe('goals', () => {
 });
 
 describe('goal frames are solid', () => {
-  const NEAR_NET_Y = 34 + 7.32 / 2; // south side netting of the left goal
+  const NEAR_NET_Y = 34 + PITCH.goalWidth / 2; // south side netting of the left goal
 
   it('a player cannot walk out through the side netting', () => {
     const world = new World();

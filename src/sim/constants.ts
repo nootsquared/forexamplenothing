@@ -1,8 +1,8 @@
 export const PITCH = {
   length: 105,
   width: 68,
-  goalWidth: 7.32,
-  goalHeight: 2.44,
+  goalWidth: 9.8,  // arcade-wide: a keeper GUARDS it, he doesn't blanket it
+  goalHeight: 2.7,
   goalDepth: 2.2,
   apron: 6,
 };

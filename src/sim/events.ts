@@ -8,7 +8,7 @@ export type SimEvent =
   | { kind: 'steal'; x: number; y: number } // a lunge that actually won the ball
   | { kind: 'save'; x: number; y: number }  // the keeper got something on it
   | { kind: 'restart'; taker: number; team: 0 | 1; restart: 'throwin' | 'corner' | 'goalkick' }
-  | { kind: 'kickoff' }
+  | { kind: 'kickoff'; team: 0 | 1; taker: number } // whose ball starts the play
   | { kind: 'goal'; side: 'left' | 'right'; scorer: number } // last touch owns it
   | { kind: 'half' }      // pushed by the match clock at the break
   | { kind: 'fulltime' }; // and at the whistle
