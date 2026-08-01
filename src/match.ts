@@ -51,6 +51,9 @@ export interface Match {
   gkHold: { idx: number; t: number };
   // a CPU shooter composing himself over the spot
   penaltyT: number;
+  // online: teams whose penalties auto-take (their humans sit on other tabs
+  // with no aim UI here) — empty for local play
+  autoPenaltyTeams: Set<0 | 1>;
 }
 
 export function createMatch(config: MatchConfig = {}): Match {
@@ -85,6 +88,7 @@ export function createMatch(config: MatchConfig = {}): Match {
     pendingPass: null,
     gkHold: { idx: -1, t: 0 },
     penaltyT: 0,
+    autoPenaltyTeams: new Set(),
   };
 }
 
@@ -111,13 +115,13 @@ export function pickDistribution(world: World, gkIdx: number): { target: Vec2; k
       const t = clamp(((q.pos.x - gk.pos.x) * (p.pos.x - gk.pos.x) + (q.pos.y - gk.pos.y) * (p.pos.y - gk.pos.y)) / (d * d), 0, 1);
       lane = Math.min(lane, dist(q.pos, vec(gk.pos.x + (p.pos.x - gk.pos.x) * t, gk.pos.y + (p.pos.y - gk.pos.y) * t)));
     }
-    const progress = team === 0 ? p.pos.x : PITCH.length - p.pos.x;
+    const progress = world.attackSign(team) > 0 ? p.pos.x : PITCH.length - p.pos.x;
     const score = Math.min(lane, 14) * 1.6 + Math.min(room, 12) * 1.4 + progress * 0.35 + (d <= throwR ? 4 : 0);
     if (score > bestScore) { bestScore = score; best = vec(p.pos.x, p.pos.y); }
   }
   // nobody worth finding: hammer it long down the safer flank
   const target = best ?? vec(
-    clamp(gk.pos.x + (team === 0 ? 42 : -42), 4, PITCH.length - 4),
+    clamp(gk.pos.x + world.attackSign(team) * 42, 4, PITCH.length - 4),
     gk.pos.y < PITCH.width / 2 ? PITCH.width * 0.3 : PITCH.width * 0.7,
   );
   const d = dist(gk.pos, target);
@@ -132,9 +136,9 @@ export function pickDistribution(world: World, gkIdx: number): { target: Vec2; k
 // actual flight the tick it leaves — the ledger judges what really happened.
 function classifyKick(world: World, idx: number): { shot: boolean; onTarget: boolean } {
   const team = world.players[idx].id.team;
-  const goalX = team === 0 ? PITCH.length : 0;
+  const goalX = world.goalXOf(team);
   const v = world.ball.vel;
-  const toward = team === 0 ? v.x > 3 : v.x < -3;
+  const toward = world.attackSign(team) > 0 ? v.x > 3 : v.x < -3;
   const distGoal = Math.abs(goalX - world.ball.pos.x);
   if (!toward || distGoal > 38) return { shot: false, onTarget: false };
   const yAtLine = world.ball.pos.y + v.y * (distGoal / Math.abs(v.x));
@@ -184,7 +188,8 @@ export function advanceMatch(match: Match, dt: number, overrides: Record<number,
   // panenka down the middle. A human shooter aims through the UI instead.
   if (match.world.penalty?.phase === 'aiming') {
     const pen = match.world.penalty;
-    const humanHasIt = Object.keys(overrides).some((k) => match.world.players[Number(k)]?.id.team === pen.team);
+    const humanHasIt = !match.autoPenaltyTeams.has(pen.team) &&
+      Object.keys(overrides).some((k) => match.world.players[Number(k)]?.id.team === pen.team);
     if (!humanHasIt) {
       match.penaltyT += dt;
       if (match.penaltyT > 1.5) {
@@ -208,7 +213,9 @@ export function advanceMatch(match: Match, dt: number, overrides: Record<number,
       if (match.half === 1) {
         match.half = 2;
         match.clock = 0;
-        // the other side opens the second half
+        // ends swap at the break — fair light, fair wind — and the other
+        // side opens the second half
+        match.world.swapSides();
         match.world.kickoffTeam = match.kickoffFirst === 0 ? 1 : 0;
         match.world.kickoffReset();
         // the break breathes: everyone to the spot, then three, two, one…

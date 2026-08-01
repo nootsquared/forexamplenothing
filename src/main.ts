@@ -20,6 +20,12 @@ import { Scene } from './render/scene';
 import { MOODS } from './render/variants';
 import { Screen, MenuScreen, SetupScreen, PauseScreen, StatsScreen, MatchSetup, fmtClock } from './ui/screens';
 import { SquadBuilderScreen } from './ui/draft';
+import { OnlineScreen } from './ui/online';
+import { NetSession, NetStartConfig } from './net/net';
+import { Party, packInput, unpackInput } from './net/party';
+import { takeSnap, SnapPlayer } from './net/snapshot';
+import { loadNationSheets } from './render/assets';
+import { SimEvent } from './sim/events';
 
 // The shell: menu → (draft → shape) → match → full time → menu. One Pixi
 // app, one loop; a match owns the pitch while it lives, screens own the top.
@@ -66,6 +72,18 @@ async function boot() {
   let keeperAiming = false;
   let penAim: { col: number; row: number } | null = null; // the shooter's chosen bin
   let throwAim: { taker: number } | null = null; // your throw-in, aimed like a keeper's throw
+  // ---- the online party ----
+  let net: NetSession | null = null;
+  let party: Party | null = null;                    // host-side authority
+  let netRole: 'host' | 'guest' | null = null;
+  let snapPlayer: SnapPlayer | null = null;          // guest-side truth
+  const seatCursors = new Map<number, { cursor: TeamCursor; team: 0 | 1 }>();
+  let netTick = 0;
+  let pendingNetEvents: SimEvent[] = [];
+  let guestSwitch = false;                           // E queued for the next packet
+  let guestSeatNames: Record<number, string> = {};
+  let lastStartConfig: NetStartConfig | null = null; // late joiners get the stage too
+  let myName = localStorage.getItem('golazo-name') ?? '';
   const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2, clicked: false, moved: false };
   const drag = { active: false, anchorX: 0, anchorY: 0 };
   const DRAG_FULL_PX = 260;
@@ -79,6 +97,7 @@ async function boot() {
   const draftScreen = new SquadBuilderScreen(assets);
   const pauseScreen = new PauseScreen(assets);
   const statsScreen = new StatsScreen(assets);
+  const onlineScreen = new OnlineScreen(assets);
   let activeScreen: Screen | null = null;
 
   const show = (s: Screen | null) => {
@@ -128,6 +147,75 @@ async function boot() {
   menu.onQuick = () => { setupScreen.begin('quick'); show(setupScreen); };
   menu.onDraft = () => { setupScreen.begin('draft'); show(setupScreen); };
   menu.onGamble = () => { setupScreen.begin('gamble'); show(setupScreen); };
+  menu.onOnline = () => { onlineScreen.begin(myName ? 'gate' : 'name', myName); show(onlineScreen); };
+
+  // ---- the party line ----------------------------------------------------
+  function leaveOnline() {
+    net?.close();
+    net = null;
+    party = null;
+    netRole = null;
+    snapPlayer = null;
+    seatCursors.clear();
+    guestSeatNames = {};
+    lastStartConfig = null;
+    if (screenName === 'match') return toMenu();
+    menu.openPage('root');
+    show(menu);
+  }
+
+  onlineScreen.onNamed = (name) => {
+    myName = name;
+    localStorage.setItem('golazo-name', name);
+    onlineScreen.begin('gate', name);
+  };
+  onlineScreen.onHost = () => {
+    net = new NetSession();
+    net.onMessage = (m) => {
+      if (m.t === 'hosted' && net) {
+        netRole = 'host';
+        if (import.meta.env.DEV) (window as unknown as { __room?: string }).__room = net.code;
+        party = new Party(net, myName || 'HOST', assets.manifest.nations.map((n) => n.id));
+        party.attach();
+        party.onChange = () => { if (activeScreen === onlineScreen && party) onlineScreen.setLobby(party.snap(), 0, true); };
+        // whoever walks in mid-match gets the stage and spectates
+        party.onSeatJoined = (seat) => {
+          if (screenName === 'match' && lastStartConfig) net?.to(seat, { t: 'start', config: lastStartConfig });
+        };
+        onlineScreen.setLobby(party.snap(), 0, true);
+      }
+    };
+    net.onClosed = () => { if (netRole === 'host') leaveOnline(); };
+    net.host();
+  };
+  onlineScreen.onJoin = (code) => {
+    net = new NetSession();
+    netRole = 'guest';
+    net.onMessage = (m) => {
+      if (m.t === 'no-room') { onlineScreen.begin('code', myName); return; }
+      if (m.t === 'room-closed') return leaveOnline();
+      if (m.t === 'lobby' && net) { if (screenName === 'menu') onlineScreen.setLobby(m.state, net.seat, false); return; }
+      if (m.t === 'start') { void guestStartMatch(m.config); return; }
+      if (m.t === 'snap') { snapPlayer?.push(m.snap); return; }
+      if (m.t === 'end') return; // the room closes right behind it
+    };
+    net.onClosed = () => { if (netRole === 'guest') leaveOnline(); };
+    net.join(code, myName || 'PLAYER');
+  };
+  onlineScreen.onClaim = (team) => { if (netRole === 'host') party?.claim(0, team); else net?.send({ t: 'claim', team }); };
+  onlineScreen.onNation = (dir) => { if (netRole === 'host') party?.cycleNation(0, dir); else net?.send({ t: 'nation', dir }); };
+  onlineScreen.onRename = (name) => { if (netRole === 'host') party?.renameTeam(0, name); else net?.send({ t: 'teamname', name }); };
+  onlineScreen.onReady = () => {
+    if (netRole !== 'guest' || !net) return;
+    const me = onlineScreen.lobby?.seats.find((s) => s.seat === net!.seat);
+    net.send({ t: 'ready', ready: !me?.ready });
+  };
+  onlineScreen.onStart = () => hostStartOnline();
+  onlineScreen.onLeave = () => leaveOnline();
+  // typed characters flow into name/code/team-name fields
+  window.addEventListener('keydown', (e) => {
+    if (activeScreen === onlineScreen && onlineScreen.textKey(e)) e.preventDefault();
+  });
   setupScreen.onBack = () => { menu.openPage('play'); show(menu); }; // back means BACK, not the front door
   setupScreen.onStart = (s) => {
     setup = s;
@@ -184,6 +272,16 @@ async function boot() {
     matchAudio.end();
     screenName = 'menu';
     paused = false;
+    if (netRole) {
+      // leaving a match ends the party: rooms die with their host
+      net?.close();
+      net = null;
+      party = null;
+      netRole = null;
+      snapPlayer = null;
+      seatCursors.clear();
+      guestSeatNames = {};
+    }
     ensureAttract();
     menu.openPage('root'); // a finished match walks in through the front door
     show(menu);
@@ -193,23 +291,183 @@ async function boot() {
   // ---- match lifecycle ---------------------------------------------------
   const ballIsMine = () => {
     if (!match || !cursor) return false;
+    if (netRole === 'guest') {
+      // a guest's world never thinks — proximity to the snapped ball decides
+      const myIdx = snapPlayer?.latest?.cursors[net?.seat ?? -1] ?? -1;
+      return myIdx >= 0 && dist(match.world.players[myIdx].pos, match.world.ball.pos) < 3.5;
+    }
     const poss = match.teamBrains[0].possessorIdx;
     if (poss !== null && match.world.players[poss].id.team !== 0) return false;
     return dist(match.world.players[cursor.idx].pos, match.world.ball.pos) < 3.5;
   };
 
-  function startMatch(homeSquad: SquadPlayer[], homeShape: string, awaySquad: SquadPlayer[], awayShape: string) {
+  // The host presses START: his claimed side becomes SIM TEAM 0 (every local
+  // aid — keeper sight, penalty bins, drag pass — keeps working unchanged),
+  // nations dress the teams, seated friends become cursors, and the whole
+  // stage description ships to every guest.
+  function hostStartOnline() {
+    if (!party || !net || !party.allReady()) return;
+    const lob = party.snap();
+    const hostTeam = party.seats.get(0)?.team ?? 0;
+    const flip = hostTeam === 1;
+    const simTeamOf = (t: 0 | 1): 0 | 1 => (flip ? ((1 - t) as 0 | 1) : t);
+    const nations = assets.manifest.nations;
+    const n0 = nations.find((n) => n.id === lob.nations[flip ? 1 : 0]) ?? nations[0];
+    const n1 = nations.find((n) => n.id === lob.nations[flip ? 0 : 1]) ?? nations[1];
+    // two shirts from the same paint pot: the second team changes into away
+    const rgb = (hex: string) => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+    const [r0, g0, b0] = rgb(n0.color);
+    const [r1, g1, b1] = rgb(n1.color);
+    const clash = Math.hypot(r0 - r1, g0 - g1, b0 - b1) < 95;
+    const kitKey = (file: string) => file.replace('players-', '').replace('.png', '');
+    const kits: [string, string] = [kitKey(n0.sheets.h), kitKey(clash ? n1.sheets.a : n1.sheets.h)];
+    const shapes = formationsOfSize(11);
+    const homeShape = shapes[Math.min(1, shapes.length - 1)];
+    const awayShape = shapes[0];
+    const [homeStars, awayStars] = quickSplit(11);
+    const homeSquad = toSquad(homeStars, FORMATIONS[homeShape]);
+    const awaySquad = toSquad(awayStars, FORMATIONS[awayShape]);
+    const toss: 0 | 1 = Math.random() < 0.5 ? 0 : 1;
+    const seatTeams: Record<number, 0 | 1> = {};
+    const seatNames: Record<number, string> = {};
+    for (const s of party.seats.values()) {
+      if (s.team !== null) seatTeams[s.seat] = simTeamOf(s.team);
+      seatNames[s.seat] = s.name;
+    }
+    const config: NetStartConfig = {
+      halfLength: 120,
+      homeShape, awayShape, homeSquad, awaySquad, kits,
+      nations: [n0.id, n1.id],
+      teamNames: [lob.teamNames[flip ? 1 : 0] || n0.name, lob.teamNames[flip ? 0 : 1] || n1.name],
+      seatTeams, seatNames,
+      kickoffFirst: toss,
+    };
+    void (async () => {
+      await loadNationSheets(assets, [n0.sheets.h, n0.sheets.a, n1.sheets.h, n1.sheets.a]);
+      party!.phase = 'match';
+      lastStartConfig = config;
+      party!.broadcast({ t: 'start', config });
+      startMatch(homeSquad, homeShape, awaySquad, awayShape, { kits, halfLength: config.halfLength, kickoffFirst: toss });
+      seatCursors.clear();
+      netTick = 0;
+      pendingNetEvents = [];
+      for (const s of party!.seats.values()) {
+        if (s.seat === 0 || s.team === null || !match) continue;
+        const st = simTeamOf(s.team);
+        const c = new TeamCursor(st, match.world);
+        c.isCaptain = party!.captainOf(s.team) === s.seat;
+        seatCursors.set(s.seat, { cursor: c, team: st });
+      }
+      wireSeatClaims();
+      // penalties for a side with no LOCAL human take themselves
+      const auto = new Set<0 | 1>([1]);
+      if (party!.seats.get(0)?.team === null) auto.add(0);
+      if (match) match.autoPenaltyTeams = auto;
+    })();
+  }
+
+  // No two hands on one body, ever — every cursor refuses the others' bodies
+  function wireSeatClaims() {
+    if (!cursor) return;
+    const all: { cursor: TeamCursor }[] = [{ cursor }, ...seatCursors.values()];
+    for (const a of all) {
+      a.cursor.claimed = (idx) => all.some((b) => b !== a && b.cursor.idx === idx);
+    }
+  }
+
+  // A guest builds the same stage from the host's description and simply
+  // WATCHES it through his own camera — inputs go up, snapshots come down
+  async function guestStartMatch(config: NetStartConfig) {
     killAttract();
     scene?.destroy();
-    const toss: 0 | 1 = Math.random() < 0.5 ? 0 : 1;
+    await loadNationSheets(assets, config.kits.map((k) => `players-${k}.png`));
+    match = createMatch({
+      homeSquad: config.homeSquad, homeShape: config.homeShape,
+      awaySquad: config.awaySquad, awayShape: config.awayShape,
+      halfLength: config.halfLength, kickoffFirst: config.kickoffFirst,
+    });
+    scene = new Scene(app, assets, match.world, loop);
+    if (import.meta.env.DEV) {
+      (window as unknown as { __match?: Match; __net?: object }).__match = match;
+      (window as unknown as { __net?: object }).__net = { get myIdx() { return snapPlayer?.latest?.cursors[net?.seat ?? -1] ?? -1; } };
+    }
+    match.world.players.forEach((p, i) => scene!.addPlayer(p.id.team === 0 ? config.kits[0] : config.kits[1], match!.names[i], p.id.number));
+    scene.setVariant(MOODS[menu.moodIdx]);
+    scene.toast(`${config.teamNames[0]} V ${config.teamNames[1]}`);
+    snapPlayer = new SnapPlayer();
+    guestSeatNames = config.seatNames;
+    controls = new LocalControls();
+    cursor = new TeamCursor(config.seatTeams[net?.seat ?? -1] ?? 0, match.world);
+    gkIdx = -1;
+    keeperAiming = false;
+    penAim = null;
+    throwAim = null;
+    humanIdle = 0;
+    halfCountdown = 0;
+    fulltimeDelay = 0;
+    passHints = [];
+    app.stage.addChild(uiRoot);
+    screenName = 'match';
+    paused = false;
+    show(null);
+    matchAudio.begin(MOODS[menu.moodIdx].id);
+  }
+
+  // One guest render-tick: send my hands, glide to the freshest truth
+  function tickMatchGuest(dt: number) {
+    if (!match || !scene || !net || !snapPlayer) return;
+    const myIdx = snapPlayer.latest?.cursors[net.seat] ?? -1;
+    const facing = myIdx >= 0 ? match.world.players[myIdx].facing : vec(1, 0);
+    input = controls.sample(dt, kb, facing);
+    if (mouseKick) {
+      input.kickReleased = { power: mouseKick.power, aimOffset: 0, aimAt: mouseKick.aimAt };
+      mouseKick = null;
+    }
+    net.send({ t: 'input', input: packInput(input, guestSwitch) });
+    guestSwitch = false;
+    snapPlayer.apply(match.world, dt);
+    const evs = snapPlayer.drainEvents();
+    if (evs.length) scene.handleEvents(evs);
+    const snap = snapPlayer.latest;
+    if (snap) {
+      if (myIdx >= 0) scene.setControlled(myIdx);
+      const tags: Record<number, string> = {};
+      for (const [seatStr, idx] of Object.entries(snap.cursors)) {
+        const seat = Number(seatStr);
+        if (seat === net.seat || myIdx < 0) continue;
+        if (match.world.players[idx]?.id.team === match.world.players[myIdx]?.id.team) {
+          tags[idx] = guestSeatNames[seat] ?? `P${seat}`;
+        }
+      }
+      scene.setSeatTags(tags);
+      scene.setClock(`${snap.half === 1 ? '1ST' : '2ND'} ${fmtClock(snap.clock)}`);
+    }
+    // the sling arrow rides the same code the host uses
+    if (drag.active && !ballIsMine()) drag.active = false;
+    if (drag.active) {
+      const pull = resolveDrag();
+      scene.setKickDrag(pull && myIdx >= 0 ? { from: match.world.players[myIdx].pos, dir: pull.dir, power: pull.power } : null);
+    } else scene.setKickDrag(null);
+    matchAudio.tick(match, Math.max(0, myIdx), dt);
+    mouse.clicked = false;
+  }
+
+  function startMatch(
+    homeSquad: SquadPlayer[], homeShape: string, awaySquad: SquadPlayer[], awayShape: string,
+    opts?: { kits?: [string, string]; halfLength?: number; kickoffFirst?: 0 | 1 },
+  ) {
+    killAttract();
+    scene?.destroy();
+    const toss: 0 | 1 = opts?.kickoffFirst ?? (Math.random() < 0.5 ? 0 : 1);
     match = createMatch({
       homeSquad, homeShape, awaySquad, awayShape,
-      halfLength: setup.halfLength, kickoffFirst: toss,
+      halfLength: opts?.halfLength ?? setup.halfLength, kickoffFirst: toss,
       awayProfile: AI_PROFILES[setup.difficulty],
     });
     scene = new Scene(app, assets, match.world, loop);
     if (import.meta.env.DEV) (window as unknown as { __match?: Match }).__match = match; // dev console handle
-    match.world.players.forEach((p, i) => scene!.addPlayer(p.id.team === 0 ? 'home' : 'away', match!.names[i], p.id.number));
+    const kits = opts?.kits ?? ['home', 'away'];
+    match.world.players.forEach((p, i) => scene!.addPlayer(p.id.team === 0 ? kits[0] : kits[1], match!.names[i], p.id.number));
     scene.setVariant(MOODS[menu.moodIdx]);
     scene.toast(toss === 0 ? 'RED WINS THE TOSS' : 'BLUE WINS THE TOSS');
     cursor = new TeamCursor(0, match.world);
@@ -264,6 +522,8 @@ async function boot() {
   for (const code of uiKeys) kb.onPress(code, () => { if (!penaltyKey(code)) activeScreen?.key(code); });
   kb.onPress('Space', () => activeScreen?.key('Space'));
   kb.onPress('Escape', () => {
+    if (activeScreen === onlineScreen) return leaveOnline(); // walk out of the party
+    if (screenName === 'match' && netRole === 'guest') return leaveOnline(); // a guest can always leave
     if (screenName === 'menu') return activeScreen?.key('Escape'); // menu pages or match setup
     if (screenName === 'draft') { audio.ui('back'); return toMenu(); } // walk out of the war room
     if (screenName !== 'match' || !match || match.finished) return;
@@ -278,7 +538,11 @@ async function boot() {
     }
     audio.ui('card');
   });
-  kb.onPress('KeyE', () => { if (screenName === 'match' && !paused) cursor?.manualSwitch(); });
+  kb.onPress('KeyE', () => {
+    if (screenName !== 'match' || paused) return;
+    if (netRole === 'guest') { guestSwitch = true; return; } // rides the next packet
+    cursor?.manualSwitch();
+  });
   kb.onPress('KeyT', () => {
     if (screenName !== 'match' || paused || !cursor || !scene) return;
     cursor.autoMode = !cursor.autoMode;
@@ -376,6 +640,18 @@ async function boot() {
     };
     // a taker mid-throw stands at the line; the mouse owns the delivery
     if (throwAim) overrides[throwAim.taker] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+    // online: every seated friend drives his own body through his own cursor
+    if (netRole === 'host' && party) {
+      for (const [seat, sc] of seatCursors) {
+        const s = party.seats.get(seat);
+        if (!s) { seatCursors.delete(seat); continue; }
+        if (s.switchPressed) { sc.cursor.manualSwitch(); s.switchPressed = false; }
+        overrides[sc.cursor.idx] = s.lastInput
+          ? unpackInput(s.lastInput)
+          : { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+        if (s.lastInput && s.lastInput.kp > 0) s.lastInput = { ...s.lastInput, kp: 0 }; // a release fires once
+      }
+    }
     if (keeperAiming) overrides[gkIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
     // A team-0 ball rolling AT your keeper is a backpass in flight: he stands
     // ready for his hands — his brain may not panic-boot it while it arrives
@@ -395,14 +671,34 @@ async function boot() {
     cursor.update(world, match.teamBrains[0], dt);
     matchAudio.tick(match, cursor.idx, dt);
 
+    // online: friends' cursors follow the same football rules, then the
+    // whole truth ships out ~30 times a second
+    if (netRole === 'host' && party) {
+      for (const sc of seatCursors.values()) sc.cursor.update(world, match.teamBrains[sc.team], dt);
+      pendingNetEvents.push(...world.events);
+      netTick++;
+      if (netTick % 2 === 0) {
+        const cursors: Record<number, number> = { 0: cursor.idx };
+        for (const [seat, sc] of seatCursors) cursors[seat] = sc.cursor.idx;
+        party.broadcast({ t: 'snap', snap: takeSnap(match, netTick, cursors, pendingNetEvents) });
+        pendingNetEvents = [];
+      }
+      const tags: Record<number, string> = {};
+      for (const [seat, sc] of seatCursors) {
+        if (sc.team === 0) tags[sc.cursor.idx] = party.seats.get(seat)?.name ?? '';
+      }
+      scene.setSeatTags(tags);
+    }
+
     // A ball your own team plays back to the keeper is HIS — always. The
     // moment it arrives in his reach he takes it into his hands and the
     // distribution sight opens. Recycling through the goalie is a real tool.
     gkHoldCooldown = Math.max(0, gkHoldCooldown - dt);
+    const ourBoxDeep = world.attackSign(0) > 0 ? world.ball.pos.x < 18 : world.ball.pos.x > 96;
     if (!keeperAiming && gkHoldCooldown <= 0 && world.restartLock <= 0 && gkIdx >= 0 &&
         world.lastTouch?.team === 0 && world.ball.z < 1.2 && world.ball.speed() < 9 &&
         dist(world.players[gkIdx].pos, world.ball.pos) < 1.6 &&
-        world.ball.pos.x < 18 && Math.abs(world.ball.pos.y - 37) < 21.5) {
+        ourBoxDeep && Math.abs(world.ball.pos.y - 37) < 21.5) {
       world.gkPickup(gkIdx);
       keeperAiming = true;
       world.holdLock = true;
@@ -464,7 +760,7 @@ async function boot() {
     if (keeperAiming) {
       const gk = world.players[gkIdx];
       if (humanIdle >= 6 || world.restartLock <= 0) {
-        launchKeeper(vec(clamp(gk.pos.x + 38, 8, 97), world.ball.pos.y < 34 ? 22 : 46), 'punt', 5);
+        launchKeeper(vec(clamp(gk.pos.x + world.attackSign(0) * 38, 8, 97), world.ball.pos.y < 34 ? 22 : 46), 'punt', 5);
       } else {
         const throwR = 24 + 14 * gk.stats.power;
         const puntR = clamp(60 + 34 * gk.stats.power, 60, 88);
@@ -516,7 +812,7 @@ async function boot() {
           const d = Math.min(dRaw, throwR);
           const target = dRaw > 1e-4
             ? vec(origin.x + (toM.x / dRaw) * d, origin.y + (toM.y / dRaw) * d)
-            : vec(origin.x + 6, origin.y);
+            : vec(origin.x + world.attackSign(0) * 6, origin.y);
           const scatter = (0.8 + d * 0.05) * (1.35 - taker.stats.control * 0.7);
           const pCenter = Math.pow(0.5, 1 / (0.5 + 0.6 * taker.stats.control));
           scene.setKeeperAim({ gk: origin, target, throwR, puntR: throwR, scatter, kind: 'throw', pCenter });
@@ -582,7 +878,10 @@ async function boot() {
   const loop = new GameLoop(
     1 / 60,
     (dt) => {
-      if (screenName === 'match' && match && !paused && (!match.finished || fulltimeDelay > 0)) tickMatch(dt);
+      if (screenName === 'match' && match && !paused) {
+        if (netRole === 'guest') tickMatchGuest(dt);
+        else if (!match.finished || fulltimeDelay > 0) tickMatch(dt);
+      }
       if (screenName === 'menu' && attract) advanceMatch(attract.match, dt); // the backdrop plays on
       activeScreen?.update?.(dt);
     },

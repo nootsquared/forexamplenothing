@@ -1,4 +1,4 @@
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { savePNG, makeCanvas } from './lib.mjs';
 import { VARIANTS, KITS, PX_PER_METER, ISO } from './palettes.mjs';
 import { generatePitchTexture, PITCH } from './pitch.mjs';
@@ -8,6 +8,7 @@ import { generateDustSheet, generateGrassBitsSheet, generateRingSheet, generateS
 import { generateFontSheet, generateMicroFontSheet, generateTitleSheet, GLYPHS, CELL_W, CELL_H, WIDTHS, MICRO_GLYPHS, MICRO_CELL_W, MICRO_CELL_H, MICRO_WIDTHS, TITLE_W, TITLE_H } from './font.mjs';
 import { generateStand, generateBoards, generateDugout, generateCornerFlag, generateCloudShadow, STAND_H, BOARD_H } from './stands.mjs';
 import { generateCardSheet, generateCardFigures, generateCoinSheet, CARD_W, CARD_H, FIG_W, FIG_H, COIN_S, RARITIES } from './cards.mjs';
+import { NATIONS, generateFlagSheet, FLAG_W, FLAG_H } from './nations.mjs';
 
 const OUT = new URL('../../public/assets/', import.meta.url).pathname;
 mkdirSync(OUT, { recursive: true });
@@ -22,6 +23,21 @@ for (const kit of KITS) {
   const name = `players-${kit.id}.png`;
   savePNG(generatePlayerSheet(kit), OUT + name);
   playerSheets.push(name);
+}
+// National wardrobes: 15 nations × home/away raytraces. Skipped when already
+// on disk — the full set costs ~8s and only needs baking once per art change.
+savePNG(generateFlagSheet(), `${OUT}flags.png`);
+const nationEntries = [];
+for (const n of NATIONS) {
+  const sheets = {};
+  for (const half of ['home', 'away']) {
+    const file = `players-${n.id}-${half === 'home' ? 'h' : 'a'}.png`;
+    if (!existsSync(OUT + file)) {
+      savePNG(generatePlayerSheet({ id: `${n.id}-${half}`, ...n[half] }), OUT + file);
+    }
+    sheets[half === 'home' ? 'h' : 'a'] = file;
+  }
+  nationEntries.push({ id: n.id, name: n.name, color: n.color, sheets });
 }
 savePNG(generateBallSheet(), `${OUT}ball.png`);
 savePNG(generateDustSheet(), `${OUT}fx-dust.png`);
@@ -72,6 +88,8 @@ const manifest = {
   cards: { w: CARD_W, h: CARD_H, figW: FIG_W, figH: FIG_H, rarities: RARITIES, coin: COIN_S },
   variants: VARIANTS.map((v) => ({ id: v.id, name: v.name, pitch: `pitch-${v.id}.png` })),
   playerSheets,
+  flags: { w: FLAG_W, h: FLAG_H },
+  nations: nationEntries,
 };
 writeFileSync(`${OUT}manifest.json`, JSON.stringify(manifest, null, 2));
 

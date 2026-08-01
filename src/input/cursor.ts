@@ -15,11 +15,19 @@ export class TeamCursor {
   idx: number;
   suggested = -1;    // who E switches you into — the white chevron
   autoMode = false;  // T: hunters are handed to you instead of waiting for E
+  // Multiplayer seats: a body another human on MY team is wearing is never a
+  // switch target. Solo play leaves this oracle empty and nothing changes.
+  claimed: (idx: number) => boolean = () => false;
+  // Set pieces belong to the captain — with several seats on a team, only
+  // one pair of hands reaches for the dead ball
+  isCaptain = true;
   private myBallT = 0;
   private autoT = 0;
 
-  constructor(private team: 0 | 1, world: World) {
-    this.idx = world.players.findIndex((p) => p.id.team === team && p.id.role === 'FW');
+  constructor(private team: 0 | 1, world: World, preferIdx = -1) {
+    this.idx = preferIdx >= 0
+      ? preferIdx
+      : world.players.findIndex((p) => p.id.team === team && p.id.role === 'FW');
   }
 
   // E: take the previewed man. With the ball at your feet there is nothing to
@@ -33,27 +41,32 @@ export class TeamCursor {
     this.autoT = Math.max(0, this.autoT - dt);
 
     for (const e of world.events) {
-      // Our restart: the ceremony beat announces it, the taker becomes you
-      if (e.kind === 'restart' && e.team === this.team && e.taker >= 0) this.take(e.taker);
-      if (e.kind === 'kickoff' && e.team === this.team && e.taker >= 0) this.take(e.taker);
+      // Our restart: the ceremony beat announces it, the taker becomes you —
+      // unless a teammate seat is already wearing him, or you're not the
+      // captain (set pieces are the captain's ball)
+      if (e.kind === 'restart' && e.team === this.team && e.taker >= 0 && this.isCaptain) this.take(e.taker);
+      if (e.kind === 'kickoff' && e.team === this.team && e.taker >= 0 && this.isCaptain) this.take(e.taker);
       // A ball leaving YOUR boot is yours to follow
       if (e.kind === 'kick' && e.idx === this.idx) this.myBallT = MY_BALL_WINDOW;
     }
 
     // The ball is control: our carrier is YOU, the moment he has it — and a
-    // settled ball outranks any pass still being called after it
+    // settled ball outranks any pass still being called after it. A carrier
+    // another seat is wearing stays THEIRS; you keep your own body.
     if (bb.phase === 'attack' && bb.possessorIdx !== null &&
-        world.players[bb.possessorIdx].id.role !== 'GK') {
+        world.players[bb.possessorIdx].id.role !== 'GK' && !this.claimed(bb.possessorIdx)) {
       this.take(bb.possessorIdx);
       this.myBallT = 0;
     }
     // ...and a pass of yours in flight is switched THE SECOND it leaves: to
     // the team's named receiver, else to whoever the ball is heading TOWARDS
     // (the flight-ray prediction). A blocked kick that goes nowhere keeps you.
+    // A receiver worn by a teammate seat keeps his owner — you stay put.
     if (this.myBallT > 0) {
-      if (bb.calledReceiver >= 0 && bb.calledReceiver !== this.idx) {
-        this.take(bb.calledReceiver);
+      if (bb.calledReceiver >= 0 && bb.calledReceiver !== this.idx && this.take(bb.calledReceiver)) {
         this.myBallT = 0;
+      } else if (bb.calledReceiver >= 0 && bb.calledReceiver !== this.idx && this.claimed(bb.calledReceiver)) {
+        this.myBallT = 0; // his owner plays the reception; the pass is delivered
       } else {
         const predicted = this.myBallT < MY_BALL_WINDOW - 0.033 && world.ball.speed() > 4
           ? this.receiverOnRay(world)
@@ -91,7 +104,7 @@ export class TeamCursor {
     if (bb.possessorIdx === this.idx) return -1; // you have the ball; pass to move
     const valid = (i: number) =>
       i >= 0 && i !== this.idx && world.players[i].id.team === this.team &&
-      world.players[i].id.role !== 'GK';
+      world.players[i].id.role !== 'GK' && !this.claimed(i);
     const carrier = bb.phase === 'attack' && bb.possessorIdx !== null ? bb.possessorIdx : -1;
     for (const i of [carrier, bb.calledReceiver, bb.chaserIdxs[0] ?? -1, bb.presserIdx]) {
       if (valid(i)) return i;
@@ -109,7 +122,7 @@ export class TeamCursor {
     let best = -1;
     let bestScore = Infinity;
     world.players.forEach((p, i) => {
-      if (p.id.team !== this.team || p.id.role === 'GK' || i === this.idx) return;
+      if (p.id.team !== this.team || p.id.role === 'GK' || i === this.idx || this.claimed(i)) return;
       const tx = p.pos.x - world.ball.pos.x;
       const ty = p.pos.y - world.ball.pos.y;
       const along = tx * dx + ty * dy;
@@ -128,7 +141,7 @@ export class TeamCursor {
     let best = -1;
     let bestD = Infinity;
     world.players.forEach((p, i) => {
-      if (p.id.team !== this.team || p.id.role === 'GK') return;
+      if (p.id.team !== this.team || p.id.role === 'GK' || this.claimed(i)) return;
       if (!orMe && i === this.idx) return;
       const d = dist(p.pos, world.ball.pos);
       if (d < bestD) { bestD = d; best = i; }
@@ -136,7 +149,12 @@ export class TeamCursor {
     return best === this.idx ? -1 : best;
   }
 
-  private take(idx: number) {
-    if (idx >= 0 && idx !== this.idx) this.idx = idx;
+  // True when control actually moved — a claimed or invalid body refuses
+  private take(idx: number): boolean {
+    if (idx >= 0 && idx !== this.idx && !this.claimed(idx)) {
+      this.idx = idx;
+      return true;
+    }
+    return idx === this.idx;
   }
 }

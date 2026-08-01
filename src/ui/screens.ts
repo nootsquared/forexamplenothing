@@ -45,6 +45,7 @@ export class MenuScreen implements Screen {
   onQuick: () => void = () => {};
   onDraft: () => void = () => {};
   onGamble: () => void = () => {};
+  onOnline: () => void = () => {};
   onMood: (moodIdx: number) => void = () => {};
   onFps: (cap: number | null) => void = () => {};
   onAudio: (music: number, sfx: number) => void = () => {};
@@ -100,7 +101,7 @@ export class MenuScreen implements Screen {
   private refresh(animate = false) {
     const cap = FPS_CHOICES[this.fpsIdx];
     const rows =
-      this.page === 'root' ? [{ label: 'PLAY' }, { label: 'SETTINGS' }] :
+      this.page === 'root' ? [{ label: 'PLAY' }, { label: 'PLAY ONLINE' }, { label: 'SETTINGS' }] :
       this.page === 'play' ? [{ label: 'QUICK MATCH' }, { label: 'DRAFT MODE' }, { label: 'GAMBLE MODE' }, { label: 'BACK', gapBefore: true }] :
       [
         { label: 'PITCH', value: MOODS[this.moodIdx].name.toUpperCase() },
@@ -135,7 +136,9 @@ export class MenuScreen implements Screen {
 
   private act(i: number) {
     if (this.page === 'root') {
-      this.setPage(i === 0 ? 'play' : 'settings');
+      if (i === 0) this.setPage('play');
+      else if (i === 1) this.onOnline();
+      else this.setPage('settings');
     } else if (this.page === 'play') {
       if (i === 0) this.onQuick();
       else if (i === 1) this.onDraft();

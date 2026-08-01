@@ -35,6 +35,8 @@ export class PlayerView {
   private sheet: string;
   private nameLabel: PixelText;
   private backNo: PixelText;
+  private seatChev!: Sprite;
+  private seatName!: PixelText;
 
   constructor(private assets: GameAssets, sheet: string, name = '', number = 0) {
     this.sheet = sheet;
@@ -75,7 +77,26 @@ export class PlayerView {
     this.backNo = new PixelText(assets, 1, 0xf4f6fa, 'micro');
     this.backNo.text = number > 0 ? String(number) : '';
     this.backNo.visible = false;
-    this.root.addChild(this.marker, this.openHint, this.shadow, this.aimArrow, this.body, this.backNo, this.chargeBar, this.nameLabel, this.youChev, this.nextChev);
+    // Online: a teammate seat wears a cool-blue chevron with their username —
+    // you always know which bodies are PEOPLE
+    this.seatChev = new Sprite(assets.chevFrames[1]);
+    this.seatChev.anchor.set(0.5, 1);
+    this.seatChev.tint = 0x9cc4f0;
+    this.seatChev.visible = false;
+    this.seatChev.scale.set(1.2);
+    this.seatName = new PixelText(assets, 1, 0x9cc4f0, 'micro');
+    this.seatName.visible = false;
+    this.root.addChild(this.marker, this.openHint, this.shadow, this.aimArrow, this.body, this.backNo, this.chargeBar, this.nameLabel, this.youChev, this.nextChev, this.seatChev, this.seatName);
+  }
+
+  // A human teammate's calling card (null clears it)
+  setSeatTag(name: string | null) {
+    this.seatChev.visible = name !== null;
+    this.seatName.visible = name !== null;
+    if (name !== null) {
+      this.seatName.text = name;
+      this.seatName.centerAt(0, -46);
+    }
   }
 
   setControlled(on: boolean) {
@@ -123,6 +144,10 @@ export class PlayerView {
       this.chevPulse += dt * 5;
       this.nextChev.position.y = -31 + Math.sin(this.chevPulse * 0.8) * 1.2;
       this.nextChev.alpha = 0.8 + 0.2 * Math.sin(this.chevPulse * 0.8);
+    }
+    if (this.seatChev.visible) {
+      this.chevPulse += dt * 2;
+      this.seatChev.position.y = -33 + Math.sin(this.chevPulse * 0.6) * 1.4;
     }
     this.updateAimArrow(p, dt, aim);
 

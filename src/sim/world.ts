@@ -40,6 +40,24 @@ export class World {
   restartExclusion = 0;
   // Who takes the next kickoff — the toss winner opens, the conceder resumes
   kickoffTeam: 0 | 1 = 0;
+  // Halftime fairness: teams swap ends at the break. EVERY direction in the
+  // sim asks attackSign() — nobody hardcodes "team 0 goes right" anymore.
+  sidesSwapped = false;
+
+  attackSign(team: 0 | 1): 1 | -1 {
+    return (team === 0) !== this.sidesSwapped ? 1 : -1;
+  }
+
+  // The goal this team ATTACKS
+  goalXOf(team: 0 | 1): number {
+    return this.attackSign(team) > 0 ? PITCH.length : 0;
+  }
+
+  // The turnover: ends swap, and every body's home mirrors with them
+  swapSides() {
+    this.sidesSwapped = !this.sidesSwapped;
+    for (const p of this.players) p.home.x = PITCH.length - p.home.x;
+  }
   // An aiming keeper pins the beat open (capped — nobody stalls a match)
   holdLock = false;
   // Which keeper has the ball IN HAND right now (-1 = nobody) — set by a
@@ -91,8 +109,8 @@ export class World {
     // shooter over the ball, the keeper on his line, no brain wanders off
     if (this.penalty?.phase === 'aiming') {
       const pen = this.penalty;
-      const sgn = pen.team === 0 ? 1 : -1;
-      const goalX = pen.team === 0 ? PITCH.length : 0;
+      const sgn = this.attackSign(pen.team);
+      const goalX = this.goalXOf(pen.team);
       const sp = this.players[pen.shooterIdx];
       sp.pos = vec(goalX - sgn * 12.7, PITCH.width / 2);
       sp.vel = vec();
@@ -174,7 +192,7 @@ export class World {
       clamp(target.y + Math.sin(ang) * r, 1, PITCH.width - 1),
     );
     const d = dist(this.ball.pos, land);
-    const dir = d > 1e-4 ? norm(sub(land, this.ball.pos)) : vec(p.id.team === 0 ? 1 : -1, 0);
+    const dir = d > 1e-4 ? norm(sub(land, this.ball.pos)) : vec(this.attackSign(p.id.team), 0);
     if (kind === 'throw') {
       this.ball.vel = scale(dir, clamp(9 + d * 0.42, 9, 24));
       this.ball.vz = 0.5;
@@ -293,13 +311,14 @@ export class World {
     p.lungeTimer = 0;
     p.tackleCooldown = Math.max(p.tackleCooldown, 1.2);
     this.foulCooldown = 25; // the whistle is an event, not a rhythm
+    const defSign = this.attackSign(p.id.team);
     // the victim goes DOWN — sprawled, shoved, and briefly out of the game.
     // Half theater, half truth: it sells the whistle and it's funny to watch.
     carrier.lungeTimer = Math.max(carrier.lungeTimer, 0.9);
     carrier.vel = add(carrier.vel, scale(norm(sub(carrier.pos, p.pos)), 3.6));
     carrier.touchCooldown = Math.max(carrier.touchCooldown, 0.8);
     this.events.push({ kind: 'tackle', x: carrier.pos.x, y: carrier.pos.y });
-    const boxDeep = p.id.team === 0 ? carrier.pos.x < 16.5 : carrier.pos.x > PITCH.length - 16.5;
+    const boxDeep = defSign > 0 ? carrier.pos.x < 16.5 : carrier.pos.x > PITCH.length - 16.5;
     const inBox = boxDeep && Math.abs(carrier.pos.y - PITCH.width / 2) < 20.16;
     this.events.push({ kind: 'foul', x: carrier.pos.x, y: carrier.pos.y, penalty: inBox });
     if (inBox) {
@@ -316,8 +335,8 @@ export class World {
   // The stage set: ball on the spot, the fouled man over it (his keeper mate
   // never takes one), the keeper alone on his line, everyone else held out
   beginPenalty(team: 0 | 1, shooterIdx: number) {
-    const goalX = team === 0 ? PITCH.length : 0;
-    const sgn = team === 0 ? 1 : -1;
+    const goalX = this.goalXOf(team);
+    const sgn = this.attackSign(team);
     const spot = vec(goalX - sgn * 11, PITCH.width / 2);
     let shooter = shooterIdx;
     if (this.players[shooter].id.role === 'GK') {
@@ -364,7 +383,7 @@ export class World {
     const pen = this.penalty;
     if (!pen || pen.phase !== 'aiming') return;
     const shooter = this.players[pen.shooterIdx];
-    const goalX = pen.team === 0 ? PITCH.length : 0;
+    const goalX = this.goalXOf(pen.team);
     const aimY = PITCH.width / 2 + side * (PITCH.goalWidth / 2 - 0.55);
     const q = clamp(shooter.stats.control * 0.55 + shooter.stats.power * 0.45, 0, 1);
     const wobble = this.rng.gauss() * (0.018 + (1 - q) * 0.075);
@@ -659,12 +678,14 @@ export class World {
 
     if (!this.goalScored && inMouth && (b.pos.x < 0 || b.pos.x > PITCH.length)) {
       const side = b.pos.x < 0 ? 'left' : 'right';
-      this.score[side === 'left' ? 'right' : 'left']++;
+      // whichever team ATTACKS the crossed line owns the goal — sides may swap
+      const scoringTeam: 0 | 1 = (side === 'left') === (this.attackSign(0) < 0) ? 0 : 1;
+      this.score[scoringTeam === 0 ? 'left' : 'right']++;
       this.goalScored = true;
       this.goalResetT = 4.2; // the celebration owns this window before the spot
       const scorer = this.lastTouch?.idx ?? -1;
-      this.celebration = { team: side === 'left' ? 1 : 0, scorer, t: this.goalResetT };
-      this.kickoffTeam = side === 'left' ? 0 : 1; // the conceder restarts the game
+      this.celebration = { team: scoringTeam, scorer, t: this.goalResetT };
+      this.kickoffTeam = scoringTeam === 0 ? 1 : 0; // the conceder restarts the game
       this.events.push({ kind: 'goal', side, scorer });
       return;
     }
@@ -755,7 +776,7 @@ export class World {
     for (const p of this.players) {
       p.pos = vec(p.home.x, p.home.y);
       p.vel = vec();
-      p.facing = vec(p.id.team === 0 ? 1 : -1, 0);
+      p.facing = vec(this.attackSign(p.id.team), 0);
       p.stamina = Math.max(p.stamina, 0.6);
       p.savePrev();
     }
@@ -769,7 +790,7 @@ export class World {
     });
     if (taker >= 0) {
       const p = this.players[taker];
-      const sgn = this.kickoffTeam === 0 ? 1 : -1;
+      const sgn = this.attackSign(this.kickoffTeam);
       p.pos = vec(PITCH.length / 2 - sgn * 1.5, PITCH.width / 2);
       p.facing = vec(sgn, 0);
       p.savePrev();

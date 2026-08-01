@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { createMatch, advanceMatch, Match } from '../src/match';
 import { TeamCursor } from '../src/input/cursor';
+import { vec } from '../src/core/math';
+import { PlayerInput } from '../src/sim/player';
 
 const DT = 1 / 60;
 
@@ -91,5 +93,27 @@ describe('the possession-first cursor', () => {
       }
     }
     expect(checkedTake).toBe(true);
+  });
+});
+
+describe('two seats, one team', () => {
+  it('two human cursors never collide on the same body, and a worn carrier stays worn', () => {
+    const match = createMatch();
+    const world = match.world;
+    const a = new TeamCursor(0, world);
+    const mfIdx = world.players.findIndex((p) => p.id.team === 0 && p.id.role === 'MF');
+    const b = new TeamCursor(0, world, mfIdx);
+    a.claimed = (i) => b.idx === i;
+    b.claimed = (i) => a.idx === i;
+    b.isCaptain = false; // set pieces stay the captain's
+    const idleIn: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+    let collisions = 0;
+    for (let t = 0; t < 60 * 30; t++) {
+      advanceMatch(match, DT, { [a.idx]: idleIn, [b.idx]: idleIn });
+      a.update(world, match.teamBrains[0], DT);
+      b.update(world, match.teamBrains[0], DT);
+      if (a.idx === b.idx) collisions++;
+    }
+    expect(collisions).toBe(0);
   });
 });

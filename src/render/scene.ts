@@ -180,6 +180,11 @@ export class Scene {
     this.playerViews.forEach((v, i) => v.setOpenHint(idxs.includes(i)));
   }
 
+  // Online: blue chevrons + usernames over every OTHER human's body
+  setSeatTags(tags: Record<number, string>) {
+    this.playerViews.forEach((v, i) => v.setSeatTag(tags[i] ?? null));
+  }
+
   handleEvents(events: SimEvent[]) {
     this.effects.consume(events);
     for (const e of events) {

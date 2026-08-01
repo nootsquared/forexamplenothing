@@ -53,24 +53,29 @@ export class TeamBrain {
   private anchors: Vec2[] = [];
   private myIdxs: number[] = [];
 
-  constructor(public team: 0 | 1) {}
+  // Which way is FORWARD this half — refreshed from the world every update,
+  // because the teams swap ends at the break
+  private sign: 1 | -1 = 1;
 
-  // +x for the left team, -x for the right: "forward" in world terms
+  constructor(public team: 0 | 1) {
+    this.sign = team === 0 ? 1 : -1;
+  }
+
   attackSign(): 1 | -1 {
-    return this.team === 0 ? 1 : -1;
+    return this.sign;
   }
 
   // Distance from our own goal line along the attack axis
   axisOf(x: number): number {
-    return this.team === 0 ? x : PITCH.length - x;
+    return this.sign > 0 ? x : PITCH.length - x;
   }
 
   goalWeAttack(): Vec2 {
-    return vec(this.team === 0 ? PITCH.length : 0, PITCH.width / 2);
+    return vec(this.sign > 0 ? PITCH.length : 0, PITCH.width / 2);
   }
 
   goalWeDefend(): Vec2 {
-    return vec(this.team === 0 ? 0 : PITCH.length, PITCH.width / 2);
+    return vec(this.sign > 0 ? 0 : PITCH.length, PITCH.width / 2);
   }
 
   anchorOf(idx: number): Vec2 {
@@ -78,6 +83,7 @@ export class TeamBrain {
   }
 
   update(world: World, dt: number) {
+    this.sign = world.attackSign(this.team);
     if (this.myIdxs.length === 0) {
       world.players.forEach((p, i) => { if (p.id.team === this.team) this.myIdxs.push(i); });
     }
@@ -189,7 +195,7 @@ export class TeamBrain {
 
     for (const i of this.myIdxs) {
       const p = world.players[i];
-      const baseX = this.team === 0 ? p.id.anchor.x * PITCH.length : (1 - p.id.anchor.x) * PITCH.length;
+      const baseX = this.sign > 0 ? p.id.anchor.x * PITCH.length : (1 - p.id.anchor.x) * PITCH.length;
       const baseY = p.id.anchor.y * PITCH.width;
       if (p.id.role === 'GK') {
         this.anchors[i] = vec(baseX, baseY);
@@ -210,7 +216,7 @@ export class TeamBrain {
           // with the line and keep only a stride of insurance
           axis = fullback ? Math.min(axis + 10, 66) : Math.min(axis, defLineAxis - 2);
         }
-        x = this.team === 0 ? axis : PITCH.length - axis;
+        x = this.sign > 0 ? axis : PITCH.length - axis;
       }
       this.anchors[i] = vec(clamp(x, 1, PITCH.length - 1), clamp(y, 1, PITCH.width - 1));
     }

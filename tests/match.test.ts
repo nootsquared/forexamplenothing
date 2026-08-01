@@ -361,3 +361,31 @@ describe('the support triangle', () => {
     expect(depthHeld / attackTicks).toBeGreaterThan(0.75); // and so does the stretch
   });
 });
+
+describe('the turnover', () => {
+  it('teams swap ends at the break and goals still credit the right column', () => {
+    const match = createMatch({ halfLength: 3 });
+    for (let t = 0; t < 60 * 12 && match.half === 1; t++) advanceMatch(match, DT);
+    expect(match.half).toBe(2);
+    const w = match.world;
+    expect(w.attackSign(0)).toBe(-1); // team 0 attacks LEFT after the break
+    expect(w.attackSign(1)).toBe(1);
+    // a team-0 finish into the LEFT net now counts in team 0's column
+    w.restartLock = 0;
+    w.restartExclusion = 0;
+    const striker = w.players.findIndex((p) => p.id.team === 0);
+    w.lastTouch = { team: 0, idx: striker };
+    w.ball.pos = vec(2, PITCH.width / 2);
+    w.ball.vel = vec(-18, 0);
+    w.ball.z = 0.3;
+    w.ball.vz = 0;
+    let scored = false;
+    for (let t = 0; t < 90 && !scored; t++) {
+      w.step(DT, []);
+      scored = w.events.some((e) => e.kind === 'goal');
+    }
+    expect(scored).toBe(true);
+    expect(w.score.left).toBe(1);
+    expect(w.score.right).toBe(0);
+  });
+});

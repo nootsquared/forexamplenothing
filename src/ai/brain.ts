@@ -160,7 +160,7 @@ export class Brain {
     if (world.celebration) {
       this.kickPlan = null;
       const c = world.celebration;
-      const goalX = c.team === 0 ? PITCH.length : 0;
+      const goalX = world.goalXOf(c.team);
       const corner = vec(goalX === 0 ? 4 : PITCH.length - 4, 3);
       const hero = world.players[c.scorer]?.id.team === c.team ? c.scorer : -1;
       if (me.id.team !== c.team) {
@@ -328,7 +328,7 @@ export class Brain {
     }
     if (this.bb.supportDepthIdx === this.idx) {
       const lineAxis = clamp(this.bb.offsideAxis - 0.6, this.bb.axisOf(ball.x) + 6, 108);
-      const lineX = this.bb.team === 0 ? lineAxis : PITCH.length - lineAxis;
+      const lineX = this.bb.attackSign() > 0 ? lineAxis : PITCH.length - lineAxis;
       candidates.push({ p: vec(lineX, (goal.y + me.pos.y) / 2), bonus: 0.85 });
     }
 
