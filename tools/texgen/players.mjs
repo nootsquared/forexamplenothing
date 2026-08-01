@@ -5,7 +5,7 @@ export const FRAME_W = 30;
 export const FRAME_H = 28;
 export const BASELINE = 24; // world origin (the feet) inside the frame
 export const DIRS = 16;     // full compass — heading angle picks the nearest row
-export const FRAMES = 13;   // 0-1 idle, 2-9 run, 10-12 kick (windup/strike/follow)
+export const FRAMES = 15;   // 0-1 idle, 2-9 run, 10-12 kick, 13 lunge/dive, 14 recovery
 
 const S = 16; // bake px per meter, matches the pitch
 const BOOT = '#211d1c';
@@ -41,7 +41,8 @@ export function generatePlayerSheet(kit) {
 function buildPose(frame, kit) {
   if (frame < 2) return poseIdle(frame, kit);
   if (frame < 10) return poseRun((frame - 2) / 8, kit);
-  return poseKick(frame - 10, kit);
+  if (frame < 13) return poseKick(frame - 10, kit);
+  return frame === 13 ? poseLunge(kit) : poseRecover(kit);
 }
 
 function poseIdle(f, kit) {
@@ -77,6 +78,28 @@ function poseKick(step, kit) {
     { hipR: 1.45, kneeR: 0.4, hipL: -0.12, kneeL: 0.25, armR: -0.5, armL: 0.5, elbow: 0.45, lean: -0.16, bob: 0 },
   ];
   return assemble(kit, poses[step]);
+}
+
+// The full-stretch lunge: one leg thrown long and low toward the ball, body
+// pitched hard over it, arms flung wide — the slide tackle AND the keeper's
+// dive, aimed by heading like everything else
+function poseLunge(kit) {
+  return assemble(kit, {
+    bob: -0.26,
+    hipR: 1.2, kneeR: 0.18, hipL: -1.15, kneeL: 0.3,
+    armR: -1.5, armL: 1.5, elbow: 0.15,
+    lean: 0.5,
+  });
+}
+
+// Picking yourself up after committing: a low gathered crouch
+function poseRecover(kit) {
+  return assemble(kit, {
+    bob: -0.2,
+    hipR: 0.55, kneeR: 1.25, hipL: -0.5, kneeL: 1.2,
+    armR: 0.35, armL: -0.35, elbow: 0.6,
+    lean: 0.22,
+  });
 }
 
 // Joint angles → primitive list. hip/arm swing forward is +, knee flexion

@@ -68,6 +68,11 @@ export class Scene {
     for (const e of events) {
       if (e.kind === 'bounce') this.ballView.triggerBounce();
       if (e.kind === 'kick') this.playerViews[e.idx]?.triggerKick();
+      if (e.kind === 'save') this.hud.showToast('SAVE!');
+      if (e.kind === 'kickoff') this.hud.announce('KICK OFF');
+      if (e.kind === 'restart') {
+        this.hud.announce(e.restart === 'corner' ? 'CORNER KICK' : e.restart === 'goalkick' ? 'GOAL KICK' : 'THROW IN');
+      }
       if (e.kind === 'goal') {
         this.hud.goalFlash();
         this.flashAlpha = 0.5; // full-screen white pop on the moment

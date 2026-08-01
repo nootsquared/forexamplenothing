@@ -33,6 +33,9 @@ async function boot() {
 
   let controlledIdx = world.players.findIndex((p) => p.id.team === 0 && p.id.role === 'FW');
   let followPass = false; // after a human kick, control chases the receiving teammate
+  // Nobody on the sticks? The brain takes the body back — no statues on the
+  // pitch. The first real input reclaims it instantly.
+  let humanIdle = Infinity;
 
   const kb = new Keyboard();
   const controls = new LocalControls();
@@ -59,7 +62,10 @@ async function boot() {
     1 / 60,
     (dt) => {
       input = controls.sample(dt, kb);
-      advanceMatch(match, dt, { [controlledIdx]: input });
+      const active = input.move.x !== 0 || input.move.y !== 0 ||
+        input.sprint || input.kickCharging || !!input.kickReleased || !!input.tackle;
+      humanIdle = active ? 0 : humanIdle + dt;
+      advanceMatch(match, dt, humanIdle < 2.5 ? { [controlledIdx]: input } : {});
 
       for (const e of world.events) {
         if (e.kind === 'kick' && e.idx === controlledIdx) followPass = true;

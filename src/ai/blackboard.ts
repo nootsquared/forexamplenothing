@@ -14,6 +14,10 @@ export class TeamBrain {
   presserIdx = -1;
   coverIdx = -1;
   chaserIdxs: number[] = []; // my two closest hunters when the ball is loose
+  // "That one's for YOU" — a pass in flight has a named receiver. The passer
+  // calls it, the named player attacks the ball, everyone else keeps running.
+  calledReceiver = -1;
+  private calledFor = 0;
   private anchors: Vec2[] = [];
   private myIdxs: number[] = [];
 
@@ -41,7 +45,7 @@ export class TeamBrain {
     return this.anchors[idx] ?? vec(PITCH.length / 2, PITCH.width / 2);
   }
 
-  update(world: World) {
+  update(world: World, dt: number) {
     if (this.myIdxs.length === 0) {
       world.players.forEach((p, i) => { if (p.id.team === this.team) this.myIdxs.push(i); });
     }
@@ -51,8 +55,43 @@ export class TeamBrain {
       ? 'loose'
       : world.players[possessor].id.team === this.team ? 'attack' : 'defend';
 
+    this.updateCalledPass(world, dt);
     this.updateAnchors(world);
     this.updatePressAuction(world);
+  }
+
+  // The moment one of ours kicks it, name the teammate closest to the ball's
+  // actual flight line as the receiver — for the next second and a half,
+  // that ball has an owner and nobody else on the team dives at it
+  private updateCalledPass(world: World, dt: number) {
+    this.calledFor -= dt;
+    if (this.calledFor <= 0) this.calledReceiver = -1;
+    for (const e of world.events) {
+      if (e.kind !== 'kick') continue;
+      const kicker = world.players[e.idx];
+      if (kicker.id.team !== this.team) continue;
+      const dir = world.ball.speed() > 1 ? vec(world.ball.vel.x, world.ball.vel.y) : null;
+      if (!dir) continue;
+      const dLen = Math.hypot(dir.x, dir.y);
+      let best = -1;
+      let bestScore = Infinity;
+      for (const i of this.myIdxs) {
+        if (i === e.idx || world.players[i].id.role === 'GK') continue;
+        const to = vec(world.players[i].pos.x - world.ball.pos.x, world.players[i].pos.y - world.ball.pos.y);
+        const along = (to.x * dir.x + to.y * dir.y) / dLen;
+        if (along < 2) continue; // behind or on top of the kick
+        const perp = Math.abs(to.x * dir.y - to.y * dir.x) / dLen;
+        const score = perp * 2 + Math.abs(along - Math.min(along, 30)) * 0.1 + along * 0.05;
+        if (perp < 6 && score < bestScore) { bestScore = score; best = i; }
+      }
+      this.calledReceiver = best;
+      this.calledFor = best >= 0 ? 1.6 : 0;
+    }
+    // The call dies as soon as anyone actually takes a touch
+    if (this.calledReceiver >= 0 && world.lastTouch && world.lastTouch.idx === this.calledReceiver) {
+      this.calledReceiver = -1;
+      this.calledFor = 0;
+    }
   }
 
   // The shape is elastic: it slides with the ball, pushes up in possession,

@@ -28,8 +28,8 @@ export function createMatch(homeShape = '4-3-3', awayShape = '4-4-2'): Match {
 // One fixed tick: blackboards read the world, brains emit inputs, humans
 // override theirs, the sim steps. AI and people share one interface.
 export function advanceMatch(match: Match, dt: number, overrides: Record<number, PlayerInput> = {}) {
-  match.teamBrains[0].update(match.world);
-  match.teamBrains[1].update(match.world);
+  match.teamBrains[0].update(match.world, dt);
+  match.teamBrains[1].update(match.world, dt);
   const inputs = match.world.players.map((_, i) => overrides[i] ?? match.brains[i].tick(match.world, dt));
   match.world.step(dt, inputs);
 }

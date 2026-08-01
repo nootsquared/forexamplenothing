@@ -6,5 +6,7 @@ export type SimEvent =
   | { kind: 'bounce'; x: number; y: number; impact: number }
   | { kind: 'tackle'; x: number; y: number }
   | { kind: 'steal'; x: number; y: number } // a lunge that actually won the ball
-  | { kind: 'restart'; taker: number; team: 0 | 1 } // throw-in / corner / goal kick awarded
+  | { kind: 'save'; x: number; y: number }  // the keeper got something on it
+  | { kind: 'restart'; taker: number; team: 0 | 1; restart: 'throwin' | 'corner' | 'goalkick' }
+  | { kind: 'kickoff' }
   | { kind: 'goal'; side: 'left' | 'right' };

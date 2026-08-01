@@ -3,6 +3,7 @@ import { vec, dist } from '../src/core/math';
 import { createMatch, advanceMatch } from '../src/match';
 import { World } from '../src/sim/world';
 import { PlayerBody, PlayerInput } from '../src/sim/player';
+import { TeamBrain } from '../src/ai/blackboard';
 
 const DT = 1 / 60;
 const idle: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
@@ -56,6 +57,32 @@ describe('the 22-brain match', () => {
       expect(p.pos.x).toBe(b.world.players[i].pos.x);
       expect(p.pos.y).toBe(b.world.players[i].pos.y);
     });
+  });
+
+  it('a kicked pass gets a NAMED receiver on the team sheet', () => {
+    const world = new World();
+    const passer = new PlayerBody(vec(50, 34), stats, { team: 0, role: 'MF', anchor: vec(0.5, 0.5), number: 8 });
+    const target = new PlayerBody(vec(64, 35), stats, { team: 0, role: 'FW', anchor: vec(0.7, 0.5), number: 9 });
+    world.players.push(passer, target);
+    world.ball.pos = vec(50.6, 34);
+    const bb = new TeamBrain(0);
+    bb.update(world, DT);
+    world.step(DT, [{ ...idle, move: vec(1, 0), kickReleased: { power: 0.4 } }, idle]);
+    bb.update(world, DT); // reads the kick event, calls the receiver's name
+    expect(bb.calledReceiver).toBe(1);
+  });
+
+  it('the keeper DIVES to smother a driven shot on goal', () => {
+    const match = createMatch();
+    match.world.ball.pos = vec(13, 34);
+    match.world.ball.vel = vec(-17, 0); // drilled dead at the home goal
+    let saved = false;
+    for (let i = 0; i < 150 && !saved; i++) {
+      advanceMatch(match, DT);
+      saved = match.world.events.some((e) => e.kind === 'save');
+    }
+    expect(saved).toBe(true);
+    expect(match.world.score.right).toBe(0); // it never went in
   });
 
   it('a keeper deals with a slow ball rolling toward his goal', () => {

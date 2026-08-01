@@ -57,9 +57,18 @@ export class Hud {
   }
 
   goalFlash() {
+    this.banner.text = 'GOAL!';
     this.banner.visible = true;
     this.banner.scale.set(0.3);
     this.bannerTimer = 1.6;
+  }
+
+  // Broadcast caption for a dead-ball moment: THROW IN, CORNER KICK, KICK OFF…
+  announce(text: string) {
+    this.banner.text = text;
+    this.banner.visible = true;
+    this.banner.scale.set(0.3);
+    this.bannerTimer = 1.3;
   }
 
   update(dt: number, w: number, h: number) {

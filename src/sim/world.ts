@@ -79,8 +79,19 @@ export class World {
   // The poke slips the ball SIDEWAYS past the carrier, never back into their
   // shins: a dispossession changes the play's direction, it doesn't ping-pong.
   private resolveLunge(p: PlayerBody, idx: number) {
-    if (p.lungeTimer <= 0 || this.ball.z > 0.8) return;
-    if (dist(p.pos, this.ball.pos) > 0.8) return;
+    if (p.lungeTimer <= 0 || this.ball.z > (p.id.role === 'GK' ? 1.6 : 0.8)) return;
+    if (dist(p.pos, this.ball.pos) > (p.id.role === 'GK' ? 1.15 : 0.8)) return;
+    // A keeper's lunge is a SAVE: the ball dies in the gloves, not poked away
+    if (p.id.role === 'GK') {
+      this.ball.vel = scale(this.ball.vel, 0.05);
+      this.ball.vz = Math.min(this.ball.vz, 0);
+      this.ball.spin = 0;
+      p.lungeTimer = 0;
+      p.touchCooldown = 0.2;
+      this.lastTouch = { team: p.id.team, idx };
+      this.events.push({ kind: 'save', x: this.ball.pos.x, y: this.ball.pos.y });
+      return;
+    }
     let dir = p.speed() > 0.5 ? norm(p.vel) : p.facing;
     const carrierIdx = this.possessor();
     if (carrierIdx !== null && this.players[carrierIdx].id.team !== p.id.team) {
@@ -188,13 +199,37 @@ export class World {
     const rel = sub(this.ball.vel, p.vel);
     const toBall = sub(this.ball.pos, p.pos);
     const closing = d > 1e-6 ? -(rel.x * toBall.x + rel.y * toBall.y) / d : 0;
+    const steer = len(input.move) > 0.3 ? norm(input.move) : p.speed() > 0.5 ? norm(p.vel) : p.facing;
 
-    // A ball arriving with pace gets cushioned dead off the boot
+    // A ball arriving with pace gets cushioned dead off the boot — dropped
+    // into the stride you're STEERING, and released quickly so the very next
+    // touch (a turn, a knock-on) comes without a dead beat
     if (closing > 5) {
       const keep = 0.2 - 0.1 * p.stats.control;
       this.ball.vel = add(p.vel, scale(rel, keep));
-      if (p.speed() > 0.8) this.ball.vel = add(this.ball.vel, scale(p.facing, 1.2)); // drop it into stride
-      return touch(0.22);
+      if (p.speed() > 0.8) this.ball.vel = add(this.ball.vel, scale(steer, 1.2));
+      return touch(0.12);
+    }
+
+    // Turning with the ball: when it sits on the WRONG side of the new
+    // direction, a straight knock would cannon it off your own shins and
+    // ping-pong forever. Real feet DRAG it around: a stretched sole-roll along
+    // the body ring toward the front of the run, then normal touches take over.
+    // Only while genuinely steering — an idle body never stirs the ball.
+    const behind = d > 1e-6 && (toBall.x * steer.x + toBall.y * steer.y) / d < 0.1;
+    if (behind && len(input.move) > 0.3 && d < STEER_RANGE && this.ball.speed() < 6) {
+      // Aim the collect at a spot ahead-BESIDE the run, on the side the ball
+      // already leans: its straight path skims the body ring, the roll-around
+      // carries it to the front, and the pivot costs a beat of pace — you
+      // turn around the ball, you don't outrun your own feet.
+      const side = toBall.x * steer.y - toBall.y * steer.x >= 0 ? -1 : 1;
+      const collectAt = add(add(p.pos, scale(steer, 0.9)), scale(perpRight(steer), side * 0.4));
+      this.ball.vel = add(
+        scale(this.ball.vel, 0.15),
+        scale(norm(sub(collectAt, this.ball.pos)), Math.max(p.speed(), 3.4) * 0.95 + 1.6),
+      );
+      p.vel = scale(p.vel, 0.85);
+      return touch(0.08);
     }
 
     const pSpeed = p.speed();
@@ -204,7 +239,6 @@ export class World {
       // Taps aim where you're STEERING, not where momentum drags you — press a
       // new direction mid-dribble and the next touch plays it that way, with a
       // stretched toe-poke reach while the ball is drifting off your new line.
-      const steer = len(input.move) > 0.3 ? norm(input.move) : norm(p.vel);
       const veering = this.ball.speed() > 0.6 && angleBetween(this.ball.vel, steer) > 0.3;
       if (d > (veering ? STEER_RANGE : CONTACT_RANGE)) return;
       const soft = p.isCharging || p.pendingKick;
@@ -336,8 +370,8 @@ export class World {
     }
 
     // Fast arcade restarts — the ball never bounces off invisible walls
-    if (b.pos.y < -0.2) return this.awardRestart(vec(clamp(b.pos.x, 1, PITCH.length - 1), 0.3), this.throwInTeam());
-    if (b.pos.y > PITCH.width + 0.2) return this.awardRestart(vec(clamp(b.pos.x, 1, PITCH.length - 1), PITCH.width - 0.3), this.throwInTeam());
+    if (b.pos.y < -0.2) return this.awardRestart(vec(clamp(b.pos.x, 1, PITCH.length - 1), 0.3), this.throwInTeam(), 'throwin');
+    if (b.pos.y > PITCH.width + 0.2) return this.awardRestart(vec(clamp(b.pos.x, 1, PITCH.length - 1), PITCH.width - 0.3), this.throwInTeam(), 'throwin');
     if (!inMouth && (b.pos.x < -0.25 || b.pos.x > PITCH.length + 0.25)) {
       const leftEnd = b.pos.x < 0;
       const defender: 0 | 1 = leftEnd ? 0 : 1;
@@ -345,10 +379,10 @@ export class World {
         // Corner for the attackers, from the corner arc they earned
         const cx = leftEnd ? 0.4 : PITCH.length - 0.4;
         const cy = b.pos.y < PITCH.width / 2 ? 0.4 : PITCH.width - 0.4;
-        return this.awardRestart(vec(cx, cy), defender === 0 ? 1 : 0);
+        return this.awardRestart(vec(cx, cy), defender === 0 ? 1 : 0, 'corner');
       }
-      // Goal kick: the defending side plays out from the edge of the box
-      return this.awardRestart(vec(leftEnd ? 5.5 : PITCH.length - 5.5, PITCH.width / 2), defender);
+      // Goal kick: the keeper plays out from the edge of the box
+      return this.awardRestart(vec(leftEnd ? 5.5 : PITCH.length - 5.5, PITCH.width / 2), defender, 'goalkick');
     }
   }
 
@@ -356,12 +390,15 @@ export class World {
     return this.lastTouch ? (this.lastTouch.team === 0 ? 1 : 0) : 0;
   }
 
-  // Place the ball, walk the nearest eligible teammate onto it, brief dead beat
-  private awardRestart(spot: Vec2, team: 0 | 1) {
+  // Place the ball dead, set the right taker walking onto it (the KEEPER for
+  // goal kicks), and give the moment a broadcast beat before play resumes
+  private awardRestart(spot: Vec2, team: 0 | 1, restart: 'throwin' | 'corner' | 'goalkick') {
     let taker = -1;
     let bestD = Infinity;
     this.players.forEach((p, i) => {
-      if (p.id.team !== team || p.id.role === 'GK') return;
+      if (p.id.team !== team) return;
+      const isGK = p.id.role === 'GK';
+      if (restart === 'goalkick' ? !isGK : isGK) return;
       const d = dist(p.pos, spot);
       if (d < bestD) { bestD = d; taker = i; }
     });
@@ -374,14 +411,15 @@ export class World {
     if (taker >= 0) {
       const p = this.players[taker];
       const inward = norm(sub(vec(PITCH.length / 2, PITCH.width / 2), spot));
-      p.pos = sub(vec(spot.x, spot.y), scale(inward, 0.7));
+      // Near the spot, not ON it — the taker walks the last steps during the beat
+      p.pos = sub(vec(spot.x, spot.y), scale(inward, 1.6));
       p.vel = vec();
       p.facing = inward;
       p.savePrev();
     }
-    this.restartLock = 0.5;
+    this.restartLock = 1.25;
     this.lastTouch = taker >= 0 ? { team, idx: taker } : null;
-    this.events.push({ kind: 'restart', taker, team });
+    this.events.push({ kind: 'restart', taker, team, restart });
   }
 
   private resetAfterGoal() {
@@ -401,5 +439,7 @@ export class World {
       p.savePrev();
     }
     this.lastTouch = null;
+    this.restartLock = 1.1; // a kickoff beat before the next chapter
+    this.events.push({ kind: 'kickoff' });
   }
 }

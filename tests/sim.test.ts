@@ -180,6 +180,19 @@ describe('dribbling', () => {
     expect(world.ball.pos.x).toBeGreaterThan(p.pos.x);
   });
 
+  it('receives a pass, turns 180°, and takes the ball with him', () => {
+    const world = new World();
+    const p = new PlayerBody(vec(52, 34), stats);
+    world.players.push(p);
+    world.ball.pos = vec(46, 34);
+    world.ball.vel = vec(10, 0); // the pass arrives from behind his new run
+    runSteps(world, [idle], 45); // cushion it at the feet
+    runSteps(world, [{ ...idle, move: vec(1, 0) }], 160); // now turn and GO east
+    expect(p.pos.x).toBeGreaterThan(54);                    // the turn actually happened
+    expect(world.ball.pos.x).toBeGreaterThan(p.pos.x - 0.2); // ball came along, in front
+    expect(Math.hypot(world.ball.pos.x - p.pos.x, world.ball.pos.y - p.pos.y)).toBeLessThan(1.8);
+  });
+
   it('standing player traps an incoming ball dead at the feet', () => {
     const world = new World();
     const p = new PlayerBody(vec(52, 34), stats);

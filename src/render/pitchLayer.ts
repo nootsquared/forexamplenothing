@@ -27,6 +27,10 @@ export class PitchLayer {
   groundFx = new Container(); // decals stamped by play: skids, scuffs
   private pitchSprite: Sprite;
   private clouds: Sprite[] = [];
+  private stand!: TilingSprite;
+  private crowdFrame = 0;
+  private crowdT = 0;
+  private crowdHype = 0; // seconds of goal-frenzy bouncing left
   private flags: { sprite: Sprite; phase: number }[] = [];
   private goals: Record<'left' | 'right', GoalRig> = {
     left: { panels: [], backSign: -1, rippleAge: -1, phase: 0 },
@@ -54,14 +58,25 @@ export class PitchLayer {
     for (const c of this.clouds) c.visible = id !== 'night'; // no cloud shade under floodlights
   }
 
-  // The ball just hit this net — set it swinging
+  // The ball just hit this net — set it swinging, and the crowd erupts
   rippleGoal(side: 'left' | 'right') {
     this.goals[side].rippleAge = 0;
+    this.crowdHype = 3.2;
   }
 
   update(dt: number) {
     this.time += dt;
     const t = this.time;
+
+    // The crowd is alive: a slow murmur bob at rest, a bouncing wall on goals
+    this.crowdHype = Math.max(0, this.crowdHype - dt);
+    this.crowdT += dt;
+    const bobEvery = this.crowdHype > 0 ? 0.13 : 0.55;
+    if (this.crowdT >= bobEvery) {
+      this.crowdT = 0;
+      this.crowdFrame = 1 - this.crowdFrame;
+      this.stand.texture = this.assets.standFrames[this.crowdFrame];
+    }
 
     for (const side of ['left', 'right'] as const) {
       const rig = this.goals[side];
@@ -106,14 +121,14 @@ export class PitchLayer {
   private buildArena(worldSorted: Container) {
     const standL = project(-11, -2.1, 0);
     const standR = project(PITCH.length + 11, -2.1, 0);
-    const stand = new TilingSprite({
-      texture: this.assets.stand,
+    this.stand = new TilingSprite({
+      texture: this.assets.standFrames[0],
       width: standR.sx - standL.sx,
       height: this.assets.manifest.stand.h,
     });
-    stand.position.set(standL.sx, standL.sy - this.assets.manifest.stand.h);
-    stand.zIndex = standL.depth;
-    worldSorted.addChild(stand);
+    this.stand.position.set(standL.sx, standL.sy - this.assets.manifest.stand.h);
+    this.stand.zIndex = standL.depth;
+    worldSorted.addChild(this.stand);
 
     const boardsL = project(-4, -0.8, 0);
     const boardsR = project(PITCH.length + 4, -0.8, 0);

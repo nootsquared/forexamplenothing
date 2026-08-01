@@ -5,27 +5,36 @@ import { stampText, textWidth } from './font.mjs';
 // dugouts, corner flags, and drifting cloud shadows.
 
 export const STAND_H = 96;
+export const STAND_FRAMES = 2; // the crowd breathes: fans bob between frames
 const CROWD = ['#cf5f56', '#d1a94e', '#5b98cf', '#74bd5f', '#d8d2c4', '#9c72c2', '#d9d9d9', '#cf824e'];
 const EMPTY_SEAT = '#2a3750';
 
+// Two stacked frames of the same stand — identical seats and fans, but on
+// frame two half the crowd rises a pixel. Cycled slow at rest, fast on goals.
 export function generateStand() {
   const w = 256;
-  const { canvas, ctx } = makeCanvas(w, STAND_H);
-  const rng = mulberry32(2024);
+  const { canvas, ctx } = makeCanvas(w, STAND_H * STAND_FRAMES);
+  for (let f = 0; f < STAND_FRAMES; f++) drawStandFrame(ctx, w, f * STAND_H, f);
+  return canvas;
+}
+
+function drawStandFrame(ctx, w, oy, frame) {
+  const rng = mulberry32(2024); // same seed both frames: same fans, same shirts
 
   // Roof deck at the top
   ctx.fillStyle = '#161d2e';
-  ctx.fillRect(0, 0, w, 10);
+  ctx.fillRect(0, oy, w, 10);
   ctx.fillStyle = '#6b7a9b';
-  ctx.fillRect(0, 0, w, 1);
+  ctx.fillRect(0, oy, w, 1);
   ctx.fillStyle = '#0e1320';
-  ctx.fillRect(0, 9, w, 1);
+  ctx.fillRect(0, oy + 9, w, 1);
 
   // Seven crowd terraces stepping down toward the pitch
   const rows = 7;
   const rowH = 10;
+  let fan = 0;
   for (let r = 0; r < rows; r++) {
-    const y = 10 + r * rowH;
+    const y = oy + 10 + r * rowH;
     ctx.fillStyle = r % 2 === 0 ? '#243050' : '#202a46';
     ctx.fillRect(0, y, w, rowH);
     ctx.fillStyle = '#151d33';
@@ -34,7 +43,8 @@ export function generateStand() {
       if (rng() < 0.82) {
         const c = rng() < 0.12 ? EMPTY_SEAT : CROWD[Math.floor(rng() * CROWD.length)];
         const px = x + (rng() < 0.5 ? 0 : 1);
-        const py = y + 2 + Math.floor(rng() * 3);
+        const bob = frame === 1 && c !== EMPTY_SEAT && fan++ % 2 === 0 ? -1 : 0;
+        const py = y + 2 + Math.floor(rng() * 3) + bob;
         ctx.fillStyle = c;
         ctx.fillRect(px, py, 2, 3);                        // body
         ctx.fillStyle = rng() < 0.5 ? '#caa27e' : '#8a6a4c';
@@ -44,21 +54,19 @@ export function generateStand() {
   }
 
   // Front fascia wall with rail
-  const fasciaY = 10 + rows * rowH;
+  const fasciaY = oy + 10 + rows * rowH;
   ctx.fillStyle = '#38466b';
-  ctx.fillRect(0, fasciaY, w, STAND_H - fasciaY);
+  ctx.fillRect(0, fasciaY, w, oy + STAND_H - fasciaY);
   ctx.fillStyle = '#8fa0c5';
   ctx.fillRect(0, fasciaY, w, 1);
   ctx.fillStyle = '#202a46';
-  for (let x = 16; x < w; x += 32) ctx.fillRect(x, fasciaY + 2, 1, STAND_H - fasciaY - 3);
+  for (let x = 16; x < w; x += 32) ctx.fillRect(x, fasciaY + 2, 1, oy + STAND_H - fasciaY - 3);
   ctx.fillStyle = '#141a28';
-  ctx.fillRect(0, STAND_H - 1, w, 1);
+  ctx.fillRect(0, oy + STAND_H - 1, w, 1);
 
   // Roof support posts in front of everything
   ctx.fillStyle = '#10151f';
-  for (let x = 20; x < w; x += 72) ctx.fillRect(x, 0, 3, STAND_H);
-
-  return canvas;
+  for (let x = 20; x < w; x += 72) ctx.fillRect(x, oy, 3, STAND_H);
 }
 
 const BOARD_ADS = [

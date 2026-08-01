@@ -45,7 +45,7 @@ const manifest = {
   pitch: { length: PITCH.length, width: PITCH.width, apron: PITCH.apron },
   player: {
     frameW: FRAME_W, frameH: FRAME_H, baseline: BASELINE, dirs: DIRS, frames: FRAMES,
-    anims: { idleStart: 0, idleLen: 2, runStart: 2, runLen: 8, kickStart: 10, kickLen: 3 },
+    anims: { idleStart: 0, idleLen: 2, runStart: 2, runLen: 8, kickStart: 10, kickLen: 3, lunge: 13, recover: 14 },
   },
   ball: { size: BALL_SIZE, dirs: BALL_DIRS, phases: BALL_PHASES, worldR: BALL_VISUAL_R },
   fx: {
@@ -54,7 +54,7 @@ const manifest = {
     aim: { size: AIM_SIZE, frames: AIM_DIRS },
   },
   font: { cellW: CELL_W, cellH: CELL_H, glyphs: GLYPHS },
-  stand: { h: STAND_H },
+  stand: { h: STAND_H, frames: 2 },
   boards: { h: BOARD_H },
   flag: { w: 10, h: 16, frames: 2 },
   variants: VARIANTS.map((v) => ({ id: v.id, name: v.name, pitch: `pitch-${v.id}.png` })),

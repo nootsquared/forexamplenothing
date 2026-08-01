@@ -73,7 +73,11 @@ export class PlayerView {
     this.kickTimer = Math.max(0, this.kickTimer - dt);
 
     let frame: number;
-    if (this.kickTimer > 0) {
+    if (p.lungeTimer > 0) {
+      frame = anims.lunge; // flying: the slide tackle and the keeper's dive
+    } else if (p.recoverTimer > 0.15) {
+      frame = anims.recover; // picking himself back up
+    } else if (this.kickTimer > 0) {
       // Coil → whip → follow-through, riding the event timer
       frame = anims.kickStart + (this.kickTimer > 0.18 ? 0 : this.kickTimer > 0.09 ? 1 : 2);
     } else if (p.isCharging && speed < 0.7) {

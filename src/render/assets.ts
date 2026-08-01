@@ -6,12 +6,12 @@ export interface Manifest {
   pitch: { length: number; width: number; apron: number };
   player: {
     frameW: number; frameH: number; baseline: number; dirs: number; frames: number;
-    anims: { idleStart: number; idleLen: number; runStart: number; runLen: number; kickStart: number; kickLen: number };
+    anims: { idleStart: number; idleLen: number; runStart: number; runLen: number; kickStart: number; kickLen: number; lunge: number; recover: number };
   };
   ball: { size: number; dirs: number; phases: number; worldR: number };
   fx: { dust: { size: number; frames: number }; grass: { size: number; frames: number }; ring: { size: number; frames: number }; blade: { w: number; h: number; frames: number }; aim: { size: number; frames: number } };
   font: { cellW: number; cellH: number; glyphs: string };
-  stand: { h: number };
+  stand: { h: number; frames: number };
   boards: { h: number };
   flag: { w: number; h: number; frames: number };
   variants: { id: string; name: string; pitch: string }[];
@@ -35,7 +35,7 @@ export interface GameAssets {
   shadow: Texture;
   skid: Texture;
   goalBar: Texture;
-  stand: Texture;
+  standFrames: Texture[];
   boards: Texture;
   dugout: Texture;
   cloud: Texture;
@@ -92,7 +92,8 @@ export async function loadAssets(): Promise<GameAssets> {
     shadow: loaded['fx-shadow.png'],
     skid: loaded['fx-skid.png'],
     goalBar: loaded['goal-bar.png'],
-    stand: loaded['stand.png'],
+    standFrames: Array.from({ length: manifest.stand.frames }, (_, i) =>
+      new Texture({ source: loaded['stand.png'].source, frame: new Rectangle(0, i * manifest.stand.h, loaded['stand.png'].width, manifest.stand.h) })),
     boards: loaded['boards.png'],
     dugout: loaded['dugout.png'],
     cloud: loaded['cloud.png'],
