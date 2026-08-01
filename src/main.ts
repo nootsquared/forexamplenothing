@@ -134,7 +134,8 @@ async function boot() {
       scaleSquad(toSquad(draftPicks.sides[1].picks, FORMATIONS[awayShape]), DIFF_SCALE[setup.difficulty]), awayShape,
     );
   };
-  pauseScreen.onResume = () => { paused = false; scene?.setHudVisible(true); show(null); };
+  pauseScreen.onResume = () => pauseScreen.close(); // slide out, then release
+  pauseScreen.onClosed = () => { paused = false; scene?.setHudVisible(true); show(null); };
   pauseScreen.onQuit = () => toMenu();
   statsScreen.onDone = () => toMenu();
   menu.onMood = (i) => attract?.scene.setVariant(MOODS[i]);
@@ -209,10 +210,15 @@ async function boot() {
   kb.onPress('Escape', () => {
     if (screenName === 'menu') return activeScreen?.key('Escape'); // menu pages or match setup
     if (screenName !== 'match' || !match || match.finished) return;
-    paused = !paused;
-    if (paused) pauseScreen.begin(match);
-    scene?.setHudVisible(!paused); // the pause board carries the numbers itself
-    show(paused ? pauseScreen : null);
+    if (paused) {
+      pauseScreen.close(); // slide out; onClosed releases the match
+    } else {
+      paused = true;
+      pauseScreen.begin(match);
+      pauseScreen.open();
+      scene?.setHudVisible(false); // the pause board carries the numbers itself
+      show(pauseScreen);
+    }
   });
   kb.onPress('KeyE', () => { if (screenName === 'match' && !paused) cursor?.manualSwitch(); });
   kb.onPress('KeyT', () => {
@@ -372,6 +378,7 @@ async function boot() {
       fulltimeDelay -= dt;
       if (fulltimeDelay <= 0) {
         screenName = 'fulltime';
+        scene.setHudVisible(false); // the sheet carries every number now
         statsScreen.begin(match);
         show(statsScreen);
       }

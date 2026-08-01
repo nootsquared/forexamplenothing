@@ -135,3 +135,19 @@ describe('small-sided football', () => {
     for (const p of match.world.players) expect(Number.isFinite(p.pos.x)).toBe(true);
   });
 });
+
+describe('the broadcast ledger', () => {
+  it('counts shots, passes and completions from real play', () => {
+    const match = createMatch();
+    for (let t = 0; t < 45 * 60; t++) advanceMatch(match, DT);
+    const s = match.stats;
+    const passes = s.passes[0] + s.passes[1];
+    expect(passes).toBeGreaterThan(8);
+    expect(s.passesGood[0] + s.passesGood[1]).toBeGreaterThan(0);
+    expect(s.passesGood[0]).toBeLessThanOrEqual(s.passes[0]);
+    expect(s.passesGood[1]).toBeLessThanOrEqual(s.passes[1]);
+    expect(s.onTarget[0]).toBeLessThanOrEqual(s.shots[0]);
+    expect(s.onTarget[1]).toBeLessThanOrEqual(s.shots[1]);
+    expect(s.kicks[0] + s.kicks[1]).toBeGreaterThanOrEqual(passes + s.shots[0] + s.shots[1]);
+  });
+});

@@ -403,11 +403,15 @@ export class FormationScreen implements Screen {
 
 // ------------------------------------------------------------------- pause
 // The team talk: the frozen match stays visible on the right while the shade
-// column carries the scoreline, your options, and the story of the game so far.
+// column carries the scoreline, your options, and the story of the game so
+// far. It slides in off the touchline and slides back out on resume.
+const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+
 export class PauseScreen implements Screen {
   root = new Container();
   onResume: () => void = () => {};
   onQuit: () => void = () => {};
+  onClosed: () => void = () => {}; // fired when the slide-out finishes
   private list: PixelList;
   private shade = new Graphics();
   private tabs = new Graphics();
@@ -417,6 +421,8 @@ export class PauseScreen implements Screen {
   private storyCrumb: PixelText;
   private statLines: { label: PixelText; value: PixelText }[] = [];
   private foot: PixelText;
+  private anim = 1;
+  private closing = false;
 
   constructor(assets: GameAssets) {
     this.title = new PixelText(assets, 8, 0xffd95e);
@@ -430,7 +436,7 @@ export class PauseScreen implements Screen {
     this.list = new PixelList(assets, 3, 30, 4);
     this.list.setRows([{ label: 'RESUME', enabled: true }, { label: 'QUIT TO MENU', enabled: true }]);
     this.list.onPick = (i) => (i === 0 ? this.onResume() : this.onQuit());
-    for (const label of ['POSSESSION', 'KICKS', 'SAVES']) {
+    for (const label of ['POSSESSION', 'SHOTS', 'ON TARGET', 'PASSES', 'PASS ACC', 'TACKLES', 'SAVES', 'CORNERS']) {
       const l = new PixelText(assets, 2, 0x8f97a8);
       l.text = label;
       const v = new PixelText(assets, 2, 0xd8ab3c);
@@ -450,12 +456,47 @@ export class PauseScreen implements Screen {
       : 'KICKABOUT';
     const total = Math.max(1, s.possession[0] + s.possession[1]);
     const pct = Math.round((s.possession[0] / total) * 100);
-    const vals = [`${pct}% - ${100 - pct}%`, `${s.kicks[0]} - ${s.kicks[1]}`, `${s.saves[0]} - ${s.saves[1]}`];
+    const acc = (t: 0 | 1) => (s.passes[t] > 0 ? `${Math.round((s.passesGood[t] / s.passes[t]) * 100)}%` : '-');
+    const vals = [
+      `${pct}% - ${100 - pct}%`,
+      `${s.shots[0]} - ${s.shots[1]}`,
+      `${s.onTarget[0]} - ${s.onTarget[1]}`,
+      `${s.passes[0]} - ${s.passes[1]}`,
+      `${acc(0)} - ${acc(1)}`,
+      `${s.tacklesWon[0]} - ${s.tacklesWon[1]}`,
+      `${s.saves[0]} - ${s.saves[1]}`,
+      `${s.corners[0]} - ${s.corners[1]}`,
+    ];
     this.statLines.forEach((line, i) => { line.value.text = vals[i]; });
     this.list.sel = 0;
   }
 
+  // Slide in off the touchline / slide back out
+  open() {
+    this.anim = 0;
+    this.closing = false;
+  }
+  close() {
+    if (!this.closing) this.closing = true;
+  }
+
+  update(dt: number) {
+    const target = this.closing ? 0 : 1;
+    const dir = Math.sign(target - this.anim);
+    if (dir !== 0) {
+      this.anim = Math.max(0, Math.min(1, this.anim + dir * dt * 6.5));
+      const e = easeOutCubic(this.anim);
+      this.root.alpha = e;
+      this.root.position.x = -70 * (1 - e);
+      if (this.closing && this.anim <= 0) {
+        this.closing = false;
+        this.onClosed();
+      }
+    }
+  }
+
   key(code: string) {
+    if (this.closing) return; // the board is already on its way out
     if (code === 'ArrowUp' || code === 'KeyW') this.list.move(-1);
     if (code === 'ArrowDown' || code === 'KeyS') this.list.move(1);
     if (code === 'Enter' || code === 'Space') this.list.activate();
@@ -486,44 +527,69 @@ export class PauseScreen implements Screen {
 }
 
 // --------------------------------------------------------------- full time
+// The broadcast stat sheet: home number, quiet label, away number down the
+// center of the screen — the FotMob read of the match just played.
 export class StatsScreen implements Screen {
   root = new Container();
   onDone: () => void = () => {};
   private dim = new Graphics();
+  private tabs = new Graphics();
   private lines: PixelText[] = [];
+  private table: { home: PixelText; label: PixelText; away: PixelText }[] = [];
+  private score: PixelText | null = null;
 
   constructor(private assets: GameAssets) {
-    this.root.addChild(this.dim);
+    this.root.addChild(this.dim, this.tabs);
   }
 
   begin(match: Match) {
     for (const t of this.lines) t.destroy();
+    for (const r of this.table) { r.home.destroy(); r.label.destroy(); r.away.destroy(); }
     this.lines = [];
+    this.table = [];
     const s = match.stats;
+    const world = match.world;
     const total = Math.max(1, s.possession[0] + s.possession[1]);
     const pct = Math.round((s.possession[0] / total) * 100);
-    const world = match.world;
+    const acc = (t: 0 | 1) => (s.passes[t] > 0 ? `${Math.round((s.passesGood[t] / s.passes[t]) * 100)}%` : '-');
     const scorers = Object.entries(s.goals)
-      .map(([idx, n]) => `${match.names[+idx]} ${n}`)
+      .map(([idx, n]) => `${match.names[+idx]}${n > 1 ? ` ${n}` : ''}`)
       .join('  ') || 'NOBODY';
-    // player of the match: goals loud, saves solid, involvement quiet
     let potm = 0;
     let potmScore = -1;
     world.players.forEach((_, i) => {
       const sc = (s.goals[i] ?? 0) * 100 + (world.players[i].id.role === 'GK' ? s.saves[world.players[i].id.team] * 25 : 0);
       if (sc > potmScore) { potmScore = sc; potm = i; }
     });
+
     const add = (text: string, scale: number, tint: number) => {
       const t = new PixelText(this.assets, scale, tint);
       t.text = text;
       this.lines.push(t);
       this.root.addChild(t);
+      return t;
     };
     add('FULL TIME', 6, 0xffd95e);
-    add(`${world.score.left} - ${world.score.right}`, 8, 0xffffff);
-    add(`POSSESSION ${pct}% - ${100 - pct}%`, 3, 0xe8ecf4);
-    add(`KICKS ${s.kicks[0]} - ${s.kicks[1]}`, 3, 0xe8ecf4);
-    add(`SAVES ${s.saves[0]} - ${s.saves[1]}`, 3, 0xe8ecf4);
+    this.score = add(`${world.score.left} - ${world.score.right}`, 8, 0xffffff);
+    const row = (label: string, home: string, away: string) => {
+      const l = new PixelText(this.assets, 2, 0x8f97a8);
+      l.text = label;
+      const hv = new PixelText(this.assets, 3, 0xffd95e);
+      hv.text = home;
+      const av = new PixelText(this.assets, 3, 0xffd95e);
+      av.text = away;
+      this.table.push({ home: hv, label: l, away: av });
+      this.root.addChild(l, hv, av);
+    };
+    row('POSSESSION', `${pct}%`, `${100 - pct}%`);
+    row('SHOTS', `${s.shots[0]}`, `${s.shots[1]}`);
+    row('ON TARGET', `${s.onTarget[0]}`, `${s.onTarget[1]}`);
+    row('PASSES', `${s.passes[0]}`, `${s.passes[1]}`);
+    row('PASS ACCURACY', acc(0), acc(1));
+    row('TACKLES WON', `${s.tacklesWon[0]}`, `${s.tacklesWon[1]}`);
+    row('SAVES', `${s.saves[0]}`, `${s.saves[1]}`);
+    row('CORNERS', `${s.corners[0]}`, `${s.corners[1]}`);
+    row('THROW INS', `${s.throwins[0]}`, `${s.throwins[1]}`);
     add(`GOALS ${scorers}`, 2, 0x9ff0b8);
     add(`STAR OF THE MATCH ${match.names[potm]}`, 3, 0xffd95e);
     add('ENTER FOR MENU', 2, 0x8a91a0);
@@ -535,8 +601,29 @@ export class StatsScreen implements Screen {
 
   layout(w: number, h: number) {
     this.dim.clear();
-    this.dim.rect(0, 0, w, h).fill({ color: 0x05070b, alpha: 0.78 });
-    const ys = [0.16, 0.24, 0.4, 0.46, 0.52, 0.6, 0.7, 0.85];
-    this.lines.forEach((t, i) => t.centerAt(w / 2, h * (ys[i] ?? 0.9)));
+    this.dim.rect(0, 0, w, h).fill({ color: 0x05070b, alpha: 0.8 });
+    if (!this.lines.length) return;
+    this.lines[0].centerAt(w / 2, h * 0.08);   // FULL TIME
+    this.lines[1].centerAt(w / 2, h * 0.15);   // the score
+    // kit tabs flanking the score
+    if (this.score) {
+      const sy = h * 0.15 + 14;
+      const half = this.score.textWidth / 2;
+      this.tabs.clear();
+      this.tabs.rect(w / 2 - half - 40, sy, 22, 22).fill(0xc4432f);
+      this.tabs.rect(w / 2 - half - 40, sy + 22, 22, 5).fill(0x7e2417);
+      this.tabs.rect(w / 2 + half + 18, sy, 22, 22).fill(0x3458a8);
+      this.tabs.rect(w / 2 + half + 18, sy + 22, 22, 5).fill(0x1c3260);
+    }
+    const tableY = h * 0.3;
+    this.table.forEach((r, i) => {
+      const y = tableY + i * Math.max(26, h * 0.045);
+      r.label.centerAt(w / 2, y + 4);
+      r.home.position.set(Math.round(w / 2 - 190 - r.home.textWidth), y);
+      r.away.position.set(Math.round(w / 2 + 190), y);
+    });
+    this.lines[2]?.centerAt(w / 2, h * 0.79);  // scorers
+    this.lines[3]?.centerAt(w / 2, h * 0.85);  // star of the match
+    this.lines[4]?.centerAt(w / 2, h * 0.93);  // enter hint
   }
 }
