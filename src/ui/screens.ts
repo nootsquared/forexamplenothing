@@ -2,7 +2,7 @@ import { Container, Graphics, Sprite } from 'pixi.js';
 import { GameAssets } from '../render/assets';
 import { PixelText } from '../render/pixelText';
 import { MOODS } from '../render/variants';
-import { panel, PixelList } from './kit';
+import { PixelList, stepShade } from './kit';
 import { FORMATIONS, formationsOfSize } from '../data/formations';
 import { StarPlayer } from '../data/players';
 import {
@@ -134,14 +134,7 @@ export class MenuScreen implements Screen {
 
   layout(w: number, h: number) {
     this.h = h;
-    // pixel-stepped shade: dark bands thinning toward the live pitch
-    this.shade.clear();
-    const bands = 12;
-    const bandW = Math.ceil((w * 0.52) / bands);
-    for (let i = 0; i < bands; i++) {
-      this.shade.rect(i * bandW, 0, bandW, h).fill({ color: 0x070a10, alpha: 0.94 - i * 0.075 });
-    }
-    this.shade.rect(0, h - 64, w, 64).fill({ color: 0x070a10, alpha: 0.55 });
+    stepShade(this.shade, w, h);
     const scale = Math.max(6, Math.min(11, Math.floor((w * 0.3) / this.assets.manifest.title.w)));
     this.title.scale.set(scale);
     this.title.position.set(64, h * 0.09);
@@ -218,13 +211,7 @@ export class SetupScreen implements Screen {
   }
 
   layout(w: number, h: number) {
-    this.shade.clear();
-    const bands = 12;
-    const bandW = Math.ceil((w * 0.52) / bands);
-    for (let i = 0; i < bands; i++) {
-      this.shade.rect(i * bandW, 0, bandW, h).fill({ color: 0x070a10, alpha: 0.94 - i * 0.075 });
-    }
-    this.shade.rect(0, h - 64, w, 64).fill({ color: 0x070a10, alpha: 0.55 });
+    stepShade(this.shade, w, h);
     this.title.position.set(66, h * 0.14);
     this.crumb.position.set(70, h * 0.14 + 56);
     this.list.root.position.set(70, h * 0.34);
@@ -415,22 +402,57 @@ export class FormationScreen implements Screen {
 }
 
 // ------------------------------------------------------------------- pause
+// The team talk: the frozen match stays visible on the right while the shade
+// column carries the scoreline, your options, and the story of the game so far.
 export class PauseScreen implements Screen {
   root = new Container();
   onResume: () => void = () => {};
   onQuit: () => void = () => {};
   private list: PixelList;
-  private dim = new Graphics();
-  private box: Graphics | null = null;
+  private shade = new Graphics();
+  private tabs = new Graphics();
   private title: PixelText;
+  private score: PixelText;
+  private clockLine: PixelText;
+  private storyCrumb: PixelText;
+  private statLines: { label: PixelText; value: PixelText }[] = [];
+  private foot: PixelText;
 
   constructor(assets: GameAssets) {
-    this.title = new PixelText(assets, 5, 0xffd95e);
+    this.title = new PixelText(assets, 8, 0xffd95e);
     this.title.text = 'PAUSED';
-    this.list = new PixelList(assets, 3, 26, 4);
+    this.score = new PixelText(assets, 6, 0xffffff);
+    this.clockLine = new PixelText(assets, 3, 0x8f97a8);
+    this.storyCrumb = new PixelText(assets, 2, 0x8a91a0);
+    this.storyCrumb.text = 'THE STORY SO FAR';
+    this.foot = new PixelText(assets, 2, 0x69707f);
+    this.foot.text = 'ESC RESUME - W S PICK - ENTER GO';
+    this.list = new PixelList(assets, 3, 30, 4);
     this.list.setRows([{ label: 'RESUME', enabled: true }, { label: 'QUIT TO MENU', enabled: true }]);
     this.list.onPick = (i) => (i === 0 ? this.onResume() : this.onQuit());
-    this.root.addChild(this.dim, this.title, this.list.root);
+    for (const label of ['POSSESSION', 'KICKS', 'SAVES']) {
+      const l = new PixelText(assets, 2, 0x8f97a8);
+      l.text = label;
+      const v = new PixelText(assets, 2, 0xd8ab3c);
+      this.statLines.push({ label: l, value: v });
+      this.root.addChild(l, v);
+    }
+    this.root.addChild(this.shade, this.tabs, this.title, this.score, this.clockLine, this.storyCrumb, this.list.root, this.foot);
+    this.root.setChildIndex(this.shade, 0);
+  }
+
+  // Feed the frozen match in: scoreline, clock, and the running numbers
+  begin(match: Match) {
+    const s = match.stats;
+    this.score.text = `${match.world.score.left} - ${match.world.score.right}`;
+    this.clockLine.text = match.halfLength > 0
+      ? `${match.half === 1 ? '1ST HALF' : '2ND HALF'} ${fmtClock(match.clock)}`
+      : 'KICKABOUT';
+    const total = Math.max(1, s.possession[0] + s.possession[1]);
+    const pct = Math.round((s.possession[0] / total) * 100);
+    const vals = [`${pct}% - ${100 - pct}%`, `${s.kicks[0]} - ${s.kicks[1]}`, `${s.saves[0]} - ${s.saves[1]}`];
+    this.statLines.forEach((line, i) => { line.value.text = vals[i]; });
+    this.list.sel = 0;
   }
 
   key(code: string) {
@@ -440,14 +462,26 @@ export class PauseScreen implements Screen {
   }
 
   layout(w: number, h: number) {
-    this.dim.clear();
-    this.dim.rect(0, 0, w, h).fill({ color: 0x05070b, alpha: 0.68 });
-    if (this.box) this.box.destroy();
-    this.box = panel(300, 170);
-    this.box.position.set(w / 2 - 150, h / 2 - 90);
-    this.root.addChildAt(this.box, 1);
-    this.title.centerAt(w / 2, h / 2 - 62);
-    this.list.root.position.set(w / 2 - 90, h / 2 - 4);
+    stepShade(this.shade, w, h);
+    this.title.position.set(66, h * 0.1);
+    const scoreY = h * 0.1 + 90;
+    this.score.position.set(70 + 30, scoreY);
+    // kit tabs flank the scoreline — who's who at a glance
+    this.tabs.clear();
+    this.tabs.rect(70, scoreY + 14, 20, 20).fill(0xc4432f);
+    this.tabs.rect(70, scoreY + 34, 20, 5).fill(0x7e2417);
+    const bx = 70 + 30 + this.score.textWidth + 12;
+    this.tabs.rect(bx, scoreY + 14, 20, 20).fill(0x3458a8);
+    this.tabs.rect(bx, scoreY + 34, 20, 5).fill(0x1c3260);
+    this.clockLine.position.set(70, scoreY + 66); // clear of the score's full glyph height
+    this.list.root.position.set(70, h * 0.42);
+    const storyY = h * 0.42 + 110;
+    this.storyCrumb.position.set(70, storyY);
+    this.statLines.forEach((line, i) => {
+      line.label.position.set(70, storyY + 26 + i * 18);
+      line.value.position.set(70 + 13 * 12, storyY + 26 + i * 18);
+    });
+    this.foot.position.set(70, h - 44);
   }
 }
 

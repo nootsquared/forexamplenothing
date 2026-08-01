@@ -14,6 +14,18 @@ export function panel(w: number, h: number): Graphics {
   return g;
 }
 
+// The screens' shared backdrop: pixel-stepped dark bands thinning toward the
+// live pitch, plus a low strip for the footer line
+export function stepShade(g: Graphics, w: number, h: number) {
+  g.clear();
+  const bands = 12;
+  const bandW = Math.ceil((w * 0.52) / bands);
+  for (let i = 0; i < bands; i++) {
+    g.rect(i * bandW, 0, bandW, h).fill({ color: 0x070a10, alpha: 0.94 - i * 0.075 });
+  }
+  g.rect(0, h - 64, w, 64).fill({ color: 0x070a10, alpha: 0.55 });
+}
+
 export interface ListRow {
   label: string;
   value?: string; // the adjustable part — drawn gold in < > at the value column

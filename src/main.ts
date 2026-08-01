@@ -134,7 +134,7 @@ async function boot() {
       scaleSquad(toSquad(draftPicks.sides[1].picks, FORMATIONS[awayShape]), DIFF_SCALE[setup.difficulty]), awayShape,
     );
   };
-  pauseScreen.onResume = () => { paused = false; show(null); };
+  pauseScreen.onResume = () => { paused = false; scene?.setHudVisible(true); show(null); };
   pauseScreen.onQuit = () => toMenu();
   statsScreen.onDone = () => toMenu();
   menu.onMood = (i) => attract?.scene.setVariant(MOODS[i]);
@@ -210,6 +210,8 @@ async function boot() {
     if (screenName === 'menu') return activeScreen?.key('Escape'); // menu pages or match setup
     if (screenName !== 'match' || !match || match.finished) return;
     paused = !paused;
+    if (paused) pauseScreen.begin(match);
+    scene?.setHudVisible(!paused); // the pause board carries the numbers itself
     show(paused ? pauseScreen : null);
   });
   kb.onPress('KeyE', () => { if (screenName === 'match' && !paused) cursor?.manualSwitch(); });
