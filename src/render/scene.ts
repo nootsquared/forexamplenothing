@@ -1,5 +1,7 @@
-import { Application, Container, Graphics } from 'pixi.js';
+import { Application, Container, Graphics, Sprite } from 'pixi.js';
 import { GameLoop } from '../core/loop';
+import { Vec2, vec, clamp } from '../core/math';
+import { PITCH } from '../sim/constants';
 import { World } from '../sim/world';
 import { SimEvent } from '../sim/events';
 import { GameAssets } from './assets';
@@ -10,6 +12,8 @@ import { BallView } from './ballSprite';
 import { Effects } from './effects';
 import { FollowCamera } from './camera';
 import { Hud } from './hud';
+import { KeeperAim, KeeperAimState } from './keeperAim';
+import { project, pxPerMeter, squash } from './projection';
 import { MOODS, VariantMood } from './variants';
 
 // Owns the display tree; reads sim state, never writes it
@@ -27,20 +31,38 @@ export class Scene {
   private flash = new Graphics();
   private flashAlpha = 0;
   private controlledIdx = -1;
+  private switchTargetIdx = -1;
+  private keeperAim: KeeperAim;
+  private keeperAimState: KeeperAimState | null = null;
+  private lawRing = new Graphics(); // the restart exclusion, painted on the turf
+  private dragG = new Graphics();   // the slingshot pass sight (chalk dots)
+  private dragHead: Sprite;         // baked chalk arrowhead, tinted by power
+  private kickDrag: { from: Vec2; dir: Vec2; power: number } | null = null;
+  // "The ball is YOURS": a gold pixel frame breathing at the screen edge
+  private possessionGlow = new Graphics();
+  private glowOn = false;
+  private glowFade = 0;
+  private glowPulse = 0;
+  private glowW = 0;
+  private glowH = 0;
   private mood: VariantMood = MOODS[0];
 
   constructor(private app: Application, private assets: GameAssets, private world: World, loop: GameLoop) {
     this.hud = new Hud(assets);
+    this.keeperAim = new KeeperAim(assets);
     this.worldSorted.sortableChildren = true;
     this.pitchLayer = new PitchLayer(assets, this.worldSorted);
     this.grass = new GrassField(assets, this.worldSorted);
-    this.viewport.addChild(this.pitchLayer.ground, this.worldSorted);
+    this.dragHead = new Sprite(assets.aimFrames[0]);
+    this.dragHead.anchor.set(0.5, 0.5);
+    this.dragHead.visible = false;
+    this.viewport.addChild(this.pitchLayer.ground, this.lawRing, this.keeperAim.rings, this.worldSorted, this.keeperAim.top, this.dragG, this.dragHead);
 
     this.ballView = new BallView(assets, this.worldSorted);
     this.worldSorted.addChild(this.ballView.root);
     this.effects = new Effects(assets, this.worldSorted, this.pitchLayer.groundFx, loop);
 
-    app.stage.addChild(this.viewport, this.overlay, this.flash, this.hud.root);
+    app.stage.addChild(this.viewport, this.overlay, this.flash, this.possessionGlow, this.hud.root);
   }
 
   addPlayer(sheet: string): PlayerView {
@@ -61,6 +83,66 @@ export class Scene {
     if (idx === this.controlledIdx) return;
     this.controlledIdx = idx;
     this.playerViews.forEach((v, i) => v.setControlled(i === idx));
+  }
+
+  // Keeper distribution sight — non-null while the human is aiming
+  setKeeperAim(state: KeeperAimState | null) {
+    this.keeperAimState = state;
+  }
+
+  // The slingshot sight — non-null while a drag-back is charging a strike
+  setKickDrag(d: { from: Vec2; dir: Vec2; power: number } | null) {
+    this.kickDrag = d;
+  }
+
+  toast(msg: string) {
+    this.hud.showToast(msg);
+  }
+
+  // On while the controlled player owns the ball — the frame fades with it
+  setBallGlow(on: boolean) {
+    this.glowOn = on;
+  }
+
+  // The frame itself: a chunky outer band and a crenellated inner one, built
+  // once per resize — only its alpha animates
+  private buildGlow(w: number, h: number) {
+    this.glowW = w;
+    this.glowH = h;
+    const g = this.possessionGlow;
+    const q = 6;
+    const gold = 0xffd95e;
+    g.clear();
+    g.rect(0, 0, w, q).fill({ color: gold, alpha: 0.2 });
+    g.rect(0, h - q, w, q).fill({ color: gold, alpha: 0.2 });
+    g.rect(0, q, q, h - 2 * q).fill({ color: gold, alpha: 0.2 });
+    g.rect(w - q, q, q, h - 2 * q).fill({ color: gold, alpha: 0.2 });
+    for (let x = q; x < w - q * 2; x += q * 2) {
+      g.rect(x, q, q, q).fill({ color: gold, alpha: 0.11 });
+      g.rect(x + q, h - 2 * q, q, q).fill({ color: gold, alpha: 0.11 });
+    }
+    for (let y = q; y < h - q * 2; y += q * 2) {
+      g.rect(q, y + q, q, q).fill({ color: gold, alpha: 0.11 });
+      g.rect(w - 2 * q, y, q, q).fill({ color: gold, alpha: 0.11 });
+    }
+  }
+
+  // Screen pixels → pitch meters on the ground plane (mouse targeting)
+  screenToWorld(sx: number, sy: number): Vec2 {
+    const local = this.viewport.toLocal({ x: sx, y: sy });
+    return vec(local.x / pxPerMeter(), local.y / (pxPerMeter() * squash()));
+  }
+
+  // The white chevron: who E switches you into
+  setSwitchTarget(idx: number) {
+    if (idx === this.switchTargetIdx) return;
+    this.switchTargetIdx = idx;
+    this.playerViews.forEach((v, i) => v.setSwitchTarget(i === idx));
+  }
+
+  // Light the open pass options while the human winds up
+  setPassHints(idxs: number[]) {
+    this.playerViews.forEach((v, i) => v.setOpenHint(idxs.includes(i)));
   }
 
   handleEvents(events: SimEvent[]) {
@@ -84,6 +166,54 @@ export class Scene {
   render(alpha: number, dt: number, aim: AimState) {
     const w = this.app.renderer.width;
     const h = this.app.renderer.height;
+
+    // A keeper lining up his ball sees the field FROM HIS GOAL LINE out to
+    // the punt's reach — never the dead half-circle behind the net
+    if (this.keeperAimState) {
+      const s = this.keeperAimState;
+      const M = pxPerMeter();
+      const left = s.gk.x < PITCH.length / 2;
+      const x0 = left ? -4 : PITCH.length - s.puntR - 10;
+      const x1 = left ? s.puntR + 10 : PITCH.length + 4;
+      const zoom = clamp(Math.min(w / ((x1 - x0) * M), h / (2 * 38 * M * squash())), 0.7, 2.2);
+      this.camera.override = { center: vec((x0 + x1) / 2, PITCH.width / 2), zoom };
+    } else {
+      this.camera.override = null;
+    }
+    this.keeperAim.update(dt, this.keeperAimState);
+
+    // The slingshot sight, in the game's own chalk: a trail of pixel dots
+    // that grows longer AND chunkier with the pull, capped by the baked
+    // chalk arrowhead. Small pull, small arrow — the arrow IS the meter.
+    this.dragG.clear();
+    this.dragHead.visible = !!this.kickDrag;
+    if (this.kickDrag) {
+      const kd = this.kickDrag;
+      const color = kd.power > 0.72 ? 0xff5340 : kd.power > 0.38 ? 0xffd95e : 0x9ff0b8;
+      const reach = 1.4 + kd.power * 5.6;      // meters of arrow
+      const q = Math.round(2 + kd.power * 2);  // chalk-dot size, px
+      for (let t = 1.0; t < reach - 0.35; t += 0.62) {
+        const p = project(kd.from.x + kd.dir.x * t, kd.from.y + kd.dir.y * t, 0);
+        this.dragG.rect(Math.round(p.sx - q / 2), Math.round(p.sy - q / 2), q, q)
+          .fill({ color, alpha: 0.85 });
+      }
+      const dirs = this.assets.manifest.fx.aim.frames;
+      const bin = Math.round(Math.atan2(kd.dir.y, kd.dir.x) / ((Math.PI * 2) / dirs));
+      this.dragHead.texture = this.assets.aimFrames[((bin % dirs) + dirs) % dirs];
+      this.dragHead.tint = color;
+      this.dragHead.scale.set(0.75 + kd.power * 0.65);
+      const tip = project(kd.from.x + kd.dir.x * reach, kd.from.y + kd.dir.y * reach, 0);
+      this.dragHead.position.set(Math.round(tip.sx), Math.round(tip.sy));
+    }
+
+    // The law, visible: a restart's mandated space is chalked around the ball
+    this.lawRing.clear();
+    if (this.world.restartLock > 0 && this.world.restartExclusion > 0) {
+      const b = project(this.world.ball.pos.x, this.world.ball.pos.y, 0);
+      const M = pxPerMeter();
+      this.lawRing.ellipse(b.sx, b.sy, this.world.restartExclusion * M, this.world.restartExclusion * M * squash())
+        .stroke({ width: 1.2, color: 0xffffff, alpha: 0.28 });
+    }
 
     this.camera.update(dt, this.world.ball.pos, this.world.ball.vel, this.world.players.map((p) => p.pos), w, h);
     this.world.players.forEach((p, i) => {
@@ -114,6 +244,13 @@ export class Scene {
       this.flash.rect(0, 0, w, h).fill({ color: 0xfff8e0, alpha: this.flashAlpha });
       this.flashAlpha *= Math.max(0, 1 - dt * 6);
     }
+
+    // Possession frame: swells in when the ball becomes yours, breathes, lets go
+    if (w !== this.glowW || h !== this.glowH) this.buildGlow(w, h);
+    this.glowFade = clamp(this.glowFade + (this.glowOn ? dt * 5 : -dt * 3.5), 0, 1);
+    this.glowPulse += dt * 2.6;
+    this.possessionGlow.visible = this.glowFade > 0.01;
+    this.possessionGlow.alpha = this.glowFade * (0.8 + 0.2 * Math.sin(this.glowPulse));
     this.hud.layout(w, h, this.world.score);
     this.hud.update(dt, w, h);
   }

@@ -17,6 +17,9 @@ export class TeamBrain {
   // "That one's for YOU" — a pass in flight has a named receiver. The passer
   // calls it, the named player attacks the ball, everyone else keeps running.
   calledReceiver = -1;
+  // Which body a human is wearing this tick (-1 when nobody is) — teammates
+  // keep a natural affinity for giving the human the ball
+  humanIdx = -1;
   private calledFor = 0;
   private anchors: Vec2[] = [];
   private myIdxs: number[] = [];
@@ -105,9 +108,12 @@ export class TeamBrain {
   private updateAnchors(world: World) {
     const ball = world.ball.pos;
     const sgn = this.attackSign();
-    const push = this.phase === 'attack' ? 9 : this.phase === 'defend' ? -7 : 0;
+    const push = this.phase === 'attack' ? 11 : this.phase === 'defend' ? -7 : 3;
     const ballAxis = this.axisOf(ball.x);
-    const defLineAxis = clamp(ballAxis - 9, 10, this.phase === 'attack' ? 54 : 44);
+    // The back line LIVES with the ball, not with its box: past halfway in
+    // possession, still stepped up around it out of possession — space behind
+    // is the offside trap's problem (M3), not a reason to camp the six-yard line
+    const defLineAxis = clamp(ballAxis - 6, 12, this.phase === 'attack' ? 60 : 48);
 
     for (const i of this.myIdxs) {
       const p = world.players[i];
@@ -119,14 +125,18 @@ export class TeamBrain {
       }
       const gain = 0.22 + this.grain(i) * 0.22;          // personal ball-follow gain
       const myPush = push * (0.7 + this.grain(i + 17) * 0.6); // personal step-up appetite
-      let x = baseX + clamp((ball.x - PITCH.length / 2) * gain, -13, 13) + myPush * sgn;
+      let x = baseX + clamp((ball.x - PITCH.length / 2) * gain, -16, 16) + myPush * sgn;
       const y = baseY + (ball.y - baseY) * (0.2 + this.grain(i + 5) * 0.14);
       if (p.id.role === 'DF') {
         const fullback = Math.abs(p.id.anchor.y - 0.5) > 0.3;
-        let axis = clamp(this.axisOf(x), 8, defLineAxis);
+        // The line is PULLED up with the ball, not just permitted to follow:
+        // a defender is never left more than ~13m behind the ball line
+        const lineFloor = clamp(ballAxis - 13, 8, this.phase === 'attack' ? 48 : 38);
+        let axis = clamp(this.axisOf(x), lineFloor, defLineAxis);
         if (this.phase === 'attack') {
-          // Fullbacks bomb on to control the middle third; centre-backs stay home
-          axis = fullback ? Math.min(axis + 9, 58) : Math.min(axis, defLineAxis - 3);
+          // Fullbacks bomb on to control the middle third; centre-backs step
+          // with the line and keep only a stride of insurance
+          axis = fullback ? Math.min(axis + 10, 66) : Math.min(axis, defLineAxis - 2);
         }
         x = this.team === 0 ? axis : PITCH.length - axis;
       }

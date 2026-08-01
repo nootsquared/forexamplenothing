@@ -166,6 +166,29 @@ export function generateAimArrowSheet() {
   return canvas;
 }
 
+// Overhead chevrons, couch-readable: frame 0 is the solid gold "this is YOU"
+// pointer, frame 1 the smaller cool-white "E switches you HERE" preview
+export const CHEV_W = 11;
+export const CHEV_H = 9;
+export function generateSwitchChevrons() {
+  const { canvas, ctx } = makeCanvas(CHEV_W * 2, CHEV_H);
+  const stamp = (frame, rows, outline) => {
+    const grid = new PixelGrid(CHEV_W, CHEV_H);
+    rows.forEach(([y, x0, x1, hex]) => { for (let x = x0; x <= x1; x++) grid.set(x, y, hex); });
+    grid.autoOutline(outline);
+    grid.blitTo(ctx, frame * CHEV_W, 0);
+  };
+  stamp(0, [
+    [1, 1, 9, '#ffef9e'], [2, 1, 9, '#ffd95e'], [3, 2, 8, '#ffd95e'],
+    [4, 3, 7, '#f0b83f'], [5, 4, 6, '#e09a2f'], [6, 5, 5, '#c97f28'],
+  ], '#3a2c10');
+  stamp(1, [
+    [2, 2, 8, '#ffffff'], [3, 2, 8, '#e6eefb'],
+    [4, 3, 7, '#cfdcea'], [5, 4, 6, '#aebfd2'], [6, 5, 5, '#93a7bd'],
+  ], '#1c2430');
+  return canvas;
+}
+
 // Round aluminium goal bar, vertical; the renderer tiles it to any length
 export function generateGoalBar() {
   const w = 4;

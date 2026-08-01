@@ -8,9 +8,17 @@ import { project, pxPerMeter, squash } from './projection';
 export class FollowCamera {
   center: Vec2 = vec(PITCH.length / 2, PITCH.width / 2);
   zoom = 3.0;
+  // A distribution beat pulls the view wide onto a chosen spot (keeper aiming)
+  override: { center: Vec2; zoom: number } | null = null;
   private targetZoom = 3.0;
 
   update(dt: number, ballPos: Vec2, ballVel: Vec2, players: Vec2[], viewW: number, viewH: number) {
+    if (this.override) {
+      this.center.x = expDecay(this.center.x, this.override.center.x, 4, dt);
+      this.center.y = expDecay(this.center.y, this.override.center.y, 4, dt);
+      this.zoom = expDecay(this.zoom, this.override.zoom, 4, dt);
+      return;
+    }
     const lookAhead = clampLen(scale(ballVel, 0.4), 7);
     const focus = add(ballPos, lookAhead);
 

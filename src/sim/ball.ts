@@ -8,6 +8,9 @@ export class Ball {
   vel: Vec2 = vec();
   vz = 0;
   spin = 0; // sidespin, rad/s of flight-path curl — the banana in a bent shot
+  // A punted ball drops STEEP and dies where it lands instead of skidding on —
+  // set for the flight, consumed by the first touchdown
+  deadenOnLand = false;
   // Previous-step state for render interpolation
   prev = { x: 52.5, y: 34, z: 0 };
 
@@ -36,8 +39,12 @@ export class Ball {
       if (this.z <= 0 && this.vz < 0) {
         const impact = -this.vz;
         this.z = 0;
-        this.vz = -this.vz * surface.bounce;
-        this.vel = scale(this.vel, 0.86); // grass grabs a little on each bounce
+        this.vz = -this.vz * surface.bounce * (this.deadenOnLand ? 0.45 : 1);
+        this.vel = scale(this.vel, this.deadenOnLand ? 0.3 : 0.86); // grass grabs; a punt DIES
+        if (this.deadenOnLand && this.speed() > 6) {
+          this.vel = scale(this.vel, 6 / this.speed()); // even a missile sits down where it drops
+        }
+        this.deadenOnLand = false;
         if (this.vz < 1.1) this.vz = 0;   // settle instead of micro-bouncing forever
         if (impact > 3.5) events.push({ kind: 'bounce', x: this.pos.x, y: this.pos.y, impact });
       }

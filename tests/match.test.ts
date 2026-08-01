@@ -222,3 +222,70 @@ describe('tackling', () => {
     expect(p.recoverTimer).toBeGreaterThan(0);
   });
 });
+
+describe('the restart law', () => {
+  it('walks the other team out of the mandated space — no jumped throw-ins', () => {
+    const match = createMatch();
+    const world = match.world;
+    world.ball.pos = vec(52.5, -1); // over the sideline
+    world.lastTouch = { team: 1, idx: 12 }; // so team 0 gets the throw
+    advanceMatch(match, DT); // the restart is awarded
+    const opp = world.players.find((p) => p.id.team === 1)!;
+    opp.pos = vec(world.ball.pos.x + 0.5, world.ball.pos.y + 0.5); // parked on the spot
+    for (let t = 0; t < 60; t++) advanceMatch(match, DT); // one second of the beat
+    expect(world.restartLock).toBeGreaterThan(0);
+    expect(dist(opp.pos, world.ball.pos)).toBeGreaterThan(6.0);
+  });
+});
+
+describe('keeper distribution', () => {
+  it('a scatterless punt drops the ball at the chosen spot', () => {
+    const world = new World();
+    world.players.push(new PlayerBody(vec(6, 34), stats, { team: 0, role: 'GK', anchor: vec(0.04, 0.5), number: 1 }));
+    world.ball.pos = vec(6, 34);
+    const target = vec(30, 30);
+    world.gkLaunch(0, target, 'punt', 0);
+    expect(world.ball.vz).toBeGreaterThan(5); // it LEFT the boot, high
+    for (let t = 0; t < 60 * 4; t++) world.step(DT, []);
+    expect(dist(world.ball.pos, target)).toBeLessThan(8);
+  });
+
+  it('a throw stays flat and reaches a nearer man', () => {
+    const world = new World();
+    world.players.push(new PlayerBody(vec(6, 34), stats, { team: 0, role: 'GK', anchor: vec(0.04, 0.5), number: 1 }));
+    world.ball.pos = vec(6, 34);
+    const target = vec(20, 40);
+    world.gkLaunch(0, target, 'throw', 0);
+    for (let t = 0; t < 60 * 4; t++) world.step(DT, []);
+    expect(dist(world.ball.pos, target)).toBeLessThan(7);
+  });
+});
+
+describe('mouse passing', () => {
+  it('a kick released AT a field point flies toward that point, whatever the stick says', () => {
+    const world = new World();
+    world.players.push(new PlayerBody(vec(30, 34), stats, { team: 0, role: 'MF', anchor: vec(0.5, 0.5), number: 8 }));
+    world.ball.pos = vec(30.8, 34);
+    const inputs: PlayerInput = {
+      move: vec(0, -1), // stick pressed NORTH...
+      sprint: false, kickCharging: false,
+      kickReleased: { power: 0.5, aimOffset: 0, aimAt: vec(50, 44) }, // ...aimed EAST-SOUTH by mouse
+    };
+    world.step(DT, [inputs]);
+    const v = world.ball.vel;
+    expect(v.x).toBeGreaterThan(5);  // it went toward the point
+    expect(v.y).toBeGreaterThan(1);  // south-ish, not the stick's north
+  });
+});
+
+describe('the long punt', () => {
+  it('reaches the edge of the far box', () => {
+    const world = new World();
+    world.players.push(new PlayerBody(vec(5, 34), stats, { team: 0, role: 'GK', anchor: vec(0.04, 0.5), number: 1 }));
+    world.ball.pos = vec(5, 34);
+    world.gkLaunch(0, vec(85, 34), 'punt', 0);
+    for (let t = 0; t < 60 * 5; t++) world.step(DT, []);
+    expect(world.ball.pos.x).toBeGreaterThan(74); // deep into their half, box-edge territory
+    expect(world.ball.pos.x).toBeLessThan(96);    // and not sailing over the goal line
+  });
+});

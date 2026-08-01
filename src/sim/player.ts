@@ -15,8 +15,9 @@ export interface PlayerInput {
   move: Vec2;          // unit-ish intent
   sprint: boolean;
   kickCharging: boolean;
-  // aimOffset: radians of J/L bend applied off the stick line at release
-  kickReleased: { power: number; aimOffset?: number } | null;
+  // aimOffset: radians of J/L bend applied off the stick line at release.
+  // aimAt: a field POINT to strike toward (mouse passing) — overrides the stick line.
+  kickReleased: { power: number; aimOffset?: number; aimAt?: Vec2 } | null;
   tackle?: boolean;    // lunge-poke at the ball — win it clean or eat the recovery
 }
 
@@ -39,7 +40,7 @@ export class PlayerBody {
   // ball — no bulldozing your own shot, no instantly re-tapping a lost duel
   playLock = 0;
   // Released kick waiting for the ball to come into reach
-  pendingKick: { power: number; bend: number; ttl: number } | null = null;
+  pendingKick: { power: number; bend: number; aimAt?: Vec2; ttl: number } | null = null;
   // Set for one tick when a cut plants — the foot can chop the ball with it
   justCut = false;
   cutDir: Vec2 = vec(1, 0);

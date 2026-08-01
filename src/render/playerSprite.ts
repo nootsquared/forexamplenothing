@@ -1,15 +1,16 @@
 import { Container, Sprite, Graphics } from 'pixi.js';
 import { lerp } from './interp';
-import { Vec2, len, norm, rotate } from '../core/math';
+import { Vec2, len, norm } from '../core/math';
 import { PlayerBody } from '../sim/player';
 import { GameAssets } from './assets';
 import { project, pxPerMeter, squash } from './projection';
 
-// Charge + J/L bend state the local player's view needs to draw its aim tell
+// Charge + resolved aim the local player's view needs to draw its tell —
+// `dir` is the world-space strike line (field-locked J/L already applied)
 export interface AimState {
   charge: number;
-  offset: number;
   move: Vec2;
+  dir: Vec2 | null;
 }
 
 export class PlayerView {
@@ -18,12 +19,17 @@ export class PlayerView {
   private body: Sprite;
   private aimArrow: Sprite;
   private marker: Sprite;
+  private openHint: Sprite;
+  private youChev: Sprite;
+  private nextChev: Sprite;
   private chargeBar = new Graphics();
   private animPhase = 0;
   private idlePhase = 0;
   private kickTimer = 0;
   private aimPulse = 0;
   private markerPulse = 0;
+  private hintPulse = 0;
+  private chevPulse = 0;
   private aiCharge = 0; // estimated windup of an AI body, for the charge tell
   private sheet: string;
 
@@ -44,11 +50,33 @@ export class PlayerView {
     this.marker.anchor.set(0.5, 0.5);
     this.marker.visible = false;
     this.marker.tint = 0xffe27a;
-    this.root.addChild(this.marker, this.shadow, this.aimArrow, this.body, this.chargeBar);
+    // "I'm open!": a smaller mint ring under a reachable pass option
+    this.openHint = new Sprite(assets.ringFrames[0]);
+    this.openHint.anchor.set(0.5, 0.5);
+    this.openHint.visible = false;
+    this.openHint.tint = 0x8ef0c0;
+    // Overhead identity: gold chevron = YOU, white chevron = who E takes
+    this.youChev = new Sprite(assets.chevFrames[0]);
+    this.nextChev = new Sprite(assets.chevFrames[1]);
+    for (const chev of [this.youChev, this.nextChev]) {
+      chev.anchor.set(0.5, 1);
+      chev.visible = false;
+      chev.scale.set(1.4);
+    }
+    this.root.addChild(this.marker, this.openHint, this.shadow, this.aimArrow, this.body, this.chargeBar, this.youChev, this.nextChev);
   }
 
   setControlled(on: boolean) {
     this.marker.visible = on;
+    this.youChev.visible = on;
+  }
+
+  setSwitchTarget(on: boolean) {
+    this.nextChev.visible = on;
+  }
+
+  setOpenHint(on: boolean) {
+    this.openHint.visible = on;
   }
 
   triggerKick() {
@@ -66,6 +94,21 @@ export class PlayerView {
       this.markerPulse += dt * 6;
       this.marker.scale.set(0.62 + 0.05 * Math.sin(this.markerPulse), 0.44 + 0.035 * Math.sin(this.markerPulse));
       this.marker.alpha = 0.85;
+    }
+    if (this.openHint.visible) {
+      this.hintPulse += dt * 7;
+      this.openHint.scale.set(0.42 + 0.04 * Math.sin(this.hintPulse), 0.3 + 0.028 * Math.sin(this.hintPulse));
+      this.openHint.alpha = 0.55 + 0.15 * Math.sin(this.hintPulse * 0.7);
+    }
+    // The chevrons breathe on their own clocks — a calm float, not a strobe
+    if (this.youChev.visible) {
+      this.chevPulse += dt * 5;
+      this.youChev.position.y = -33 + Math.sin(this.chevPulse) * 1.6;
+    }
+    if (this.nextChev.visible) {
+      this.chevPulse += dt * 5;
+      this.nextChev.position.y = -31 + Math.sin(this.chevPulse * 0.8) * 1.2;
+      this.nextChev.alpha = 0.8 + 0.2 * Math.sin(this.chevPulse * 0.8);
     }
     this.updateAimArrow(p, dt, aim);
 
@@ -113,8 +156,7 @@ export class PlayerView {
       return;
     }
     this.aimPulse += dt * 9;
-    const base = len(aim.move) > 0.25 ? norm(aim.move) : p.facing;
-    const dir = rotate(base, aim.offset);
+    const dir = aim.dir ?? (len(aim.move) > 0.25 ? norm(aim.move) : p.facing);
     const dirs = this.assets.manifest.fx.aim.frames;
     const bin = Math.round(Math.atan2(dir.y, dir.x) / ((Math.PI * 2) / dirs));
     this.aimArrow.texture = this.assets.aimFrames[((bin % dirs) + dirs) % dirs];

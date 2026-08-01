@@ -9,7 +9,7 @@ export interface Manifest {
     anims: { idleStart: number; idleLen: number; runStart: number; runLen: number; kickStart: number; kickLen: number; lunge: number; recover: number };
   };
   ball: { size: number; dirs: number; phases: number; worldR: number };
-  fx: { dust: { size: number; frames: number }; grass: { size: number; frames: number }; ring: { size: number; frames: number }; blade: { w: number; h: number; frames: number }; aim: { size: number; frames: number } };
+  fx: { dust: { size: number; frames: number }; grass: { size: number; frames: number }; ring: { size: number; frames: number }; blade: { w: number; h: number; frames: number }; aim: { size: number; frames: number }; chev: { w: number; h: number; frames: number } };
   font: { cellW: number; cellH: number; glyphs: string };
   stand: { h: number; frames: number };
   boards: { h: number };
@@ -30,6 +30,7 @@ export interface GameAssets {
   ringFrames: Texture[];
   bladeFrames: Texture[];
   aimFrames: Texture[];
+  chevFrames: Texture[]; // [0] solid gold "you", [1] white "E takes this man"
   flagFrames: Texture[];
   glyphs: Record<string, Texture>;
   shadow: Texture;
@@ -55,7 +56,7 @@ export async function loadAssets(): Promise<GameAssets> {
     ...manifest.variants.map((v) => v.pitch),
     ...manifest.playerSheets,
     'ball.png', 'fx-dust.png', 'fx-grass.png', 'fx-ring.png', 'fx-shadow.png', 'fx-skid.png',
-    'fx-blade.png', 'fx-aim.png', 'goal-bar.png', 'font.png', 'stand.png', 'boards.png', 'dugout.png', 'flag.png', 'cloud.png',
+    'fx-blade.png', 'fx-aim.png', 'fx-chev.png', 'goal-bar.png', 'font.png', 'stand.png', 'boards.png', 'dugout.png', 'flag.png', 'cloud.png',
   ];
   const loaded: Record<string, Texture> = {};
   await Promise.all(names.map(async (n) => { loaded[n] = await Assets.load(url(n)); }));
@@ -87,6 +88,7 @@ export async function loadAssets(): Promise<GameAssets> {
     ringFrames: sliceRow(loaded['fx-ring.png'], manifest.fx.ring.size, manifest.fx.ring.size, 0, manifest.fx.ring.frames),
     bladeFrames: sliceRow(loaded['fx-blade.png'], manifest.fx.blade.w, manifest.fx.blade.h, 0, manifest.fx.blade.frames),
     aimFrames: sliceRow(loaded['fx-aim.png'], manifest.fx.aim.size, manifest.fx.aim.size, 0, manifest.fx.aim.frames),
+    chevFrames: sliceRow(loaded['fx-chev.png'], manifest.fx.chev.w, manifest.fx.chev.h, 0, manifest.fx.chev.frames),
     flagFrames: sliceRow(loaded['flag.png'], manifest.flag.w, manifest.flag.h, 0, manifest.flag.frames),
     glyphs,
     shadow: loaded['fx-shadow.png'],

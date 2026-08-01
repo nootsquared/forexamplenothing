@@ -144,12 +144,25 @@ export class Brain {
       this.lastPhase = this.bb.phase;
     }
 
-    // Dead-ball etiquette: the taker walks on, everyone else holds shape
+    // Dead-ball etiquette: the taker walks on, everyone else holds shape —
+    // and the OTHER team gives the ball its mandated space. Nobody jumps a
+    // goal kick off the keeper's laces.
     if (world.restartLock > 0) {
       this.kickPlan = null;
-      this.intent = world.lastTouch?.idx === this.idx
-        ? { kind: 'chase', sprint: false }
-        : { kind: 'goto', target: this.wanderedAnchor(), sprint: false };
+      const theirs = world.lastTouch && world.lastTouch.team !== me.id.team;
+      if (theirs && dist(me.pos, world.ball.pos) < world.restartExclusion + 1.5) {
+        const away = sub(me.pos, world.ball.pos);
+        const out = len(away) > 1e-4 ? norm(away) : norm(sub(this.bb.goalWeDefend(), world.ball.pos));
+        this.intent = {
+          kind: 'goto',
+          target: this.clampPitch(add(world.ball.pos, scale(out, world.restartExclusion + 2.5))),
+          sprint: false,
+        };
+      } else {
+        this.intent = world.lastTouch?.idx === this.idx
+          ? { kind: 'chase', sprint: false }
+          : { kind: 'goto', target: this.wanderedAnchor(), sprint: false };
+      }
       return;
     }
 
@@ -292,7 +305,7 @@ export class Brain {
     const central = 1 - Math.abs(me.pos.y - PITCH.width / 2) / (PITCH.width / 2);
     let shoot = -1;
     if (goalDist < 21) {
-      shoot = (21 - goalDist) * 0.09
+      shoot = (21 - goalDist) * 0.075
         + central * 0.5
         + this.laneOpen(me.pos, goal) * 0.5   // a SIGHT of goal, not a prayer
         - pressure * 0.3
@@ -330,6 +343,7 @@ export class Brain {
       if (d < 8) s -= 0.25;                                // micro-passes are a last resort
       if (d > 14 && margin > 0.5) s += 0.3;                // the switch, the cross, the raking ball
       if (marked < 2 && !(pressure > 0.5 && progress < 0)) s -= 0.5; // he's wearing a defender
+      if (world.players.indexOf(p) === this.bb.humanIdx) s += 0.5;   // the human's ball, naturally
       if (me.id.role === 'MF' && p.id.role === 'FW') s += 0.25;      // mids feed the line
       if (isWinger && myAxis > 66 && p.id.role === 'FW' && !mateWide) s += 0.85; // the cutback
       if (pressure > 0.5 && progress < 0 && margin > 0.6) s += 0.45; // the relief valve back
@@ -350,7 +364,7 @@ export class Brain {
       return;
     }
 
-    if (shoot > 0.55 && shoot >= passScore && shoot >= dribble) {
+    if (shoot > 0.72 && shoot >= passScore && shoot >= dribble) {
       // A shot is a SHOT: full-blooded, hit to beat the keeper, not to reach him
       const aimPoint = vec(goal.x, goal.y + (this.rng.next() - 0.5) * 4.5);
       this.planKick(norm(sub(aimPoint, me.pos)), clamp(0.78 + goalDist * 0.012, 0.78, 1));
@@ -399,7 +413,8 @@ export class Brain {
         if (d < 10 || d > 48) continue;
         const speedWanted = clamp(10 + d * 0.5, 12, 23);
         const margin = passMargin(me.pos, p.pos, speedWanted, opps);
-        const s = margin * 0.7 + this.bb.axisOf(p.pos.x) * 0.008;
+        let s = margin * 0.7 + this.bb.axisOf(p.pos.x) * 0.008;
+        if (world.players.indexOf(p) === this.bb.humanIdx) s += 0.4; // serve the human
         if (margin > 0.5 && s > bestScore) { bestScore = s; best = p; bestSpeed = speedWanted; }
       }
       if (best) {
