@@ -5,7 +5,7 @@ import { PlayerInput } from './sim/player';
 import { World } from './sim/world';
 import { Match, createMatch, advanceMatch } from './match';
 import { leadTarget, passMargin } from './ai/brain';
-import { FORMATIONS } from './data/formations';
+import { FORMATIONS, formationsOfSize } from './data/formations';
 import { Draft, quickSplit, toSquad } from './data/draft';
 import { SquadPlayer } from './data/roster';
 import { Keyboard } from './input/keyboard';
@@ -15,7 +15,7 @@ import { loadAssets } from './render/assets';
 import { setProjection } from './render/projection';
 import { Scene } from './render/scene';
 import { MOODS } from './render/variants';
-import { Screen, MenuScreen, DraftScreen, FormationScreen, PauseScreen, StatsScreen, fmtClock } from './ui/screens';
+import { Screen, MenuScreen, SetupScreen, DraftScreen, FormationScreen, PauseScreen, StatsScreen, MatchSetup, fmtClock } from './ui/screens';
 
 // The shell: menu → (draft → shape) → match → full time → menu. One Pixi
 // app, one loop; a match owns the pitch while it lives, screens own the top.
@@ -45,10 +45,13 @@ async function boot() {
   let paused = false;
   let fulltimeDelay = 0; // a beat for the FULL TIME banner before the sheet
   let draftPicks: Draft | null = null;
+  let setup: MatchSetup = { mode: 'quick', size: 11, halfLength: 120, difficulty: 1 };
 
   // ---- match-scoped state (rebuilt every kickoff) ------------------------
   let match: Match | null = null;
   let scene: Scene | null = null;
+  // The menu's living backdrop: an endless AI-vs-AI kickabout
+  let attract: { match: Match; scene: Scene } | null = null;
   let cursor: TeamCursor | null = null;
   let gkIdx = -1;
   let humanIdle = Infinity;
@@ -64,6 +67,7 @@ async function boot() {
   // ---- screens -----------------------------------------------------------
   const uiRoot = new Container();
   const menu = new MenuScreen(assets);
+  const setupScreen = new SetupScreen(assets);
   const draftScreen = new DraftScreen(assets);
   const formationScreen = new FormationScreen(assets);
   const pauseScreen = new PauseScreen(assets);
@@ -80,37 +84,89 @@ async function boot() {
   };
   window.addEventListener('resize', () => activeScreen?.layout(app.renderer.width, app.renderer.height));
 
-  menu.onQuick = () => {
-    const [homeStars, awayStars] = quickSplit();
-    startMatch(toSquad(homeStars, FORMATIONS['4-3-3']), '4-3-3', toSquad(awayStars, FORMATIONS['4-4-2']), '4-4-2');
-  };
-  menu.onDraft = () => {
-    draftScreen.begin();
-    screenName = 'draft';
-    show(draftScreen);
+  // The CPU squad wears the difficulty: easy legs are slower, hard legs bite
+  const DIFF_SCALE = [0.86, 1, 1.1];
+  const scaleSquad = (squad: SquadPlayer[], f: number): SquadPlayer[] =>
+    f === 1 ? squad : squad.map((p) => ({
+      ...p,
+      stats: {
+        topSpeed: p.stats.topSpeed * f,
+        sprintSpeed: p.stats.sprintSpeed * f,
+        accel: p.stats.accel * f,
+        agility: Math.min(1, p.stats.agility * f),
+        control: Math.min(1, p.stats.control * f),
+        power: Math.min(1, p.stats.power * f),
+      },
+    }));
+
+  menu.onQuick = () => { setupScreen.begin('quick'); show(setupScreen); };
+  menu.onDraft = () => { setupScreen.begin('draft'); show(setupScreen); };
+  setupScreen.onBack = () => show(menu);
+  setupScreen.onStart = (s) => {
+    setup = s;
+    if (s.mode === 'quick') {
+      const shapes = formationsOfSize(s.size);
+      const homeShape = shapes[Math.min(1, shapes.length - 1)];
+      const awayShape = shapes[0];
+      const [homeStars, awayStars] = quickSplit(s.size);
+      startMatch(
+        toSquad(homeStars, FORMATIONS[homeShape]), homeShape,
+        scaleSquad(toSquad(awayStars, FORMATIONS[awayShape]), DIFF_SCALE[s.difficulty]), awayShape,
+      );
+    } else {
+      draftScreen.begin(s.size);
+      screenName = 'draft';
+      show(draftScreen);
+    }
   };
   draftScreen.onDone = (draft) => {
     draftPicks = draft;
-    formationScreen.begin(draft.sides[0].picks);
+    formationScreen.begin(draft.sides[0].picks, setup.size);
     screenName = 'formation';
     show(formationScreen);
   };
   formationScreen.onDone = (shape) => {
     if (!draftPicks) return;
-    const awayShapes = Object.keys(FORMATIONS);
+    const awayShapes = formationsOfSize(setup.size);
     const awayShape = awayShapes[Math.floor(Math.random() * awayShapes.length)];
     startMatch(
       toSquad(draftPicks.sides[0].picks, FORMATIONS[shape]), shape,
-      toSquad(draftPicks.sides[1].picks, FORMATIONS[awayShape]), awayShape,
+      scaleSquad(toSquad(draftPicks.sides[1].picks, FORMATIONS[awayShape]), DIFF_SCALE[setup.difficulty]), awayShape,
     );
   };
   pauseScreen.onResume = () => { paused = false; show(null); };
   pauseScreen.onQuit = () => toMenu();
   statsScreen.onDone = () => toMenu();
+  menu.onMood = (i) => attract?.scene.setVariant(MOODS[i]);
+  menu.onFps = (cap) => { loop.fpsCap = cap; };
+
+  function ensureAttract() {
+    if (attract) return;
+    const [a, b] = quickSplit();
+    const m = createMatch({
+      homeSquad: toSquad(a, FORMATIONS['4-3-3']), homeShape: '4-3-3',
+      awaySquad: toSquad(b, FORMATIONS['4-4-2']), awayShape: '4-4-2',
+    });
+    const s = new Scene(app, assets, m.world, loop);
+    m.world.players.forEach((p) => s.addPlayer(p.id.team === 0 ? 'home' : 'away'));
+    s.setVariant(MOODS[menu.moodIdx]);
+    s.setHudVisible(false);
+    attract = { match: m, scene: s };
+    app.stage.addChild(uiRoot); // menu rides above its own backdrop
+  }
+
+  function killAttract() {
+    attract?.scene.destroy();
+    attract = null;
+  }
 
   function toMenu() {
+    scene?.destroy();
+    scene = null;
+    match = null;
     screenName = 'menu';
     paused = false;
+    ensureAttract();
     show(menu);
   }
 
@@ -123,12 +179,14 @@ async function boot() {
   };
 
   function startMatch(homeSquad: SquadPlayer[], homeShape: string, awaySquad: SquadPlayer[], awayShape: string) {
+    killAttract();
     scene?.destroy();
-    match = createMatch({ homeSquad, homeShape, awaySquad, awayShape, halfLength: menu.halfLength });
+    match = createMatch({ homeSquad, homeShape, awaySquad, awayShape, halfLength: setup.halfLength });
     scene = new Scene(app, assets, match.world, loop);
     match.world.players.forEach((p) => scene!.addPlayer(p.id.team === 0 ? 'home' : 'away'));
-    scene.setVariant(MOODS[0]);
+    scene.setVariant(MOODS[menu.moodIdx]);
     cursor = new TeamCursor(0, match.world);
+    cursor.autoMode = menu.autoSwitch;
     gkIdx = match.world.players.findIndex((p) => p.id.team === 0 && p.id.role === 'GK');
     scene.setControlled(cursor.idx);
     controls = new LocalControls();
@@ -149,6 +207,7 @@ async function boot() {
   for (const code of uiKeys) kb.onPress(code, () => activeScreen?.key(code));
   kb.onPress('Space', () => activeScreen?.key('Space'));
   kb.onPress('Escape', () => {
+    if (screenName === 'menu') return activeScreen?.key('Escape'); // menu pages or match setup
     if (screenName !== 'match' || !match || match.finished) return;
     paused = !paused;
     show(paused ? pauseScreen : null);
@@ -321,10 +380,12 @@ async function boot() {
     1 / 60,
     (dt) => {
       if (screenName === 'match' && match && !paused && (!match.finished || fulltimeDelay > 0)) tickMatch(dt);
-      if (screenName === 'draft') draftScreen.update(dt);
+      if (screenName === 'menu' && attract) advanceMatch(attract.match, dt); // the backdrop plays on
+      activeScreen?.update?.(dt);
     },
     (alpha, renderDt) => {
-      scene?.render(alpha, renderDt, { charge: controls.charge, move: input.move, dir: controls.aimDir });
+      if (scene) scene.render(alpha, renderDt, { charge: controls.charge, move: input.move, dir: controls.aimDir });
+      else if (screenName === 'menu') attract?.scene.render(alpha, renderDt, { charge: 0, move: vec(), dir: null });
     },
   );
 

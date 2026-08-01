@@ -1,4 +1,4 @@
-import { Container, Graphics } from 'pixi.js';
+import { Container, Graphics, Rectangle } from 'pixi.js';
 import { GameAssets } from '../render/assets';
 import { PixelText } from '../render/pixelText';
 
@@ -16,22 +16,30 @@ export function panel(w: number, h: number): Graphics {
 
 export interface ListRow {
   label: string;
+  value?: string; // the adjustable part — drawn gold in < > at the value column
   enabled: boolean;
 }
 
-// Keyboard/mouse row list: gold chevron marks the pick, disabled rows grey
-// out, long lists scroll a window around the selection.
+// Keyboard/mouse row list: gold chevron marks the pick, LABELS stay quiet
+// while VALUES wear gold selector brackets, disabled rows grey out, long
+// lists scroll a window around the selection.
 export class PixelList {
   root = new Container();
   sel = 0;
   onPick: (index: number) => void = () => {};
   onSelect: () => void = () => {}; // fires whenever the highlight moves
   private rows: ListRow[] = [];
-  private texts: PixelText[] = [];
+  private views: { box: Container; label: PixelText; value: PixelText | null }[] = [];
   private marker: PixelText;
   private scroll = 0;
 
-  constructor(private assets: GameAssets, private scale: number, private rowH: number, private maxVisible: number) {
+  constructor(
+    private assets: GameAssets,
+    private scale: number,
+    private rowH: number,
+    private maxVisible: number,
+    private valueCol = 13, // characters of label space before values begin
+  ) {
     this.marker = new PixelText(assets, scale, 0xffd95e);
     this.marker.text = '>';
     this.root.addChild(this.marker);
@@ -39,19 +47,30 @@ export class PixelList {
 
   setRows(rows: ListRow[], keepSel = false) {
     this.rows = rows;
-    for (const t of this.texts) t.destroy();
-    this.texts = [];
+    for (const v of this.views) v.box.destroy({ children: true });
+    this.views = [];
     if (!keepSel || this.sel >= rows.length) this.sel = 0;
     if (!(rows[this.sel]?.enabled)) this.sel = Math.max(0, rows.findIndex((r) => r.enabled));
     rows.forEach((row, i) => {
-      const t = new PixelText(this.assets, this.scale, row.enabled ? 0xe8ecf4 : 0x5a6070);
-      t.text = row.label;
-      t.eventMode = 'static';
-      t.cursor = 'pointer';
-      t.on('pointerover', () => { if (this.rows[i].enabled) { this.sel = i; this.layout(); } });
-      t.on('pointertap', () => { if (this.rows[i].enabled) { this.sel = i; this.layout(); this.onPick(i); } });
-      this.root.addChild(t);
-      this.texts.push(t);
+      const box = new Container();
+      const label = new PixelText(this.assets, this.scale);
+      label.text = row.label;
+      let value: PixelText | null = null;
+      if (row.value !== undefined) {
+        value = new PixelText(this.assets, this.scale);
+        value.text = `< ${row.value} >`;
+        value.position.set(this.valueCol * 6 * this.scale, 0);
+        box.addChild(value);
+      }
+      box.addChild(label);
+      const w = Math.max(label.textWidth, value ? value.position.x + value.textWidth : 0);
+      box.hitArea = new Rectangle(-4, -2, w + 12, this.rowH);
+      box.eventMode = 'static';
+      box.cursor = 'pointer';
+      box.on('pointerover', () => { if (this.rows[i].enabled) { this.sel = i; this.layout(); } });
+      box.on('pointertap', () => { if (this.rows[i].enabled) { this.sel = i; this.layout(); this.onPick(i); } });
+      this.root.addChild(box);
+      this.views.push({ box, label, value });
     });
     this.layout();
   }
@@ -75,11 +94,16 @@ export class PixelList {
     // keep the selection inside the window
     if (this.sel < this.scroll) this.scroll = this.sel;
     if (this.sel >= this.scroll + this.maxVisible) this.scroll = this.sel - this.maxVisible + 1;
-    this.texts.forEach((t, i) => {
+    this.views.forEach((v, i) => {
+      const row = this.rows[i];
       const vis = i >= this.scroll && i < this.scroll + this.maxVisible;
-      t.visible = vis;
-      if (vis) t.position.set(16, (i - this.scroll) * this.rowH);
-      t.tint = this.rows[i].enabled ? (i === this.sel ? 0xffffff : 0xe8ecf4) : 0x5a6070;
+      v.box.visible = vis;
+      if (vis) v.box.position.set(16, (i - this.scroll) * this.rowH);
+      const active = i === this.sel;
+      v.label.tint = !row.enabled ? 0x5a6070
+        : v.value ? (active ? 0xdfe4ee : 0x8f97a8)  // a setting: the label stays quiet
+        : (active ? 0xffffff : 0xe8ecf4);           // an action: the label IS the thing
+      if (v.value) v.value.tint = !row.enabled ? 0x5a6070 : active ? 0xffe98f : 0xd8ab3c;
     });
     this.marker.position.set(0, (this.sel - this.scroll) * this.rowH);
     this.marker.visible = this.rows.length > 0;

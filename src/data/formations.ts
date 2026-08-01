@@ -12,14 +12,51 @@ export interface FormationSlot {
 
 export interface Formation {
   id: string;
-  slots: FormationSlot[]; // always 11, GK first
+  size: number;           // players per side — 5, 7 or the full 11
+  slots: FormationSlot[]; // GK first
 }
 
 const slot = (role: Role, x: number, y: number): FormationSlot => ({ role, x, y });
 
+// Shapes of a given side size — the setup screen filters by this
+export function formationsOfSize(size: number): string[] {
+  return Object.keys(FORMATIONS).filter((k) => FORMATIONS[k].size === size);
+}
+
 export const FORMATIONS: Record<string, Formation> = {
+  '2-1-1': {
+    id: '2-1-1',
+    size: 5,
+    slots: [
+      slot('GK', 0.06, 0.5),
+      slot('DF', 0.24, 0.3), slot('DF', 0.24, 0.7),
+      slot('MF', 0.48, 0.5),
+      slot('FW', 0.74, 0.5),
+    ],
+  },
+  '3-2-1': {
+    id: '3-2-1',
+    size: 7,
+    slots: [
+      slot('GK', 0.05, 0.5),
+      slot('DF', 0.22, 0.22), slot('DF', 0.2, 0.5), slot('DF', 0.22, 0.78),
+      slot('MF', 0.47, 0.35), slot('MF', 0.47, 0.65),
+      slot('FW', 0.74, 0.5),
+    ],
+  },
+  '2-3-1': {
+    id: '2-3-1',
+    size: 7,
+    slots: [
+      slot('GK', 0.05, 0.5),
+      slot('DF', 0.21, 0.35), slot('DF', 0.21, 0.65),
+      slot('MF', 0.46, 0.18), slot('MF', 0.44, 0.5), slot('MF', 0.46, 0.82),
+      slot('FW', 0.74, 0.5),
+    ],
+  },
   '4-4-2': {
     id: '4-4-2',
+    size: 11,
     slots: [
       slot('GK', 0.04, 0.5),
       slot('DF', 0.2, 0.15), slot('DF', 0.18, 0.38), slot('DF', 0.18, 0.62), slot('DF', 0.2, 0.85),
@@ -29,6 +66,7 @@ export const FORMATIONS: Record<string, Formation> = {
   },
   '4-3-3': {
     id: '4-3-3',
+    size: 11,
     slots: [
       slot('GK', 0.04, 0.5),
       slot('DF', 0.2, 0.15), slot('DF', 0.18, 0.38), slot('DF', 0.18, 0.62), slot('DF', 0.2, 0.85),
@@ -38,6 +76,7 @@ export const FORMATIONS: Record<string, Formation> = {
   },
   '4-2-3-1': {
     id: '4-2-3-1',
+    size: 11,
     slots: [
       slot('GK', 0.04, 0.5),
       slot('DF', 0.2, 0.15), slot('DF', 0.18, 0.38), slot('DF', 0.18, 0.62), slot('DF', 0.2, 0.85),
@@ -48,6 +87,7 @@ export const FORMATIONS: Record<string, Formation> = {
   },
   '3-5-2': {
     id: '3-5-2',
+    size: 11,
     slots: [
       slot('GK', 0.04, 0.5),
       slot('DF', 0.18, 0.28), slot('DF', 0.16, 0.5), slot('DF', 0.18, 0.72),
@@ -57,6 +97,7 @@ export const FORMATIONS: Record<string, Formation> = {
   },
   '5-3-2': {
     id: '5-3-2',
+    size: 11,
     slots: [
       slot('GK', 0.04, 0.5),
       slot('DF', 0.22, 0.08), slot('DF', 0.17, 0.3), slot('DF', 0.15, 0.5), slot('DF', 0.17, 0.7), slot('DF', 0.22, 0.92),

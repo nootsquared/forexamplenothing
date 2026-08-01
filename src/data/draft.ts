@@ -6,39 +6,50 @@ import { StarPlayer, TOP_50, academyPlayer } from './players';
 // 100M budget each, and role quotas so both sides leave with a real XI.
 // Pure logic — the UI renders it, the tests drive it headless.
 
-export const BUDGET = 100;
-export const QUOTA: Record<Role, number> = { GK: 1, DF: 4, MF: 4, FW: 2 };
+// Role quotas and budgets scale with the side size — 5s, 7s, or full 11s
+export function quotaFor(size: number): Record<Role, number> {
+  if (size === 5) return { GK: 1, DF: 2, MF: 1, FW: 1 };
+  if (size === 7) return { GK: 1, DF: 3, MF: 2, FW: 1 };
+  return { GK: 1, DF: 4, MF: 4, FW: 2 };
+}
+export function budgetFor(size: number): number {
+  return size === 5 ? 45 : size === 7 ? 65 : 100;
+}
+export const QUOTA = quotaFor(11);
 export const SQUAD_SIZE = 11;
 
 export interface DraftSide {
   budget: number;
   picks: StarPlayer[];
+  quota: Record<Role, number>;
+  size: number;
 }
 
 export interface Draft {
   pool: StarPlayer[];
   sides: [DraftSide, DraftSide];
-  order: (0 | 1)[]; // 22 turns, snake ABBA from the coin-flip winner
+  order: (0 | 1)[]; // snake ABBA turns from the coin-flip winner
   turn: number;     // index into order; >= order.length = done
 }
 
-export function createDraft(first: 0 | 1): Draft {
+export function createDraft(first: 0 | 1, size = 11): Draft {
   const order: (0 | 1)[] = [];
   let a: 0 | 1 = first;
-  for (let round = 0; round < SQUAD_SIZE; round++) {
+  for (let round = 0; round < size; round++) {
     order.push(a, a === 0 ? 1 : 0);
     a = a === 0 ? 1 : 0; // snake: the pair flips every round
   }
+  const side = (): DraftSide => ({ budget: budgetFor(size), picks: [], quota: quotaFor(size), size });
   return {
     pool: [...TOP_50].sort((x, y) => y.ovr - x.ovr),
-    sides: [{ budget: BUDGET, picks: [] }, { budget: BUDGET, picks: [] }],
+    sides: [side(), side()],
     order,
     turn: 0,
   };
 }
 
 export function needsOf(side: DraftSide): Record<Role, number> {
-  const left = { ...QUOTA };
+  const left = { ...side.quota };
   for (const p of side.picks) left[p.role]--;
   return left;
 }
@@ -48,7 +59,7 @@ export function needsOf(side: DraftSide): Record<Role, number> {
 export function canPick(side: DraftSide, player: StarPlayer): boolean {
   const needs = needsOf(side);
   if ((needs[player.role] ?? 0) <= 0) return false;
-  const slotsAfter = SQUAD_SIZE - side.picks.length - 1;
+  const slotsAfter = side.size - side.picks.length - 1;
   return side.budget - player.price >= slotsAfter * 1.0;
 }
 
@@ -68,7 +79,7 @@ export function aiPickIndex(draft: Draft): number {
   const who = draft.order[draft.turn];
   const side = draft.sides[who];
   const needs = needsOf(side);
-  const roundsLeft = SQUAD_SIZE - side.picks.length;
+  const roundsLeft = side.size - side.picks.length;
   let best = -1;
   let bestScore = -Infinity;
   draft.pool.forEach((p, i) => {
@@ -117,15 +128,16 @@ export function toSquad(stars: StarPlayer[], shape: Formation): SquadPlayer[] {
   }));
 }
 
-// Quick match: the top 50 dealt into two fair XIs, alternating down each
+// Quick match: the top 50 dealt into two fair sides, alternating down each
 // role's rank with an offset so neither side hoards every number one
-export function quickSplit(): [StarPlayer[], StarPlayer[]] {
+export function quickSplit(size = 11): [StarPlayer[], StarPlayer[]] {
+  const quota = quotaFor(size);
   const a: StarPlayer[] = [];
   const b: StarPlayer[] = [];
   (['GK', 'DF', 'MF', 'FW'] as Role[]).forEach((role, r) => {
     TOP_50.filter((p) => p.role === role)
       .sort((x, y) => y.ovr - x.ovr)
-      .slice(0, QUOTA[role] * 2)
+      .slice(0, quota[role] * 2)
       .forEach((p, i) => (((i + r) % 2 === 0) ? a : b).push(p));
   });
   return [a, b];

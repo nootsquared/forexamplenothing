@@ -11,6 +11,7 @@ export interface Manifest {
   ball: { size: number; dirs: number; phases: number; worldR: number };
   fx: { dust: { size: number; frames: number }; grass: { size: number; frames: number }; ring: { size: number; frames: number }; blade: { w: number; h: number; frames: number }; aim: { size: number; frames: number }; chev: { w: number; h: number; frames: number } };
   font: { cellW: number; cellH: number; glyphs: string };
+  title: { w: number; h: number };
   stand: { h: number; frames: number };
   boards: { h: number };
   flag: { w: number; h: number; frames: number };
@@ -33,6 +34,7 @@ export interface GameAssets {
   chevFrames: Texture[]; // [0] solid gold "you", [1] white "E takes this man"
   flagFrames: Texture[];
   glyphs: Record<string, Texture>;
+  title: Texture; // the baked GOLAZO wordmark
   shadow: Texture;
   skid: Texture;
   goalBar: Texture;
@@ -56,7 +58,7 @@ export async function loadAssets(): Promise<GameAssets> {
     ...manifest.variants.map((v) => v.pitch),
     ...manifest.playerSheets,
     'ball.png', 'fx-dust.png', 'fx-grass.png', 'fx-ring.png', 'fx-shadow.png', 'fx-skid.png',
-    'fx-blade.png', 'fx-aim.png', 'fx-chev.png', 'goal-bar.png', 'font.png', 'stand.png', 'boards.png', 'dugout.png', 'flag.png', 'cloud.png',
+    'fx-blade.png', 'fx-aim.png', 'fx-chev.png', 'goal-bar.png', 'font.png', 'title.png', 'stand.png', 'boards.png', 'dugout.png', 'flag.png', 'cloud.png',
   ];
   const loaded: Record<string, Texture> = {};
   await Promise.all(names.map(async (n) => { loaded[n] = await Assets.load(url(n)); }));
@@ -91,6 +93,7 @@ export async function loadAssets(): Promise<GameAssets> {
     chevFrames: sliceRow(loaded['fx-chev.png'], manifest.fx.chev.w, manifest.fx.chev.h, 0, manifest.fx.chev.frames),
     flagFrames: sliceRow(loaded['flag.png'], manifest.flag.w, manifest.flag.h, 0, manifest.flag.frames),
     glyphs,
+    title: loaded['title.png'],
     shadow: loaded['fx-shadow.png'],
     skid: loaded['fx-skid.png'],
     goalBar: loaded['goal-bar.png'],

@@ -1,8 +1,9 @@
-import { Container, Graphics } from 'pixi.js';
+import { Container, Graphics, Sprite } from 'pixi.js';
 import { GameAssets } from '../render/assets';
 import { PixelText } from '../render/pixelText';
+import { MOODS } from '../render/variants';
 import { panel, PixelList } from './kit';
-import { FORMATIONS } from '../data/formations';
+import { FORMATIONS, formationsOfSize } from '../data/formations';
 import { StarPlayer } from '../data/players';
 import {
   Draft, createDraft, canPick, pick, pickAcademy, aiPickIndex, needsOf, fillWithAcademy, assignToFormation,
@@ -16,51 +17,102 @@ export interface Screen {
   root: Container;
   key(code: string): void;
   layout(w: number, h: number): void;
+  update?(dt: number): void;
 }
 
 const HALF_CHOICES = [60, 120, 180, 300];
+const SIZE_CHOICES = [5, 7, 11];
+const DIFF_NAMES = ['EASY', 'MEDIUM', 'HARD'];
+const FPS_CHOICES: (number | null)[] = [null, 120, 60, 30];
 export const fmtClock = (t: number) =>
   `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 
+// What a play mode gets configured with before kickoff
+export interface MatchSetup {
+  mode: 'quick' | 'draft';
+  size: number;
+  halfLength: number;
+  difficulty: 0 | 1 | 2;
+}
+
 // ---------------------------------------------------------------- main menu
+// A live AI match plays behind this screen; the menu sits on a pixel-stepped
+// shade on the left with the baked wordmark and the game's own rolling ball.
 export class MenuScreen implements Screen {
   root = new Container();
   onQuick: () => void = () => {};
   onDraft: () => void = () => {};
-  halfLength = HALF_CHOICES[1];
+  onMood: (moodIdx: number) => void = () => {};
+  onFps: (cap: number | null) => void = () => {};
+  moodIdx = 0;
+  autoSwitch = false;
+  fpsIdx = 0; // into FPS_CHOICES
+  musicVol = 7;
+  sfxVol = 7;
+  private page: 'root' | 'play' | 'settings' = 'root';
   private list: PixelList;
-  private title: PixelText;
+  private title: Sprite;
+  private ball: Sprite;
+  private ballPhase = 0;
   private sub: PixelText;
+  private crumb: PixelText;
   private foot: PixelText;
-  private backdrop = new Graphics();
+  private shade = new Graphics();
+  private h = 720;
 
-  constructor(assets: GameAssets) {
-    this.title = new PixelText(assets, 12, 0xffd95e);
-    this.title.text = 'GOLAZO';
-    this.sub = new PixelText(assets, 4, 0x9ff0b8);
+  constructor(private assets: GameAssets) {
+    this.title = new Sprite(assets.title);
+    this.sub = new PixelText(assets, 3, 0x9ff0b8);
     this.sub.text = 'ARCADE ELEVENS';
-    this.foot = new PixelText(assets, 2, 0x8a91a0);
-    this.foot.text = 'W S PICK - ENTER GO';
-    this.list = new PixelList(assets, 3, 26, 6);
+    this.crumb = new PixelText(assets, 2, 0x8a91a0);
+    this.foot = new PixelText(assets, 2, 0x69707f);
+    this.foot.text = 'W S PICK - ENTER GO - ESC BACK';
+    this.ball = new Sprite(assets.ballFrames[0][0]);
+    this.ball.anchor.set(0.5);
+    this.ball.scale.set(3);
+    this.list = new PixelList(assets, 3, 30, 6);
     this.list.onPick = (i) => this.act(i);
-    this.root.addChild(this.backdrop, this.title, this.sub, this.list.root, this.foot);
+    this.root.addChild(this.shade, this.title, this.sub, this.ball, this.crumb, this.list.root, this.foot);
+    this.setPage('root');
+  }
+
+  private setPage(page: 'root' | 'play' | 'settings') {
+    this.page = page;
+    this.list.sel = 0; // a fresh page starts at its top
+    this.crumb.text = page === 'root' ? 'MAIN MENU' : page === 'play' ? 'PLAY' : 'SETTINGS';
     this.refresh();
   }
 
   private refresh() {
-    this.list.setRows([
-      { label: 'QUICK MATCH', enabled: true },
-      { label: 'DRAFT MODE', enabled: true },
-      { label: `HALF LENGTH ${fmtClock(this.halfLength)}`, enabled: true },
-    ], true);
+    const cap = FPS_CHOICES[this.fpsIdx];
+    const rows =
+      this.page === 'root' ? [{ label: 'PLAY' }, { label: 'SETTINGS' }] :
+      this.page === 'play' ? [{ label: 'QUICK MATCH' }, { label: 'DRAFT MODE' }, { label: 'BACK' }] :
+      [
+        { label: 'PITCH', value: MOODS[this.moodIdx].name.toUpperCase() },
+        { label: 'AUTO SWITCH', value: this.autoSwitch ? 'ON' : 'OFF' },
+        { label: 'FPS CAP', value: cap === null ? 'UNLIMITED' : String(cap) },
+        { label: 'MUSIC VOL', value: String(this.musicVol) },
+        { label: 'SFX VOL', value: String(this.sfxVol) },
+        { label: 'BACK' },
+      ];
+    this.list.setRows(rows.map((r) => ({ ...r, enabled: true })), true);
   }
 
   private act(i: number) {
-    if (i === 0) this.onQuick();
-    else if (i === 1) this.onDraft();
-    else {
-      const next = (HALF_CHOICES.indexOf(this.halfLength) + 1) % HALF_CHOICES.length;
-      this.halfLength = HALF_CHOICES[next];
+    if (this.page === 'root') {
+      this.setPage(i === 0 ? 'play' : 'settings');
+    } else if (this.page === 'play') {
+      if (i === 0) this.onQuick();
+      else if (i === 1) this.onDraft();
+      else this.setPage('root');
+    } else {
+      if (i === 0) { this.moodIdx = (this.moodIdx + 1) % MOODS.length; this.onMood(this.moodIdx); }
+      else if (i === 1) this.autoSwitch = !this.autoSwitch;
+      else if (i === 2) { this.fpsIdx = (this.fpsIdx + 1) % FPS_CHOICES.length; this.onFps(FPS_CHOICES[this.fpsIdx]); }
+      else if (i === 3) this.musicVol = (this.musicVol + 1) % 11;
+      else if (i === 4) this.sfxVol = (this.sfxVol + 1) % 11;
+      else return this.setPage('root');
       this.refresh();
     }
   }
@@ -69,18 +121,118 @@ export class MenuScreen implements Screen {
     if (code === 'ArrowUp' || code === 'KeyW') this.list.move(-1);
     if (code === 'ArrowDown' || code === 'KeyS') this.list.move(1);
     if (code === 'Enter' || code === 'Space') this.list.activate();
+    if (code === 'Escape' && this.page !== 'root') this.setPage('root');
+  }
+
+  // The ball rolls in place beside the wordmark, breathing on the shade
+  update(dt: number) {
+    const phases = this.assets.manifest.ball.phases;
+    this.ballPhase += dt * 9;
+    this.ball.texture = this.assets.ballFrames[0][Math.floor(this.ballPhase) % phases];
+    this.ball.position.y = this.h * 0.175 + Math.sin(this.ballPhase * 0.55) * 5;
   }
 
   layout(w: number, h: number) {
-    this.backdrop.clear();
-    this.backdrop.rect(0, 0, w, h).fill(0x0a0e14);
-    for (let y = 0; y < h; y += 44) this.backdrop.rect(0, y, w, 22).fill({ color: 0x101822, alpha: 0.5 });
-    this.title.centerAt(w / 2, h * 0.18);
-    this.sub.centerAt(w / 2, h * 0.18 + 100);
-    this.list.root.position.set(w / 2 - 120, h * 0.5);
-    this.foot.centerAt(w / 2, h - 40);
+    this.h = h;
+    // pixel-stepped shade: dark bands thinning toward the live pitch
+    this.shade.clear();
+    const bands = 12;
+    const bandW = Math.ceil((w * 0.52) / bands);
+    for (let i = 0; i < bands; i++) {
+      this.shade.rect(i * bandW, 0, bandW, h).fill({ color: 0x070a10, alpha: 0.94 - i * 0.075 });
+    }
+    this.shade.rect(0, h - 64, w, 64).fill({ color: 0x070a10, alpha: 0.55 });
+    const scale = Math.max(6, Math.min(11, Math.floor((w * 0.3) / this.assets.manifest.title.w)));
+    this.title.scale.set(scale);
+    this.title.position.set(64, h * 0.09);
+    this.sub.position.set(70, h * 0.09 + this.title.height + 10);
+    this.ball.position.set(64 + this.title.width + 46, h * 0.175);
+    this.crumb.position.set(70, h * 0.44);
+    this.list.root.position.set(70, h * 0.49);
+    this.foot.position.set(70, h - 44);
   }
 }
+
+// ------------------------------------------------------------- match setup
+// Every play mode passes through here: sides, half length, difficulty, go.
+// It lives over the same attract match as the menu.
+export class SetupScreen implements Screen {
+  root = new Container();
+  onStart: (setup: MatchSetup) => void = () => {};
+  onBack: () => void = () => {};
+  private mode: 'quick' | 'draft' = 'quick';
+  private size = 11;
+  private halfLength = HALF_CHOICES[1];
+  private difficulty: 0 | 1 | 2 = 1;
+  private list: PixelList;
+  private crumb: PixelText;
+  private title: PixelText;
+  private foot: PixelText;
+  private shade = new Graphics();
+
+  constructor(assets: GameAssets) {
+    this.title = new PixelText(assets, 5, 0xffd95e);
+    this.crumb = new PixelText(assets, 2, 0x8a91a0);
+    this.crumb.text = 'MATCH SETUP';
+    this.foot = new PixelText(assets, 2, 0x69707f);
+    this.foot.text = 'W S PICK - ENTER GO - ESC BACK';
+    this.list = new PixelList(assets, 3, 30, 6);
+    this.list.onPick = (i) => this.act(i);
+    this.root.addChild(this.shade, this.title, this.crumb, this.list.root, this.foot);
+  }
+
+  begin(mode: 'quick' | 'draft') {
+    this.mode = mode;
+    this.title.text = mode === 'quick' ? 'QUICK MATCH' : 'DRAFT MODE';
+    this.list.sel = 0;
+    this.refresh();
+  }
+
+  private refresh() {
+    this.list.setRows([
+      { label: 'SIDES', value: `${this.size} V ${this.size}`, enabled: true },
+      { label: 'HALF LENGTH', value: fmtClock(this.halfLength), enabled: true },
+      { label: 'DIFFICULTY', value: DIFF_NAMES[this.difficulty], enabled: true },
+      { label: mode0(this.mode), enabled: true },
+      { label: 'BACK', enabled: true },
+    ], true);
+  }
+
+  private act(i: number) {
+    if (i === 0) this.size = SIZE_CHOICES[(SIZE_CHOICES.indexOf(this.size) + 1) % SIZE_CHOICES.length];
+    else if (i === 1) this.halfLength = HALF_CHOICES[(HALF_CHOICES.indexOf(this.halfLength) + 1) % HALF_CHOICES.length];
+    else if (i === 2) this.difficulty = ((this.difficulty + 1) % 3) as 0 | 1 | 2;
+    else if (i === 3) {
+      return this.onStart({ mode: this.mode, size: this.size, halfLength: this.halfLength, difficulty: this.difficulty });
+    } else {
+      return this.onBack();
+    }
+    this.refresh();
+  }
+
+  key(code: string) {
+    if (code === 'ArrowUp' || code === 'KeyW') this.list.move(-1);
+    if (code === 'ArrowDown' || code === 'KeyS') this.list.move(1);
+    if (code === 'Enter' || code === 'Space') this.list.activate();
+    if (code === 'Escape') this.onBack();
+  }
+
+  layout(w: number, h: number) {
+    this.shade.clear();
+    const bands = 12;
+    const bandW = Math.ceil((w * 0.52) / bands);
+    for (let i = 0; i < bands; i++) {
+      this.shade.rect(i * bandW, 0, bandW, h).fill({ color: 0x070a10, alpha: 0.94 - i * 0.075 });
+    }
+    this.shade.rect(0, h - 64, w, 64).fill({ color: 0x070a10, alpha: 0.55 });
+    this.title.position.set(66, h * 0.14);
+    this.crumb.position.set(70, h * 0.14 + 56);
+    this.list.root.position.set(70, h * 0.34);
+    this.foot.position.set(70, h - 44);
+  }
+}
+
+const mode0 = (mode: 'quick' | 'draft') => (mode === 'quick' ? 'KICK OFF!' : 'TO THE DRAFT!');
 
 // ------------------------------------------------------------------- draft
 export class DraftScreen implements Screen {
@@ -109,9 +261,9 @@ export class DraftScreen implements Screen {
     this.squadPanel.addChild(this.squadTitle);
   }
 
-  begin() {
+  begin(size = 11) {
     const first = Math.random() < 0.5 ? 0 : 1;
-    this.draft = createDraft(first as 0 | 1);
+    this.draft = createDraft(first as 0 | 1, size);
     this.aiTimer = 0.8;
     this.refresh();
   }
@@ -215,7 +367,7 @@ export class FormationScreen implements Screen {
   private header: PixelText;
   private preview: PixelText[] = [];
   private backdrop = new Graphics();
-  private shapes = Object.keys(FORMATIONS);
+  private shapes = formationsOfSize(11);
 
   constructor(private assets: GameAssets) {
     this.header = new PixelText(assets, 3, 0xffd95e);
@@ -226,8 +378,9 @@ export class FormationScreen implements Screen {
     this.root.addChild(this.backdrop, this.header, this.list.root);
   }
 
-  begin(picks: StarPlayer[]) {
+  begin(picks: StarPlayer[], size = 11) {
     this.picks = picks;
+    this.shapes = formationsOfSize(size);
     this.list.setRows(this.shapes.map((s) => ({ label: s, enabled: true })));
     this.renderPreview();
   }

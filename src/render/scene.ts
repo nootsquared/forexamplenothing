@@ -111,6 +111,11 @@ export class Scene {
     this.hud.showToast(msg);
   }
 
+  // The attract match behind the menu plays with a clean frame — no HUD
+  setHudVisible(on: boolean) {
+    this.hud.root.visible = on;
+  }
+
   // On while the controlled player owns the ball — the frame fades with it
   setBallGlow(on: boolean) {
     this.glowOn = on;

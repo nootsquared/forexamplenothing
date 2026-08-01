@@ -1,7 +1,7 @@
 import { makeCanvas, PixelGrid } from './lib.mjs';
 
 // 5×7 arcade caps. Each glyph cell bakes a 1px dark outline → 7×9 cells.
-export const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!-.:%>';
+export const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!-.:%><';
 export const CELL_W = 7;
 export const CELL_H = 9;
 
@@ -48,6 +48,7 @@ export const ROWS = {
   ':': ['.....', '..#..', '.....', '.....', '.....', '..#..', '.....'],
   '%': ['##..#', '##..#', '...#.', '..#..', '.#...', '#..##', '#..##'],
   '>': ['#....', '##...', '.##..', '..##.', '.##..', '##...', '#....'],
+  '<': ['....#', '...##', '..##.', '.##..', '..##.', '...##', '....#'],
 };
 
 export function generateFontSheet() {

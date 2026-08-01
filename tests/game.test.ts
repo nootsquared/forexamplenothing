@@ -97,3 +97,41 @@ describe('the draft', () => {
     expect(new Set(squad.map((p) => p.name)).size).toBe(11);
   });
 });
+
+describe('small-sided football', () => {
+  it('a 5-a-side draft and quick split both field legal fives', () => {
+    const draft = createDraft(0, 5);
+    expect(draft.order.length).toBe(10);
+    expect(draft.sides[0].budget).toBe(45);
+    while (draft.turn < draft.order.length) {
+      const i = aiPickIndex(draft);
+      if (i >= 0) pick(draft, i);
+      else {
+        const needs = needsOf(draft.sides[draft.order[draft.turn]]);
+        pickAcademy(draft, (Object.keys(needs) as Role[]).find((r) => needs[r] > 0)!);
+      }
+    }
+    expect(draft.sides[0].picks.length).toBe(5);
+    expect(draft.sides[1].picks.length).toBe(5);
+    const [a] = quickSplit(5);
+    const squad = toSquad(a, FORMATIONS['2-1-1']);
+    expect(squad.length).toBe(5);
+    expect(squad[0].role).toBe('GK');
+  });
+
+  it('a 7v7 match plays real football', () => {
+    const [a, b] = quickSplit(7);
+    const match = createMatch({
+      homeSquad: toSquad(a, FORMATIONS['3-2-1']), homeShape: '3-2-1',
+      awaySquad: toSquad(b, FORMATIONS['2-3-1']), awayShape: '2-3-1',
+    });
+    expect(match.world.players.length).toBe(14);
+    let kicks = 0;
+    for (let t = 0; t < 20 * 60; t++) {
+      advanceMatch(match, DT);
+      kicks += match.world.events.filter((e) => e.kind === 'kick').length;
+    }
+    expect(kicks).toBeGreaterThan(10);
+    for (const p of match.world.players) expect(Number.isFinite(p.pos.x)).toBe(true);
+  });
+});
