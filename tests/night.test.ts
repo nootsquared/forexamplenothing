@@ -21,9 +21,9 @@ describe('the save contest', () => {
   });
 });
 
-describe('the two hundred', () => {
+describe('the world cup class', () => {
   it('is exactly the pool the draft was promised', () => {
-    expect(POOL.length).toBe(200);
+    expect(POOL.length).toBe(195);
     const byRole = { GK: 0, DF: 0, MF: 0, FW: 0 };
     const names = new Set<string>();
     for (const [name, role, ovr, pace, agility, control, power, number] of POOL) {
@@ -39,8 +39,17 @@ describe('the two hundred', () => {
       expect(number).toBeGreaterThanOrEqual(1);
       expect(number).toBeLessThanOrEqual(26);
     }
-    expect(names.size).toBe(200); // nobody signed twice
-    expect(byRole).toEqual({ GK: 20, DF: 60, MF: 60, FW: 60 });
+    expect(names.size).toBe(195); // nobody signed twice
+    expect(byRole).toEqual({ GK: 18, DF: 47, MF: 64, FW: 66 });
+  });
+
+  it('every rarity shelf is stocked for every role, so the wheel always pays out', () => {
+    for (const role of ['GK', 'DF', 'MF', 'FW'] as const) {
+      for (const band of ['legend', 'epic', 'rare', 'common'] as const) {
+        const stocked = PLAYER_POOL.filter((p) => p.role === role && rarityOf(p.ovr) === band);
+        expect(stocked.length, `${role} ${band}`).toBeGreaterThanOrEqual(3);
+      }
+    }
   });
 
   it('keeps the balance caps: nobody but the chosen few touches the ceiling', () => {

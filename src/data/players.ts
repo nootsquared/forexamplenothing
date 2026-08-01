@@ -2,7 +2,7 @@ import { PlayerStats } from '../sim/player';
 import { Role } from './formations';
 import { POOL } from './pool';
 
-// The 200-man pool wearing the sim's stat model. Names are ASCII-only — the
+// The World Cup class wearing the sim's stat model. Names are ASCII-only — the
 // pixel font owns the typography. Numbers and nations ride onto the cards.
 
 export interface StarPlayer {
