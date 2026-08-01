@@ -267,11 +267,22 @@ export class PixelList {
     if (!this.marker.visible) this.marker.position.y = selY; // first light: no glide
     this.marker.position.x = selX - 16;
     this.marker.visible = this.rows.length > 0;
-    // a quiet band under the live row — even air above and below the word
+    // The live row's plate, measured from the INK: the font cell carries an
+    // outline row above and below (9 rows, letters on 1..7), so the band
+    // centers on the letters themselves — even air all around, chevron and
+    // word embraced together, finished with the game's pixel bevel
     this.selBar.clear();
     if (selV) {
-      this.selBar.rect(selX - 22, selY - 5, selW + 40, this.scale * 7 + 10)
-        .fill({ color: 0xffd95e, alpha: 0.07 });
+      const s = this.scale;
+      const padX = s + 6;
+      const padY = s + 2;
+      const bx = selX - 16 - padX;            // the marker parks at selX - 16
+      const bw = selW + 16 + padX * 2;
+      const by = selY + s - padY;             // ink top sits one outline row in
+      const bh = s * 7 + padY * 2;
+      this.selBar.rect(bx, by, bw, bh).fill({ color: 0xffd95e, alpha: 0.08 });
+      this.selBar.rect(bx, by, bw, 1).fill({ color: 0xfff8e0, alpha: 0.14 });
+      this.selBar.rect(bx, by + bh - 1, bw, 1).fill({ color: 0x000000, alpha: 0.45 });
     }
     this.onSelect();
   }
