@@ -4,7 +4,7 @@ import { PlayerBody, PlayerInput } from './sim/player';
 import { PITCH } from './sim/constants';
 import { FORMATIONS, Formation } from './data/formations';
 import { buildSquad, SquadPlayer } from './data/roster';
-import { TeamBrain } from './ai/blackboard';
+import { AiProfile, TeamBrain } from './ai/blackboard';
 import { Brain } from './ai/brain';
 
 // A full 11v11: bodies, team blackboards, and a brain for every body.
@@ -17,6 +17,7 @@ export interface MatchConfig {
   awaySquad?: SquadPlayer[];
   halfLength?: number;       // seconds per half; 0 = endless kickabout
   kickoffFirst?: 0 | 1;      // the coin toss — deterministic 0 unless told
+  awayProfile?: AiProfile;   // how sharp the CPU's brains are (difficulty)
 }
 
 export interface MatchStats {
@@ -57,6 +58,7 @@ export function createMatch(config: MatchConfig = {}): Match {
   fieldTeam(world, 0, homeShape, homeSquad);
   fieldTeam(world, 1, awayShape, awaySquad);
   const teamBrains: [TeamBrain, TeamBrain] = [new TeamBrain(0), new TeamBrain(1)];
+  if (config.awayProfile) teamBrains[1].profile = config.awayProfile;
   const brains = world.players.map((p, i) => new Brain(i, teamBrains[p.id.team]));
   // The opening ceremony: the toss winner's man stands over the ball
   world.kickoffTeam = config.kickoffFirst ?? 0;

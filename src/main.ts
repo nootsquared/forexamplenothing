@@ -5,6 +5,7 @@ import { PlayerInput } from './sim/player';
 import { World } from './sim/world';
 import { Match, createMatch, advanceMatch } from './match';
 import { leadTarget, passMargin } from './ai/brain';
+import { AI_PROFILES } from './ai/blackboard';
 import { FORMATIONS, formationsOfSize } from './data/formations';
 import { Draft, quickSplit, toSquad } from './data/draft';
 import { SquadPlayer } from './data/roster';
@@ -84,8 +85,9 @@ async function boot() {
   };
   window.addEventListener('resize', () => activeScreen?.layout(app.renderer.width, app.renderer.height));
 
-  // The CPU squad wears the difficulty: easy legs are slower, hard legs bite
-  const DIFF_SCALE = [0.86, 1, 1.1];
+  // The CPU wears the difficulty mostly in its BRAIN (AI_PROFILES); the legs
+  // shift only slightly so nobody ever looks drunk
+  const DIFF_SCALE = [0.92, 1, 1.06];
   const scaleSquad = (squad: SquadPlayer[], f: number): SquadPlayer[] =>
     f === 1 ? squad : squad.map((p) => ({
       ...p,
@@ -183,7 +185,11 @@ async function boot() {
     killAttract();
     scene?.destroy();
     const toss: 0 | 1 = Math.random() < 0.5 ? 0 : 1;
-    match = createMatch({ homeSquad, homeShape, awaySquad, awayShape, halfLength: setup.halfLength, kickoffFirst: toss });
+    match = createMatch({
+      homeSquad, homeShape, awaySquad, awayShape,
+      halfLength: setup.halfLength, kickoffFirst: toss,
+      awayProfile: AI_PROFILES[setup.difficulty],
+    });
     scene = new Scene(app, assets, match.world, loop);
     match.world.players.forEach((p) => scene!.addPlayer(p.id.team === 0 ? 'home' : 'away'));
     scene.setVariant(MOODS[menu.moodIdx]);

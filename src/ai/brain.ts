@@ -1,4 +1,4 @@
-import { Vec2, vec, len, dist, norm, sub, add, scale, clamp, angleBetween, signedAngle } from '../core/math';
+import { Vec2, vec, len, dist, norm, sub, add, scale, clamp, angleBetween, signedAngle, rotate } from '../core/math';
 import { Rng } from '../core/rng';
 import { PITCH } from '../sim/constants';
 import { World } from '../sim/world';
@@ -86,6 +86,8 @@ export function passMargin(from: Vec2, to: Vec2, ballSpeed: number, opponents: V
 export class Brain {
   private intent: Intent = { kind: 'hold' };
   private kickPlan: { aim: Vec2; power: number; windup: number } | null = null;
+  private settleLeft = 0;  // the settle touch: seconds before a fresh ball releases
+  private hadBall = false;
   private beliefs = new Map<number, Belief>();
   private thinkIn: number;
   private rng: Rng;
@@ -139,6 +141,15 @@ export class Brain {
     const thinkDt = THINK_TICKS / 60;
     this.commit = Math.max(0, this.commit - thinkDt);
     this.burst = Math.max(0, this.burst - thinkDt);
+    // A fresh RECEPTION starts the settle clock — the head has to come up.
+    // Regaining your own dribble knock is not a reception; the clock runs on.
+    const mine = this.bb.possessorIdx === this.idx;
+    if (mine && !this.hadBall && world.lastTouch?.idx !== this.idx) {
+      this.settleLeft = this.bb.profile.settle * (0.7 + this.rng.next() * 0.6);
+    } else if (mine) {
+      this.settleLeft = Math.max(0, this.settleLeft - thinkDt);
+    }
+    this.hadBall = mine;
     if (this.bb.phase !== this.lastPhase) {
       this.commit = 0; // the game changed — every promise is off
       this.lastPhase = this.bb.phase;
@@ -316,12 +327,18 @@ export class Brain {
     const myAxis = this.bb.axisOf(me.pos.x);
     const isWinger = me.id.role === 'FW' && Math.abs(me.id.anchor.y - 0.5) > 0.27;
 
+    // The settle touch: a fresh ball is CARRIED for a beat while the head
+    // comes up — unless a presser forces the issue, and a forced release
+    // wears extra error (the hurried ball is how pressing gets paid)
+    const settling = this.settleLeft > 0 && pressure < 0.55;
+    const rushed = this.settleLeft > 0 && pressure >= 0.55;
+
     const central = 1 - Math.abs(me.pos.y - PITCH.width / 2) / (PITCH.width / 2);
     let shoot = -1;
-    if (goalDist < 21) {
+    if (!settling && goalDist < 21) {
       shoot = (21 - goalDist) * 0.075
         + central * 0.5
-        + this.laneOpen(me.pos, goal) * 0.5   // a SIGHT of goal, not a prayer
+        + this.shotLane(me.pos, goal) * 0.5   // a SIGHT of goal, not a prayer
         - pressure * 0.3
         + (myAxis > 86 && central > 0.4 ? 0.35 : 0); // in the box: hit it
     }
@@ -336,7 +353,7 @@ export class Brain {
     let passAim: Vec2 | null = null;
     let passSpeed = 14;
     const opps = this.believedOpponents();
-    for (const p of world.players) {
+    for (const p of settling ? [] : world.players) {
       if (p === me || p.id.team !== me.id.team || p.id.role === 'GK') continue;
       const d = dist(me.pos, p.pos);
       if (d < 4 || d > 40) continue;
@@ -353,7 +370,7 @@ export class Brain {
       // The assist: if he receives this with goal in range and in sight,
       // that's the pass the whole move was for
       const shotDist = dist(meet, goal);
-      if (shotDist < 20) s += (20 - shotDist) * 0.03 + this.laneOpen(meet, goal) * 0.55;
+      if (shotDist < 20) s += (20 - shotDist) * 0.03 + this.shotLane(meet, goal) * 0.55;
       if (d < 8) s -= 0.25;                                // micro-passes are a last resort
       if (d > 14 && margin > 0.5) s += 0.3;                // the switch, the cross, the raking ball
       if (marked < 2 && !(pressure > 0.5 && progress < 0)) s -= 0.5; // he's wearing a defender
@@ -371,6 +388,8 @@ export class Brain {
       const laneAhead = this.spaceAt(add(me.pos, scale(vec(this.bb.attackSign(), 0), 8)));
       if (laneAhead > 4) dribble += 0.55; // the flank is open — take them on
     }
+    // In sight of goal you HIT it — nobody walks the ball over the line
+    if (goalDist < 13) dribble -= (13 - goalDist) * 0.12;
 
     if (myAxis < 16 && pressure > 0.8) {
       const sideY = me.pos.y < PITCH.width / 2 ? 8 : PITCH.width - 8;
@@ -381,10 +400,10 @@ export class Brain {
     if (shoot > 0.72 && shoot >= passScore && shoot >= dribble) {
       // A shot is a SHOT: full-blooded, hit to beat the keeper, not to reach him
       const aimPoint = vec(goal.x, goal.y + (this.rng.next() - 0.5) * 4.5);
-      this.planKick(norm(sub(aimPoint, me.pos)), clamp(0.78 + goalDist * 0.012, 0.78, 1));
+      this.planKick(norm(sub(aimPoint, me.pos)), clamp(0.78 + goalDist * 0.012, 0.78, 1), rushed ? 1.1 : 0);
     } else if (passTo && passAim && passScore > dribble) {
       const power = clamp((passSpeed - 10) / 14 / (0.75 + 0.25 * me.stats.power), 0.13, 0.95);
-      this.planKick(norm(sub(passAim, me.pos)), power);
+      this.planKick(norm(sub(passAim, me.pos)), power, rushed ? 1.1 : 0);
     } else {
       // Dribbling lane: goalward pull, believed defenders push back — wingers
       // bend theirs along the chalk instead of cutting inside early
@@ -451,8 +470,11 @@ export class Brain {
       : { kind: 'keeper' };
   }
 
-  private planKick(aim: Vec2, power: number) {
-    this.kickPlan = { aim, power, windup: Math.max(8, Math.round(10 + power * 26)) };
+  // extraErr piles onto the team's own scatter — hurried balls fly loose
+  private planKick(aim: Vec2, power: number, extraErr = 0) {
+    const err = this.bb.profile.error + extraErr;
+    const dir = err > 0 ? rotate(aim, (this.rng.next() - 0.5) * 0.16 * err) : aim;
+    this.kickPlan = { aim: dir, power, windup: Math.max(8, Math.round(10 + power * 26)) };
   }
 
   // ---- execution (60Hz) -------------------------------------------------
@@ -487,6 +509,13 @@ export class Brain {
       case 'chase': {
         const lead = clamp(dist(me.pos, world.ball.pos) / 9, 0, 0.8);
         target = add(world.ball.pos, scale(world.ball.vel, lead));
+        // Contain-first pressing: a soft profile HOLDS a goal-side ring off
+        // the carrier instead of diving in — close him down, don't sell out.
+        // He still bites if the carrier dribbles into him.
+        const hold = this.bb.profile.pressHold;
+        if (hold > 0 && this.bb.phase === 'defend') {
+          target = add(target, scale(norm(sub(this.bb.goalWeDefend(), world.ball.pos)), hold));
+        }
         sprint = this.intent.sprint;
         // The press bites: lunge when the carrier's ball is in reach
         if (this.bb.phase === 'defend' && dist(me.pos, world.ball.pos) < 1.35 && me.tackleCooldown <= 0) {
@@ -618,6 +647,22 @@ export class Brain {
   }
 
   // 1 when no believed opponent sits near the segment a→b, →0 as one blocks it
+  // Shot sight: like laneOpen, but blockers living in the keeper's zone don't
+  // count — the keeper is never a reason NOT to shoot, beating him is the game
+  private shotLane(from: Vec2, goal: Vec2): number {
+    const ab = sub(goal, from);
+    const abLen = len(ab);
+    if (abLen < 1e-4) return 1;
+    let worst = 1;
+    for (const opp of this.believedOpponents()) {
+      if (dist(opp, goal) < 7) continue;
+      const t = clamp(((opp.x - from.x) * ab.x + (opp.y - from.y) * ab.y) / (abLen * abLen), 0.05, 0.95);
+      const perp = dist(opp, add(from, scale(ab, t)));
+      if (perp < 2.2) worst = Math.min(worst, perp / 2.2);
+    }
+    return worst;
+  }
+
   private laneOpen(a: Vec2, b: Vec2): number {
     const ab = sub(b, a);
     const abLen = len(ab);

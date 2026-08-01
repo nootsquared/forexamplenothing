@@ -5,6 +5,7 @@ import { createDraft, aiPickIndex, pick, pickAcademy, needsOf, canPick, QUOTA, S
 import { priceOf, TOP_50 } from '../src/data/players';
 import { FORMATIONS } from '../src/data/formations';
 import { Role } from '../src/data/formations';
+import { AI_PROFILES, AiProfile } from '../src/ai/blackboard';
 
 const DT = 1 / 60;
 
@@ -129,7 +130,7 @@ describe('small-sided football', () => {
     });
     expect(match.world.players.length).toBe(14);
     let kicks = 0;
-    for (let t = 0; t < 20 * 60; t++) {
+    for (let t = 0; t < 35 * 60; t++) {
       advanceMatch(match, DT);
       kicks += match.world.events.filter((e) => e.kind === 'kick').length;
     }
@@ -151,5 +152,25 @@ describe('the broadcast ledger', () => {
     expect(s.onTarget[0]).toBeLessThanOrEqual(s.shots[0]);
     expect(s.onTarget[1]).toBeLessThanOrEqual(s.shots[1]);
     expect(s.kicks[0] + s.kicks[1]).toBeGreaterThanOrEqual(passes + s.shots[0] + s.shots[1]);
+  });
+});
+
+describe('difficulty wears the brain', () => {
+  it('an easy-profile CPU misplaces more of its passes and defends softer', () => {
+    const run = (profile?: AiProfile) => {
+      const m = createMatch(profile ? { awayProfile: profile } : {});
+      for (let t = 0; t < 50 * 60; t++) advanceMatch(m, DT);
+      const s = m.stats;
+      return {
+        awayAcc: s.passesGood[1] / Math.max(1, s.passes[1]),
+        homeAcc: s.passesGood[0] / Math.max(1, s.passes[0]),
+        awayPasses: s.passes[1],
+      };
+    };
+    const easy = run(AI_PROFILES[0]);
+    const sharp = run();
+    expect(easy.awayPasses).toBeGreaterThan(3); // they still play, just worse
+    expect(easy.awayAcc).toBeLessThan(sharp.awayAcc); // scatter costs them balls
+    expect(easy.homeAcc).toBeGreaterThan(0.2); // and the game stays football
   });
 });

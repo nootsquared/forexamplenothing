@@ -8,6 +8,23 @@ import { World } from '../sim/world';
 
 export type Phase = 'attack' | 'defend' | 'loose';
 
+// How sharp this team's brains are — the difficulty dial lives HERE, not in
+// their legs. settle: seconds a fresh possession is held before releasing
+// (broken by pressure). pressHold: containing distance the presser keeps
+// instead of diving in. error: multiplier on self-inflicted aim scatter.
+export interface AiProfile {
+  settle: number;
+  pressHold: number;
+  error: number;
+}
+export const SHARP: AiProfile = { settle: 0.15, pressHold: 0, error: 0 };
+// Easy / Medium / Hard, indexed by the setup screen's difficulty
+export const AI_PROFILES: [AiProfile, AiProfile, AiProfile] = [
+  { settle: 0.95, pressHold: 2.3, error: 1.6 },
+  { settle: 0.5, pressHold: 1.1, error: 0.7 },
+  SHARP,
+];
+
 export class TeamBrain {
   phase: Phase = 'loose';
   possessorIdx: number | null = null;
@@ -20,6 +37,8 @@ export class TeamBrain {
   // Which body a human is wearing this tick (-1 when nobody is) — teammates
   // keep a natural affinity for giving the human the ball
   humanIdx = -1;
+  // The team's sharpness (difficulty wears this, never their dignity)
+  profile: AiProfile = SHARP;
   private calledFor = 0;
   private anchors: Vec2[] = [];
   private myIdxs: number[] = [];
