@@ -107,6 +107,7 @@ export interface ListRow {
   label: string;
   value?: string; // the adjustable part — drawn gold in < > at the value column
   enabled: boolean;
+  gapBefore?: boolean; // BACK rows drop a step below the pack — an obvious exit
 }
 
 // Keyboard/mouse row list: gold chevron marks the pick, LABELS stay quiet
@@ -221,25 +222,44 @@ export class PixelList {
     }
   }
 
+  // The list's footprint, for screens that draw a box around it
+  get blockWidth(): number {
+    return this.blockW;
+  }
+  get totalHeight(): number {
+    const visible = Math.min(this.rows.length, this.maxVisible);
+    const gaps = this.rows.slice(this.scroll, this.scroll + visible).filter((r) => r.gapBefore).length;
+    return visible * this.rowH + gaps * 14;
+  }
+
   private layout() {
     // keep the selection inside the window
     if (this.sel < this.scroll) this.scroll = this.sel;
     if (this.sel >= this.scroll + this.maxVisible) this.scroll = this.sel - this.maxVisible + 1;
     const rowX = (v: { label: PixelText; value: PixelText | null }) =>
       this.center && !v.value ? Math.round(-v.label.textWidth / 2) : this.blockX;
+    // rows stack top-down; a gapBefore row steps clear of the pack
+    const rowYs: number[] = [];
+    let y = 0;
+    this.rows.forEach((row, i) => {
+      const vis = i >= this.scroll && i < this.scroll + this.maxVisible;
+      if (vis && row.gapBefore) y += 14;
+      rowYs.push(y);
+      if (vis) y += this.rowH;
+    });
     this.views.forEach((v, i) => {
       const row = this.rows[i];
       const vis = i >= this.scroll && i < this.scroll + this.maxVisible;
       v.box.visible = vis;
       // action rows center on themselves; setting rows share the column block
-      if (vis) v.box.position.set(rowX(v), (i - this.scroll) * this.rowH);
+      if (vis) v.box.position.set(rowX(v), rowYs[i]);
       const active = i === this.sel;
       v.label.tint = !row.enabled ? 0x5a6070
         : v.value ? (active ? 0xdfe4ee : 0x8f97a8)  // a setting: the label stays quiet
         : (active ? 0xffffff : 0xe8ecf4);           // an action: the label IS the thing
       if (v.value) v.value.tint = !row.enabled ? 0x5a6070 : active ? 0xffe98f : 0xd8ab3c;
     });
-    const selY = (this.sel - this.scroll) * this.rowH;
+    const selY = rowYs[this.sel] ?? 0;
     const selV = this.views[this.sel];
     const selX = selV ? rowX(selV) : this.blockX;
     const selW = selV ? (selV.value ? this.blockW : selV.label.textWidth) : this.blockW;

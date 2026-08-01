@@ -160,7 +160,7 @@ describe('difficulty wears the brain', () => {
   it('an easy-profile CPU misplaces more of its passes and defends softer', () => {
     const run = (profile?: AiProfile) => {
       const m = createMatch(profile ? { awayProfile: profile } : {});
-      for (let t = 0; t < 50 * 60; t++) advanceMatch(m, DT);
+      for (let t = 0; t < 110 * 60; t++) advanceMatch(m, DT); // long enough that scatter shows through the noise
       const s = m.stats;
       return {
         awayAcc: s.passesGood[1] / Math.max(1, s.passes[1]),

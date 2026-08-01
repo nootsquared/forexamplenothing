@@ -111,6 +111,11 @@ export class Scene {
     this.hud.showToast(msg);
   }
 
+  // Big broadcast caption with the pop-in — the countdown speaks through this
+  announce(msg: string) {
+    this.hud.announce(msg);
+  }
+
   // The attract match behind the menu plays with a clean frame — no HUD
   setHudVisible(on: boolean) {
     this.hud.root.visible = on;

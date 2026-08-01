@@ -13,6 +13,7 @@ const STEPS = ['step-a', 'step-b', 'step-c'];
 export class MatchAudio {
   private hype = 0;
   private intensity = 0.4;
+  private buildupCooldown = 4;
   private birdTimer = 3;
   private stepClock = 0;
   private stepIdx = 0;
@@ -39,6 +40,8 @@ export class MatchAudio {
 
   tick(match: Match, heroIdx: number, dt: number) {
     const world = match.world;
+    // at the break the half whistle speaks and the countdown owns the restart
+    const atTheBreak = world.events.some((e) => e.kind === 'half');
 
     for (const e of world.events) {
       switch (e.kind) {
@@ -73,7 +76,7 @@ export class MatchAudio {
           audio.play('crowd-ooh', { vol: 0.45, delay: 0.35 });
           break;
         case 'kickoff':
-          audio.play('whistle-kickoff');
+          if (!atTheBreak) audio.play('whistle-kickoff');
           break;
         case 'goal':
           audio.play('net-swish', { vol: 1, pan: panOf(world.ball.pos.x) });
@@ -102,12 +105,19 @@ export class MatchAudio {
       this.prevOnTarget[t] = match.stats.onTarget[t];
     }
 
-    // The bed breathes: quiet in midfield, leaning forward in either box
+    // The bed breathes: quiet in midfield, leaning forward in either box —
+    // and when the ball LIVES deep, whole sections rise in waves
     this.hype = Math.max(0, this.hype - dt * 0.45);
     const axis = Math.abs(world.ball.pos.x - PITCH.length / 2) / (PITCH.length / 2);
-    const target = Math.min(1.6, 0.55 + axis * 0.4 + this.hype * 0.55);
+    const target = Math.min(1.7, 0.5 + axis * 0.62 + this.hype * 0.55);
     this.intensity += (target - this.intensity) * Math.min(1, dt * 2.5);
     audio.ambientLevel('crowd-bed', this.intensity);
+    this.buildupCooldown -= dt;
+    const inFinalQuarter = axis > 0.5 && world.restartLock <= 0;
+    if (inFinalQuarter && this.buildupCooldown <= 0) {
+      this.buildupCooldown = 5 + Math.random() * 5;
+      audio.play('crowd-cheer', { vol: 0.35 + axis * 0.3, jitter: 0.08 });
+    }
 
     // Birdsong belongs to daylight and quiet spells
     this.birdTimer -= dt;

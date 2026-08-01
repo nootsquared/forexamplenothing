@@ -63,6 +63,7 @@ export class MenuScreen implements Screen {
   private crumb: PixelText;
   private foot: PixelText;
   private shade = new Graphics();
+  private box = new Graphics();
   private reveal = new Reveal();
   private w = 1280;
   private h = 720;
@@ -79,8 +80,14 @@ export class MenuScreen implements Screen {
     this.ball.scale.set(2);
     this.list = new PixelList(assets, 3, 34, 7, 13, true);
     this.list.onPick = (i) => this.act(i);
-    this.root.addChild(this.shade, this.title, this.sub, this.ball, this.crumb, this.list.root, this.foot);
+    this.root.addChild(this.shade, this.title, this.sub, this.ball, this.crumb, this.box, this.list.root, this.foot);
     this.setPage('root', false);
+  }
+
+  // Land on a given page when the screen is (re)shown — back arrows return
+  // to where you actually came from, quitting a match returns to the front
+  openPage(page: 'root' | 'play' | 'settings') {
+    this.setPage(page, false);
   }
 
   private setPage(page: 'root' | 'play' | 'settings', animate = true) {
@@ -94,16 +101,36 @@ export class MenuScreen implements Screen {
     const cap = FPS_CHOICES[this.fpsIdx];
     const rows =
       this.page === 'root' ? [{ label: 'PLAY' }, { label: 'SETTINGS' }] :
-      this.page === 'play' ? [{ label: 'QUICK MATCH' }, { label: 'DRAFT MODE' }, { label: 'GAMBLE MODE' }, { label: 'BACK' }] :
+      this.page === 'play' ? [{ label: 'QUICK MATCH' }, { label: 'DRAFT MODE' }, { label: 'GAMBLE MODE' }, { label: 'BACK', gapBefore: true }] :
       [
         { label: 'PITCH', value: MOODS[this.moodIdx].name.toUpperCase() },
         { label: 'AUTO SWITCH', value: this.autoSwitch ? 'ON' : 'OFF' },
         { label: 'FPS CAP', value: cap === null ? 'UNLIMITED' : String(cap) },
         { label: 'MUSIC VOL', value: String(this.musicVol) },
         { label: 'SFX VOL', value: String(this.sfxVol) },
-        { label: 'BACK' },
+        { label: 'BACK', gapBefore: true },
       ];
     this.list.setRows(rows.map((r) => ({ ...r, enabled: true })), true, animate);
+    this.drawBox();
+  }
+
+  // The options live in a proper menu box — a framed panel under the crumb
+  private drawBox() {
+    const bw = Math.max(this.list.blockWidth + 110, 330);
+    const bh = this.list.totalHeight + 34;
+    const bx = Math.round(this.w / 2 - bw / 2);
+    const by = Math.round(this.h * 0.47) - 20;
+    const g = this.box;
+    g.clear();
+    g.rect(bx, by, bw, bh).fill({ color: 0x0d1119, alpha: 0.88 });
+    g.rect(bx, by, bw, 2).fill({ color: 0xffd95e, alpha: 0.5 });
+    g.rect(bx, by + bh - 2, bw, 2).fill({ color: 0x000000, alpha: 0.5 });
+    g.rect(bx, by + 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    g.rect(bx + bw - 1, by + 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    // corner studs tie it to the possession-frame language
+    for (const [cx, cy] of [[bx + 3, by + 5], [bx + bw - 6, by + 5], [bx + 3, by + bh - 8], [bx + bw - 6, by + bh - 8]]) {
+      g.rect(cx, cy, 3, 3).fill({ color: 0xffd95e, alpha: 0.55 });
+    }
   }
 
   private act(i: number) {
@@ -132,11 +159,8 @@ export class MenuScreen implements Screen {
     if (code === 'Escape' && this.page !== 'root') { audio.ui('back'); this.setPage('root'); }
   }
 
-  // Shown fresh: back to the front page, the whole stack materializing
+  // Shown fresh: the whole stack materializes onto whichever page is open
   enter() {
-    this.page = 'root';
-    this.list.sel = 0;
-    this.crumb.text = 'MAIN MENU';
     this.reveal.clear();
     this.reveal.add(this.title, 0);
     this.reveal.add(this.sub, 0.06);
@@ -169,6 +193,7 @@ export class MenuScreen implements Screen {
     this.crumb.centerAt(w / 2, h * 0.42);
     this.list.root.position.set(Math.round(w / 2), Math.round(h * 0.47));
     this.foot.centerAt(w / 2, h - 44);
+    this.drawBox();
   }
 }
 
@@ -188,7 +213,10 @@ export class SetupScreen implements Screen {
   private title: PixelText;
   private foot: PixelText;
   private shade = new Graphics();
+  private box = new Graphics();
   private reveal = new Reveal();
+  private w = 1280;
+  private h = 720;
 
   constructor(assets: GameAssets) {
     this.title = new PixelText(assets, 5, 0xffd95e);
@@ -198,7 +226,7 @@ export class SetupScreen implements Screen {
     this.foot.text = 'W S PICK - ENTER GO - ESC BACK';
     this.list = new PixelList(assets, 3, 34, 6, 13, true);
     this.list.onPick = (i) => this.act(i);
-    this.root.addChild(this.shade, this.title, this.crumb, this.list.root, this.foot);
+    this.root.addChild(this.shade, this.title, this.crumb, this.box, this.list.root, this.foot);
   }
 
   begin(mode: PlayMode) {
@@ -213,9 +241,27 @@ export class SetupScreen implements Screen {
       { label: 'SIDES', value: `${this.size} V ${this.size}`, enabled: true },
       { label: 'HALF LENGTH', value: fmtClock(this.halfLength), enabled: true },
       { label: 'DIFFICULTY', value: DIFF_NAMES[this.difficulty], enabled: true },
-      { label: mode0(this.mode), enabled: true },
+      { label: mode0(this.mode), enabled: true, gapBefore: true },
       { label: 'BACK', enabled: true },
     ], true, animate);
+    this.drawBox();
+  }
+
+  private drawBox() {
+    const bw = Math.max(this.list.blockWidth + 110, 330);
+    const bh = this.list.totalHeight + 34;
+    const bx = Math.round(this.w / 2 - bw / 2);
+    const by = Math.round(this.h * 0.36) - 20;
+    const g = this.box;
+    g.clear();
+    g.rect(bx, by, bw, bh).fill({ color: 0x0d1119, alpha: 0.88 });
+    g.rect(bx, by, bw, 2).fill({ color: 0xffd95e, alpha: 0.5 });
+    g.rect(bx, by + bh - 2, bw, 2).fill({ color: 0x000000, alpha: 0.5 });
+    g.rect(bx, by + 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    g.rect(bx + bw - 1, by + 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    for (const [cx, cy] of [[bx + 3, by + 5], [bx + bw - 6, by + 5], [bx + 3, by + bh - 8], [bx + bw - 6, by + bh - 8]]) {
+      g.rect(cx, cy, 3, 3).fill({ color: 0xffd95e, alpha: 0.55 });
+    }
   }
 
   private act(i: number) {
@@ -252,11 +298,14 @@ export class SetupScreen implements Screen {
   }
 
   layout(w: number, h: number) {
+    this.w = w;
+    this.h = h;
     centerShade(this.shade, w, h);
     this.title.centerAt(w / 2, h * 0.16);
     this.crumb.centerAt(w / 2, h * 0.16 + 52);
     this.list.root.position.set(Math.round(w / 2), Math.round(h * 0.36));
     this.foot.centerAt(w / 2, h - 44);
+    this.drawBox();
   }
 }
 

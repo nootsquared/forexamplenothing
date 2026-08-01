@@ -121,7 +121,7 @@ export class PlayerBody {
     else if (wantDir) this.facing = wantDir;
 
     this.stamina = clamp(
-      this.stamina + (this.isSprinting ? -0.11 : this.speed() < 2 ? 0.07 : 0.035) * dt,
+      this.stamina + (this.isSprinting ? -0.11 : this.speed() < 2 ? 0.09 : 0.05) * dt,
       0,
       1,
     );

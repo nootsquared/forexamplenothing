@@ -85,34 +85,33 @@ class CardView extends Container {
   }
 }
 
-// -------------------------------------------------------------- mini pitch
-// The FotMob chalkboard: your shape as chips on a dark board. Chips drag —
-// drop one on a teammate to swap their jobs, mid-draft, any time.
-interface ChipData {
-  name: string;
-  ovr: number;
-  role: Role;
-}
-
-class MiniPitch extends Container {
+// -------------------------------------------------------------- card board
+// The full-height team board: a vertical pitch (your goal at the bottom, the
+// attack climbing the screen) where every formation slot is a CARD SLOT.
+// Signings stand in their slots as real cards; drag a card onto a teammate
+// to swap their jobs — mid-draft, any time.
+class CardBoard extends Container {
   onSwap: (a: number, b: number) => void = () => {};
   private board = new Graphics();
-  private chipLayer = new Container();
+  private cardLayer = new Container();
   private slots: { x: number; y: number; role: Role }[] = [];
-  private dragging: { chip: Container; slot: number } | null = null;
-  private readonly W = 264;
-  private readonly H = 172;
+  private entries: (StarPlayer | null)[] = [];
+  private dragging: { view: Container; slot: number } | null = null;
+  private W = 300;
+  private H = 620;
+  private cardS = 1;
 
-  constructor(private assets: GameAssets, private draggable: boolean, private mirror: boolean) {
+  constructor(private assets: GameAssets, private draggable: boolean) {
     super();
-    this.addChild(this.board, this.chipLayer);
-    this.drawBoard();
+    this.addChild(this.board, this.cardLayer);
     this.eventMode = 'static';
-    this.hitArea = new Rectangle(0, 0, this.W, this.H);
     this.on('pointermove', (e) => {
       if (!this.dragging) return;
       const local = this.toLocal(e.global);
-      this.dragging.chip.position.set(local.x, local.y);
+      this.dragging.view.position.set(
+        Math.round(local.x - (this.cardW * this.cardS) / 2),
+        Math.round(local.y - (this.cardH * this.cardS) / 2),
+      );
     });
     const drop = (e: { global: { x: number; y: number } }) => {
       if (!this.dragging) return;
@@ -120,7 +119,7 @@ class MiniPitch extends Container {
       let best = this.dragging.slot;
       let bestD = Infinity;
       this.slots.forEach((s, i) => {
-        const d = Math.hypot(s.x - local.x, s.y - local.y);
+        const d = Math.hypot(s.x + (this.cardW * this.cardS) / 2 - local.x, s.y + (this.cardH * this.cardS) / 2 - local.y);
         if (d < bestD) { bestD = d; best = i; }
       });
       const from = this.dragging.slot;
@@ -129,80 +128,142 @@ class MiniPitch extends Container {
         audio.ui('card');
         this.onSwap(from, best);
       } else {
-        this.refreshPositions();
+        this.rebuild();
       }
     };
     this.on('pointerup', drop);
     this.on('pointerupoutside', drop);
   }
 
+  private get cardW() { return this.assets.manifest.cards.w; }
+  private get cardH() { return this.assets.manifest.cards.h; }
+
+  resize(w: number, h: number) {
+    this.W = w;
+    this.H = h;
+    this.hitArea = new Rectangle(0, 0, w, h);
+    this.cardS = w >= 4 * (this.cardW + 8) + 16 ? 1 : 1; // cards stay 1:1 pixels — the board flexes around them
+    this.drawBoard();
+    this.layoutSlots();
+    this.rebuild();
+  }
+
   private drawBoard() {
     const g = this.board;
     const { W, H } = this;
     g.clear();
-    g.rect(0, 0, W, H).fill({ color: 0x0c2013, alpha: 0.94 });
-    g.rect(0, 0, W, 1).fill({ color: 0xfff8e0, alpha: 0.18 });
-    g.rect(0, H - 1, W, 1).fill({ color: 0x000000, alpha: 0.4 });
-    const chalk = { width: 1, color: 0xdfe8da, alpha: 0.3 };
-    g.rect(6, 6, W - 12, H - 12).stroke(chalk);
-    g.moveTo(W / 2, 6).lineTo(W / 2, H - 6).stroke(chalk);
-    g.circle(W / 2, H / 2, 18).stroke(chalk);
-    for (const bx of [6, W - 40]) g.rect(bx, H / 2 - 34, 34, 68).stroke(chalk);
+    g.rect(0, 0, W, H).fill({ color: 0x0b1c10, alpha: 0.94 });
+    g.rect(0, 0, W, 1).fill({ color: 0xfff8e0, alpha: 0.2 });
+    g.rect(0, H - 1, W, 1).fill({ color: 0x000000, alpha: 0.45 });
+    // mown bands sell it as turf, chalk sells it as a pitch
+    for (let y = 0; y < H; y += 44) g.rect(1, y, W - 2, 22).fill({ color: 0xffffff, alpha: 0.016 });
+    const chalk = { width: 1, color: 0xdfe8da, alpha: 0.28 };
+    g.rect(8, 8, W - 16, H - 16).stroke(chalk);
+    g.moveTo(8, H / 2).lineTo(W - 8, H / 2).stroke(chalk);
+    g.circle(W / 2, H / 2, 26).stroke(chalk);
+    g.rect(W / 2 - 52, 8, 104, 40).stroke(chalk);      // their box, up top
+    g.rect(W / 2 - 52, H - 48, 104, 40).stroke(chalk); // our box, at the bottom
   }
 
   setShape(shapeId: string) {
     const shape = FORMATIONS[shapeId];
-    this.slots = shape.slots.map((s) => ({
-      x: 14 + (this.mirror ? 1 - s.x : s.x) * (this.W - 28),
-      y: 12 + s.y * (this.H - 24),
-      role: s.role,
-    }));
+    this.slots = shape.slots.map((s) => ({ x: 0, y: 0, role: s.role }));
+    this.shapeSlots = shape.slots;
+    this.layoutSlots();
   }
 
-  // entries align to slots; null = an empty chair
-  setChips(entries: (ChipData | null)[]) {
-    this.chipLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
-    this.slots.forEach((slot, i) => {
-      const chip = new Container();
-      const entry = entries[i] ?? null;
-      const g = new Graphics();
-      if (entry) {
-        const tint = RARITY_TINT[rarityOf(entry.ovr)];
-        g.circle(0, 0, 8).fill({ color: 0x141a24, alpha: 0.95 }).stroke({ width: 1.5, color: tint, alpha: 0.95 });
-        const ovr = new PixelText(this.assets, 1, 0xffffff, 'micro');
-        ovr.text = String(entry.ovr);
-        ovr.centerAt(0, -2);
-        const name = new PixelText(this.assets, 1, 0xcfd6e2, 'micro');
-        name.text = entry.name.length > 9 ? entry.name.slice(0, 9) : entry.name;
-        name.centerAt(0, 10);
-        chip.addChild(g, ovr, name);
-      } else {
-        g.circle(0, 0, 7).stroke({ width: 1, color: ROLE_TINT[slot.role], alpha: 0.4 });
-        const role = new PixelText(this.assets, 1, ROLE_TINT[slot.role], 'micro');
-        role.text = slot.role;
-        role.centerAt(0, -2);
-        role.alpha = 0.55;
-        chip.addChild(g, role);
+  private shapeSlots: { role: Role; x: number; y: number }[] = [];
+
+  private layoutSlots() {
+    const cw = this.cardW * this.cardS;
+    const ch = this.cardH * this.cardS;
+    this.slots = this.shapeSlots.map((s) => ({
+      // slot.x runs own goal → attack: our goal lives at the BOTTOM
+      x: Math.round(10 + s.y * (this.W - 20 - cw)),
+      y: Math.round(10 + (1 - (s.x - 0.02) / 0.8) * (this.H - 20 - ch)),
+      role: s.role,
+    }));
+    // No two slots may share pixels — narrow shapes (the diamond, stacked
+    // pivots) relax apart until every card has air to be grabbed by
+    for (let iter = 0; iter < 24; iter++) {
+      let moved = false;
+      for (let i = 0; i < this.slots.length; i++) {
+        for (let j = i + 1; j < this.slots.length; j++) {
+          const a = this.slots[i];
+          const b = this.slots[j];
+          const ox = cw + 6 - Math.abs(a.x - b.x);
+          const oy = ch + 6 - Math.abs(a.y - b.y);
+          if (ox <= 0 || oy <= 0) continue;
+          moved = true;
+          if (ox < oy) {
+            const s = a.x <= b.x ? 1 : -1;
+            a.x -= s * Math.ceil(ox / 2);
+            b.x += s * Math.ceil(ox / 2);
+          } else {
+            const s = a.y <= b.y ? 1 : -1;
+            a.y -= s * Math.ceil(oy / 2);
+            b.y += s * Math.ceil(oy / 2);
+          }
+          a.x = Math.max(4, Math.min(this.W - 4 - cw, a.x));
+          b.x = Math.max(4, Math.min(this.W - 4 - cw, b.x));
+          a.y = Math.max(4, Math.min(this.H - 4 - ch, a.y));
+          b.y = Math.max(4, Math.min(this.H - 4 - ch, b.y));
+        }
       }
-      chip.position.set(slot.x, slot.y);
-      if (this.draggable && entry) {
-        chip.eventMode = 'static';
-        chip.cursor = 'grab';
-        chip.hitArea = new Rectangle(-10, -10, 20, 26);
-        chip.on('pointerdown', () => {
-          this.dragging = { chip, slot: i };
-          this.chipLayer.setChildIndex(chip, this.chipLayer.children.length - 1);
+      if (!moved) break;
+    }
+  }
+
+  // entries align to slots; null = an open chair waiting for a signing
+  setEntries(entries: (StarPlayer | null)[]) {
+    this.entries = entries;
+    this.rebuild();
+  }
+
+  private rebuild() {
+    this.cardLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
+    const cw = this.cardW * this.cardS;
+    const ch = this.cardH * this.cardS;
+    this.slots.forEach((slot, i) => {
+      const entry = this.entries[i] ?? null;
+      if (!entry) {
+        const empty = new Graphics();
+        // a dashed pixel outline: the slot waiting for its card
+        const dash = 4;
+        for (let x = 0; x < cw - dash; x += dash * 2) {
+          empty.rect(slot.x + x, slot.y, dash, 1).fill({ color: ROLE_TINT[slot.role], alpha: 0.5 });
+          empty.rect(slot.x + x, slot.y + ch - 1, dash, 1).fill({ color: ROLE_TINT[slot.role], alpha: 0.5 });
+        }
+        for (let y = 0; y < ch - dash; y += dash * 2) {
+          empty.rect(slot.x, slot.y + y, 1, dash).fill({ color: ROLE_TINT[slot.role], alpha: 0.5 });
+          empty.rect(slot.x + cw - 1, slot.y + y, 1, dash).fill({ color: ROLE_TINT[slot.role], alpha: 0.5 });
+        }
+        empty.rect(slot.x, slot.y, cw, ch).fill({ color: 0x0a0e14, alpha: 0.35 });
+        const role = new PixelText(this.assets, 2, ROLE_TINT[slot.role]);
+        role.text = slot.role;
+        role.alpha = 0.6;
+        role.centerAt(slot.x + cw / 2, slot.y + ch / 2 - 7);
+        this.cardLayer.addChild(empty, role);
+        return;
+      }
+      const holder = new Container();
+      holder.addChild(new CardView(this.assets, entry, this.cardS, false));
+      holder.position.set(slot.x, slot.y);
+      if (this.draggable) {
+        holder.eventMode = 'static';
+        holder.cursor = 'grab';
+        holder.hitArea = new Rectangle(0, 0, cw, ch);
+        // the card under your pointer surfaces — neighbors never trap it
+        holder.on('pointerover', () => {
+          if (!this.dragging) this.cardLayer.setChildIndex(holder, this.cardLayer.children.length - 1);
+        });
+        holder.on('pointerdown', () => {
+          this.dragging = { view: holder, slot: i };
+          this.cardLayer.setChildIndex(holder, this.cardLayer.children.length - 1);
           audio.ui('move');
         });
       }
-      this.chipLayer.addChild(chip);
-    });
-  }
-
-  private refreshPositions() {
-    this.chipLayer.children.forEach((chip, i) => {
-      const slot = this.slots[i];
-      if (slot) chip.position.set(slot.x, slot.y);
+      this.cardLayer.addChild(holder);
     });
   }
 }
@@ -269,8 +330,10 @@ export class SquadBuilderScreen implements Screen {
   private cpuBudget: PixelText;
   private myStats: PixelText;
   private myNeeds: PixelText;
-  private myPitch: MiniPitch;
-  private cpuPitch: MiniPitch;
+  private myBoard: CardBoard;
+  private cpuBoard: CardBoard;
+  private wheelPrompt: PixelText;
+  private promptPulse = 0;
   private market = new Container();
   private gridLayer = new Container();
   private filterRow = new Container();
@@ -300,20 +363,35 @@ export class SquadBuilderScreen implements Screen {
     this.cpuBudget = new PixelText(assets, 2, 0x8f97a8);
     this.myStats = new PixelText(assets, 2, 0x8f97a8);
     this.myNeeds = new PixelText(assets, 2, 0x8f97a8);
-    this.myPitch = new MiniPitch(assets, true, false);
-    this.myPitch.onSwap = (a, b) => this.swapSlots(a, b);
-    this.cpuPitch = new MiniPitch(assets, false, true);
-    this.myPanel.addChild(this.myTitle, this.myBudget, this.myPitch, this.myStats, this.myNeeds);
-    this.cpuPanel.addChild(this.cpuTitle, this.cpuBudget, this.cpuPitch);
+    this.myBoard = new CardBoard(assets, true);
+    this.myBoard.onSwap = (a, b) => this.swapSlots(a, b);
+    this.cpuBoard = new CardBoard(assets, false);
+    this.wheelPrompt = new PixelText(assets, 3, 0xffd95e);
+    this.myPanel.addChild(this.myTitle, this.myBudget, this.myBoard, this.myStats, this.myNeeds);
+    this.cpuPanel.addChild(this.cpuTitle, this.cpuBudget, this.cpuBoard);
     this.market.addChild(this.filterRow, this.gridLayer, this.focusLayer);
     this.root.addChild(
       this.shade, this.header, this.turnText, this.clockBar, this.myPanel, this.cpuPanel,
-      this.market, this.shapePanels, this.coin, this.caption, this.wheel, this.wheelPtr, this.overlay, this.foot,
+      this.market, this.shapePanels, this.coin, this.caption, this.wheel, this.wheelPtr, this.wheelPrompt, this.overlay, this.foot,
     );
+  }
+
+  // Every floating showcase, reveal and flyer dies here — no ghosts between
+  // phases or sessions
+  private clearTransients() {
+    this.cpuReveal?.view.destroy({ children: true });
+    this.cpuReveal = null;
+    this.revealCard?.view.destroy({ children: true });
+    this.revealCard = null;
+    this.flyer?.view.destroy({ children: true });
+    this.flyer = null;
+    this.overlay.removeChildren().forEach((c) => c.destroy({ children: true }));
+    this.spin = null;
   }
 
   // ------------------------------------------------------------- lifecycle
   begin(size: number, mode: 'draft' | 'gamble') {
+    this.clearTransients();
     this.mode = mode;
     this.size = size;
     this.draft = createDraft(Math.random() < 0.5 ? 0 : 1, size);
@@ -327,11 +405,8 @@ export class SquadBuilderScreen implements Screen {
     this.filter = 'ALL';
     this.gridSel = 0;
     this.gridScroll = 0;
+    this.roleSel = 0;
     this.arrangement = [];
-    this.cpuReveal = null;
-    this.flyer = null;
-    this.spin = null;
-    this.revealCard = null;
     this.gambleRole = null;
     this.header.text = mode === 'draft' ? 'THE DRAFT' : 'THE WHEEL';
     this.foot.text = mode === 'draft'
@@ -378,26 +453,22 @@ export class SquadBuilderScreen implements Screen {
     };
     this.myStats.text = `ATT ${avg(['FW'])}  MID ${avg(['MF'])}  DEF ${avg(['DF', 'GK'])}  OVR ${avg(['GK', 'DF', 'MF', 'FW'])}`;
     if (this.myShape) {
-      this.myPitch.setShape(this.myShape);
-      this.myPitch.setChips(FORMATIONS[this.myShape].slots.map((_, i) => {
+      this.myBoard.setShape(this.myShape);
+      this.myBoard.setEntries(FORMATIONS[this.myShape].slots.map((_, i) => {
         const pi = this.arrangement[i];
-        const p = pi !== null && pi !== undefined ? mine.picks[pi] : null;
-        return p ? { name: p.name, ovr: p.ovr, role: p.role } : null;
+        return pi !== null && pi !== undefined ? mine.picks[pi] : null;
       }));
     }
     if (this.cpuShape) {
-      this.cpuPitch.setShape(this.cpuShape);
+      this.cpuBoard.setShape(this.cpuShape);
       // pad with throwaway juniors so the auto-assigner has a full XI, then
-      // only the REAL signings earn chips on the board
+      // only the REAL signings earn cards on the board
       const padded = [...cpu.picks];
       let padNo = 90;
       while (padded.length < this.size) padded.push(academyPlayer('MF', padNo++));
       const xi = toSquad(padded, FORMATIONS[this.cpuShape]);
-      const signed = new Map(cpu.picks.map((p) => [p.name, p.ovr]));
-      this.cpuPitch.setChips(FORMATIONS[this.cpuShape].slots.map((slot, i) =>
-        signed.has(xi[i].name)
-          ? { name: xi[i].name, ovr: signed.get(xi[i].name)!, role: slot.role }
-          : null));
+      const signed = new Map(cpu.picks.map((p) => [p.name, p]));
+      this.cpuBoard.setEntries(xi.map((sp) => signed.get(sp.name) ?? null));
     }
   }
 
@@ -452,7 +523,7 @@ export class SquadBuilderScreen implements Screen {
       const i = first + vi;
       const col = vi % this.gridCols;
       const row = Math.floor(vi / this.gridCols);
-      const card = new CardView(this.assets, p, s, false);
+      const card = new CardView(this.assets, p, s, true); // stats live ON the card
       card.position.set(col * (cardW + 14), row * (cardH + 14));
       const affordable = this.myTurn && canPick(mine, p);
       card.alpha = affordable ? 1 : 0.45;
@@ -480,14 +551,32 @@ export class SquadBuilderScreen implements Screen {
     // the focus card: the man under the glass
     this.focusLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
     const sel = entries[this.gridSel];
+    const fw = this.assets.manifest.cards.w;
     if (sel) {
       const focus = new CardView(this.assets, sel.p, 3, true);
       this.focusLayer.addChild(focus);
       const hint = new PixelText(this.assets, 2, this.myTurn && canPick(mine, sel.p) ? 0x9ff0b8 : 0x5a6070);
       hint.text = !this.myTurn ? 'CPU ON THE CLOCK' : canPick(mine, sel.p) ? 'ENTER TO SIGN' : 'OUT OF REACH';
-      hint.centerAt(this.assets.manifest.cards.w * 1.5, this.assets.manifest.cards.h * 3 + 12);
+      hint.centerAt(fw * 1.5, this.assets.manifest.cards.h * 3 + 12);
       this.focusLayer.addChild(hint);
     }
+    // the academy shelf: an honest journeyman card, always in stock
+    const needs = needsOf(mine);
+    const role = (['GK', 'DF', 'MF', 'FW'] as Role[]).find((r) => needs[r] > 0) ?? 'MF';
+    const junior = academyPlayer(role, mine.picks.length + 1);
+    junior.name = 'ACADEMY';
+    const juniorCard = new CardView(this.assets, junior, 2, true);
+    const jy = this.assets.manifest.cards.h * 3 + 44;
+    juniorCard.position.set(Math.round((fw * 3 - fw * 2) / 2), jy);
+    juniorCard.alpha = this.myTurn ? 1 : 0.45;
+    juniorCard.eventMode = 'static';
+    juniorCard.cursor = 'pointer';
+    juniorCard.on('pointertap', () => this.signAcademy());
+    this.focusLayer.addChild(juniorCard);
+    const jHint = new PixelText(this.assets, 2, 0x8f97a8);
+    jHint.text = 'X SIGNS THE ACADEMY';
+    jHint.centerAt(fw * 1.5, jy + this.assets.manifest.cards.h * 2 + 10);
+    this.focusLayer.addChild(jHint);
   }
 
   private trySign(poolIdx: number) {
@@ -515,7 +604,7 @@ export class SquadBuilderScreen implements Screen {
     this.advanceTurn();
   }
 
-  // The bought man flies from the shelf to your board
+  // The bought man flies from the shelf onto your board
   private launchFlyer(p: StarPlayer) {
     this.flyer?.view.destroy({ children: true });
     const view = new CardView(this.assets, p, 2, false);
@@ -523,11 +612,12 @@ export class SquadBuilderScreen implements Screen {
     const from = this.market.position;
     this.flyer = {
       view, t: 0,
-      fx: from.x + 200, fy: from.y + 200,
-      tx: this.myPanel.position.x + 150, ty: this.myPanel.position.y + 140,
+      fx: from.x + 220, fy: from.y + 220,
+      tx: this.myPanel.position.x + this.myBoard.position.x + 140,
+      ty: this.myPanel.position.y + this.myBoard.position.y + this.h * 0.3,
     };
     view.position.set(this.flyer.fx, this.flyer.fy);
-    this.root.addChild(view);
+    this.overlay.addChild(view);
   }
 
   private advanceTurn() {
@@ -638,6 +728,7 @@ export class SquadBuilderScreen implements Screen {
   // -------------------------------------------------------------- finishing
   private finish() {
     this.phase = 'done';
+    this.clearTransients();
     fillWithAcademy(this.draft.sides[0]);
     fillWithAcademy(this.draft.sides[1]);
     const mine = this.draft.sides[0];
@@ -742,11 +833,11 @@ export class SquadBuilderScreen implements Screen {
       col.position.set(this.w / 2 - totalW / 2 + ci * (colW + gap), this.h * 0.3);
       this.shapePanels.addChild(col);
     });
-    // live geometry preview on your board
+    // live geometry preview on your board: the slots themselves show the shape
     const previewShape = formationsOf(this.size, STYLES[this.styleCol])[this.shapeRow];
     if (previewShape) {
-      this.myPitch.setShape(previewShape);
-      this.myPitch.setChips(FORMATIONS[previewShape].slots.map(() => null));
+      this.myBoard.setShape(previewShape);
+      this.myBoard.setEntries(FORMATIONS[previewShape].slots.map(() => null));
     }
   }
 
@@ -828,6 +919,14 @@ export class SquadBuilderScreen implements Screen {
       }
     }
 
+    if (this.mode === 'gamble') {
+      // the wheel talks you through it: what to do, or whose hands it's in
+      this.promptPulse += dt * 4;
+      this.wheelPrompt.text = this.spin ? '' :
+        this.myTurn ? 'PICK A SHELF - ENTER SPINS' : 'CPU AT THE WHEEL';
+      this.wheelPrompt.alpha = this.myTurn && !this.spin ? 0.7 + 0.3 * Math.sin(this.promptPulse) : 0.7;
+      this.wheelPrompt.centerAt(this.w / 2, this.h * 0.38 + this.wheel.height / 2 + 26);
+    }
     if (this.mode === 'gamble' && this.spin) {
       this.spin.t += dt;
       const k = Math.min(1, this.spin.t / this.spin.dur);
@@ -910,12 +1009,17 @@ export class SquadBuilderScreen implements Screen {
     const wheelOn = this.phase === 'market' && this.mode === 'gamble';
     this.wheel.visible = wheelOn;
     this.wheelPtr.visible = wheelOn;
+    this.wheelPrompt.visible = wheelOn;
     this.turnText.visible = this.phase !== 'toss';
     this.myPanel.visible = this.phase !== 'toss';
     this.cpuPanel.visible = this.phase === 'market';
     this.clockBar.visible = this.phase === 'shape' || (this.phase === 'market' && this.mode === 'draft' && this.myTurn);
-    if (wheelOn) this.buildRoleButtons();
-    else this.roleButtons?.destroy({ children: true });
+    if (wheelOn) {
+      this.buildRoleButtons();
+    } else {
+      this.roleButtons?.destroy({ children: true });
+      this.roleButtons = null;
+    }
   }
 
   private roleButtons: Container | null = null;
@@ -929,18 +1033,30 @@ export class SquadBuilderScreen implements Screen {
       const open = roles.findIndex((r) => needs[r] > 0);
       if (open >= 0) this.roleSel = open;
     }
+    const BW = 108;
+    const BH = 62;
+    const GAP = 18;
     roles.forEach((r, i) => {
       const active = i === this.roleSel;
       const open = needs[r] > 0;
       const b = new Container();
       const g = new Graphics();
-      g.rect(0, 0, 74, 30).fill({ color: active ? 0xffd95e : 0x161b26, alpha: open ? 0.92 : 0.4 });
-      g.rect(0, 0, 74, 1).fill({ color: 0xfff8e0, alpha: 0.3 });
-      const label = new PixelText(this.assets, 2, active ? 0x12161f : open ? ROLE_TINT[r] : 0x5a6070);
-      label.text = `${r} ${needs[r]}`;
-      label.centerAt(37, 8);
-      b.addChild(g, label);
-      b.position.set(i * 84, 0);
+      // a shelf slot you can't miss: framed, lit when chosen, stamped shut when full
+      g.rect(0, 0, BW, BH).fill({ color: active && open ? 0x2a2410 : 0x11151f, alpha: open ? 0.94 : 0.5 });
+      g.rect(0, 0, BW, 2).fill({ color: active && open ? 0xffd95e : 0xfff8e0, alpha: active && open ? 0.95 : 0.16 });
+      g.rect(0, BH - 2, BW, 2).fill({ color: 0x000000, alpha: 0.4 });
+      if (active && open) {
+        g.rect(0, 0, 2, BH).fill({ color: 0xffd95e, alpha: 0.8 });
+        g.rect(BW - 2, 0, 2, BH).fill({ color: 0xffd95e, alpha: 0.8 });
+      }
+      const label = new PixelText(this.assets, 3, open ? ROLE_TINT[r] : 0x4a5160);
+      label.text = r;
+      label.centerAt(BW / 2, 10);
+      const count = new PixelText(this.assets, 2, open ? (active ? 0xffe98f : 0x9aa2b0) : 0x4a5160);
+      count.text = open ? `${needs[r]} OPEN` : 'FULL';
+      count.centerAt(BW / 2, 38);
+      b.addChild(g, label, count);
+      b.position.set(i * (BW + GAP), 0);
       b.eventMode = 'static';
       b.cursor = 'pointer';
       b.on('pointertap', () => {
@@ -950,7 +1066,7 @@ export class SquadBuilderScreen implements Screen {
       });
       wrap.addChild(b);
     });
-    wrap.position.set(Math.round(this.w / 2 - (84 * 4 - 10) / 2), Math.round(this.h * 0.68));
+    wrap.position.set(Math.round(this.w / 2 - (4 * BW + 3 * GAP) / 2), Math.round(this.h * 0.38 + this.wheel.height / 2 + 64));
     this.roleButtons = wrap;
     this.root.addChild(wrap);
   }
@@ -958,37 +1074,45 @@ export class SquadBuilderScreen implements Screen {
   layout(w: number, h: number) {
     this.w = w;
     this.h = h;
-    centerShade(this.shade, w, h, Math.min(1240, w - 120));
+    centerShade(this.shade, w, h, Math.min(1400, w - 80));
     this.header.centerAt(w / 2, 18);
     this.foot.centerAt(w / 2, h - 40);
     this.coin.position.set(w / 2, h * 0.4);
-    this.wheel.position.set(w / 2, h * 0.42);
-    this.wheelPtr.position.set(w / 2, h * 0.42 - this.wheel.height / 2 - 6);
-    const panelW = 300;
-    this.myPanel.position.set(Math.round(w * 0.02), 120);
-    this.cpuPanel.position.set(Math.round(w * 0.98 - panelW), 120);
+    this.wheel.scale.set(2.4);
+    this.wheel.position.set(Math.round(w / 2), Math.round(h * 0.38));
+    this.wheelPtr.scale.set(2.4);
+    this.wheelPtr.position.set(Math.round(w / 2), Math.round(h * 0.38 - this.wheel.height / 2 - 6));
+    // The two dugouts: full-height team boards flanking the whole screen
+    const boardW = Math.max(264, Math.min(400, Math.round(w * 0.2)));
+    const boardTop = 56;
+    const boardH = h - 120 - boardTop - 52;
+    this.myPanel.position.set(16, 100);
+    this.cpuPanel.position.set(w - 16 - boardW, 100);
     this.myTitle.position.set(0, 0);
-    this.myBudget.position.set(0, 34);
-    this.myPitch.position.set(0, 58);
-    this.myStats.position.set(0, 244);
-    this.myNeeds.position.set(0, 268);
-    this.cpuTitle.position.set(panelW - 264, 0);
-    this.cpuBudget.position.set(panelW - 264, 34);
-    this.cpuPitch.position.set(panelW - 264, 58);
+    this.myBudget.position.set(0, 28);
+    this.myBoard.position.set(0, boardTop);
+    this.myBoard.resize(boardW, boardH);
+    this.myStats.position.set(0, boardTop + boardH + 10);
+    this.myNeeds.position.set(0, boardTop + boardH + 32);
+    this.cpuTitle.position.set(0, 0);
+    this.cpuBudget.position.set(0, 28);
+    this.cpuBoard.position.set(0, boardTop);
+    this.cpuBoard.resize(boardW, boardH);
     // the market between the two dugouts
     const s = 2;
     const cardW = this.assets.manifest.cards.w * s;
     const cardH = this.assets.manifest.cards.h * s;
     const focusW = this.assets.manifest.cards.w * 3;
-    const innerW = w - (panelW + 40) * 2;
-    this.gridCols = Math.max(2, Math.min(4, Math.floor((innerW - focusW - 60) / (cardW + 14))));
-    this.gridRows = Math.max(1, Math.floor((h - 130 - 150) / (cardH + 14)));
+    const zoneX = 16 + boardW + 28;
+    const zoneW = w - zoneX * 2 + 16;
+    this.gridCols = Math.max(2, Math.min(4, Math.floor((zoneW - focusW - 56) / (cardW + 14))));
+    this.gridRows = Math.max(1, Math.floor((h - 132 - 110) / (cardH + 14)));
     const gridW = this.gridCols * (cardW + 14) - 14;
-    const marketX = Math.round(w / 2 - (gridW + 40 + focusW) / 2);
-    this.market.position.set(marketX, 126);
+    const marketX = zoneX + Math.max(0, Math.round((zoneW - (gridW + 44 + focusW)) / 2));
+    this.market.position.set(marketX, 132);
     this.filterRow.position.set(0, 0);
-    this.gridLayer.position.set(0, 34);
-    this.focusLayer.position.set(gridW + 40, 34);
+    this.gridLayer.position.set(0, 36);
+    this.focusLayer.position.set(gridW + 44, 36);
     if (this.phase === 'shape') this.buildShapePanels();
     if (this.phase === 'market' && this.mode === 'draft') this.rebuildMarket();
     this.layoutPhase();

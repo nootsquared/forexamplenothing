@@ -10,6 +10,7 @@ const KICK_BUFFER = 0.28;    // released kick fires as soon as the ball is in re
 const BALL_KEEPOUT = 0.52;   // body ring past the ball's DRAWN edge — sprites never interpenetrate
 const CONTACT_RANGE = 0.6;   // a real foot's reach — the ball is NEVER played from further
 const STEER_RANGE = 1.0;     // toe-stretch reach while veering onto a new line
+const SPRINT_REACH = 0.85;   // the full-pace toe stretch — sprinting never shrinks your feet
 const COLLECT_RANGE = 1.35;  // the sole-drag around the body on a hard turn reaches further
 const CHOP_RANGE = 0.85;     // planting a cut stretches the leg a touch further
 const CUSHION_RANGE = 1.0;   // stretching to kill a ball arriving with pace
@@ -153,6 +154,22 @@ export class World {
         'offside',
       );
     }
+  }
+
+  // Our keeper scoops up a ball played back into his hands: the game takes
+  // the same breath as a catch, and he stands there picking his distribution.
+  // No 'save' event — a backpass is housekeeping, not a stop.
+  gkPickup(idx: number) {
+    const p = this.players[idx];
+    this.ball.pos = vec(p.pos.x + p.facing.x * 0.5, p.pos.y + p.facing.y * 0.5);
+    this.ball.vel = vec();
+    this.ball.z = 0;
+    this.ball.vz = 0;
+    this.ball.spin = 0;
+    this.ball.savePrev();
+    this.restartLock = 0.85;
+    this.restartExclusion = 6.5;
+    this.lastTouch = { team: p.id.team, idx };
   }
 
   // Distribution from the keeper's hands: a THROW is flat and true, a PUNT is
@@ -324,7 +341,9 @@ export class World {
     this.ball.vz = power > 0.4 ? (power - 0.4) * 7.5 : 0.4;
     this.ball.z = Math.max(this.ball.z, 0.01);
     p.kickCooldown = 0.4;
-    p.touchCooldown = 0.5;
+    // Short enough that a TAP-and-chase reconnects the moment you catch up —
+    // the knock-past-and-go is a play, not a coin flip
+    p.touchCooldown = 0.32;
     p.playLock = 0.45;
     this.lastTouch = { team: p.id.team, idx };
     this.events.push({ kind: 'kick', x: this.ball.pos.x, y: this.ball.pos.y, power, idx });
@@ -357,7 +376,11 @@ export class World {
       return touch(0.14);
     }
 
-    if (p.touchCooldown > 0 || d > CUSHION_RANGE) return;
+    // A fast body earns a longer engage window — at full tilt you cover the
+    // ball's neighborhood in a couple of frames, and the boot must still get
+    // there. Walking and sprinting collect with the SAME ease.
+    const engage = CUSHION_RANGE + Math.max(0, p.speed() - 4) * 0.1;
+    if (p.touchCooldown > 0 || d > engage) return;
 
     const rel = sub(this.ball.vel, p.vel);
     const toBall = sub(this.ball.pos, p.pos);
@@ -409,15 +432,17 @@ export class World {
       // new direction mid-dribble and the next touch plays it that way, with a
       // stretched toe-poke reach while the ball is drifting off your new line.
       const veering = this.ball.speed() > 0.6 && angleBetween(this.ball.vel, steer) > 0.3;
-      if (d > (veering ? STEER_RANGE : CONTACT_RANGE)) return;
+      // A sprinting boot stretches for the ball — full pace never means losing reach
+      if (d > (veering ? STEER_RANGE : p.isSprinting ? SPRINT_REACH : CONTACT_RANGE)) return;
       const soft = p.isCharging || p.pendingKick;
-      // Touches stay close: the ball works ahead of the boot, never away from it
-      const target = pSpeed * (soft ? 0.95 : p.isSprinting ? 1.16 : 1.02) + (soft ? 0.2 : p.isSprinting ? 0.55 : 0.42);
+      // Touches stay close: the ball works ahead of the boot, never away from it.
+      // Sprint knocks ride barely past stride pace — glued, not booted ahead.
+      const target = pSpeed * (soft ? 0.95 : p.isSprinting ? 1.08 : 1.02) + (soft ? 0.2 : p.isSprinting ? 0.36 : 0.42);
       // Every touch CONVERGES on the dominant-foot lane — a point ahead-right
       // of the run — so a ball caught on the wrong foot or the edge of the
       // boot comes back across in a knock or two instead of bleeding away.
       // The cone cap keeps it a touch, not a tether: turn too hard, still lose it.
-      const lane = add(add(p.pos, scale(steer, soft ? 0.8 : p.isSprinting ? 1.5 : 1.1)), scale(perpRight(steer), FOOT_LANE));
+      const lane = add(add(p.pos, scale(steer, soft ? 0.8 : p.isSprinting ? 1.15 : 1.1)), scale(perpRight(steer), FOOT_LANE));
       const toLane = sub(lane, this.ball.pos);
       const knock = len(toLane) > 0.05
         ? rotate(steer, clamp(signedAngle(steer, toLane), -KNOCK_CONE, KNOCK_CONE))
@@ -427,7 +452,7 @@ export class World {
         scale(this.ball.vel, MOMENTUM_KEPT),
         scale(rotate(knock, wobble), target * (1 - MOMENTUM_KEPT)),
       );
-      touch(veering ? 0.1 : p.isSprinting ? 0.15 : 0.1, p.isSprinting);
+      touch(veering ? 0.1 : p.isSprinting ? 0.12 : 0.1, p.isSprinting);
     } else if (d < CONTACT_RANGE && this.ball.speed() > 1.0) {
       // Standing trap: kill most of the pace, let the rest roll off the boot
       this.ball.vel = add(scale(this.ball.vel, 0.25), scale(p.facing, 0.3));

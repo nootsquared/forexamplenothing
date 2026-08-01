@@ -2,25 +2,21 @@ import { Container, Graphics } from 'pixi.js';
 import { GameAssets } from './assets';
 import { PixelText } from './pixelText';
 
-const CONTROLS: [string, string][] = [
-  ['WASD MOVE', 'DRAG PASS'],
-  ['SHIFT SPRINT', 'SPACE KICK'],
-  ['J L BEND', 'K TACKLE'],
-  ['E SWITCH', 'T AUTO'],
-  ['1 2 3 PITCH', ''],
-];
-const BOX_W = 306;
-const BOX_H = 5 * 15 + 14;
+const SEGMENTS = 12;
+const SEG_W = 13;
+const SEG_H = 16;
+const SEG_GAP = 2;
+const METER_W = SEGMENTS * (SEG_W + SEG_GAP) - SEG_GAP;
 
 // All HUD text is baked pixel font — nothing breaks the retro grid
 export class Hud {
   root = new Container();
-  private controlsBox = new Container();
   private sprintBar = new Graphics();
   private sprintLabel: PixelText;
   private stamina = 1;
   private sprinting = false;
   private sprintPulse = 0;
+  private meterX = 0;
   private clockText!: PixelText;
   private toast: PixelText;
   private toastTimer = 0;
@@ -31,27 +27,7 @@ export class Hud {
   private lastScore = '';
 
   constructor(assets: GameAssets) {
-    // Compact control card: two tight columns on a dark backing
-    const backing = new Graphics();
-    backing.rect(0, 0, BOX_W, BOX_H).fill({ color: 0x10141c, alpha: 0.62 });
-    backing.rect(0, 0, BOX_W, 1).fill({ color: 0xfff8e0, alpha: 0.18 });
-    backing.rect(0, BOX_H - 1, BOX_W, 1).fill({ color: 0x000000, alpha: 0.35 });
-    this.controlsBox.addChild(backing);
-    CONTROLS.forEach(([left, right], row) => {
-      const l = new PixelText(assets, 2, 0xd8dce6);
-      l.text = left;
-      l.position.set(8, 8 + row * 15);
-      this.controlsBox.addChild(l);
-      if (right) {
-        const r = new PixelText(assets, 2, 0xd8dce6);
-        r.text = right;
-        r.position.set(164, 8 + row * 15);
-        this.controlsBox.addChild(r);
-      }
-    });
-    this.controlsBox.alpha = 0.9;
-
-    this.sprintLabel = new PixelText(assets, 2, 0xd8dce6);
+    this.sprintLabel = new PixelText(assets, 2, 0x9aa2b0);
     this.sprintLabel.text = 'SPRINT';
 
     this.clockText = new PixelText(assets, 3, 0xfff3c4);
@@ -64,7 +40,7 @@ export class Hud {
     this.banner.visible = false;
 
     this.scoreText = new PixelText(assets, 4);
-    this.root.addChild(this.scoreTabs, this.scoreText, this.clockText, this.controlsBox, this.sprintLabel, this.sprintBar, this.toast, this.banner);
+    this.root.addChild(this.scoreTabs, this.scoreText, this.clockText, this.sprintLabel, this.sprintBar, this.toast, this.banner);
   }
 
   setClock(text: string) {
@@ -78,8 +54,9 @@ export class Hud {
   }
 
   layout(w: number, h: number, score: { left: number; right: number }) {
-    this.controlsBox.position.set(10, h - BOX_H - 10);
-    this.sprintLabel.position.set(12, h - BOX_H - 30);
+    // The tank lives top-right where a fighting game keeps its meters
+    this.meterX = w - METER_W - 18;
+    this.sprintLabel.position.set(this.meterX, 16);
     this.toast.centerAt(w / 2, 54);
     this.banner.centerAt(w / 2, h / 2 - 70);
 
@@ -121,23 +98,42 @@ export class Hud {
   }
 
   update(dt: number, w: number, h: number) {
-    // Sprint tank: mint when full, gold when taxed, red when the legs are
-    // gone (sprint locks below 5%) — a bright tip crawls while it refills
+    void w; void h;
+    // The sprint tank: twelve beveled cells that drain body by body — mint
+    // legs, gold taxes, red empty (sprint locks below 5%). The next cell to
+    // refill breathes while you recover; the whole rack shudders when locked.
     this.sprintPulse += dt * 7;
-    const bx = 12 + this.sprintLabel.textWidth + 10;
-    const by = h - BOX_H - 31;
-    const bw = 96;
-    const fill = Math.round((bw - 2) * this.stamina);
-    const color = this.stamina < 0.18 ? 0xff5340 : this.stamina < 0.45 ? 0xffd95e : 0x9ff0b8;
-    this.sprintBar.clear();
-    this.sprintBar.rect(bx, by, bw, 9).fill({ color: 0x10141c, alpha: 0.72 });
-    this.sprintBar.rect(bx, by, bw, 1).fill({ color: 0xfff8e0, alpha: 0.18 });
-    if (fill > 0) this.sprintBar.rect(bx + 1, by + 1, fill, 7).fill({ color, alpha: 0.92 });
-    const recovering = !this.sprinting && this.stamina < 0.995;
-    if (recovering && fill > 1) {
-      // the leading edge glows as the tank refills
-      const tip = 0.5 + 0.5 * Math.sin(this.sprintPulse);
-      this.sprintBar.rect(bx + fill - 1, by + 1, 2, 7).fill({ color: 0xffffff, alpha: 0.35 + 0.4 * tip });
+    const bx = this.meterX;
+    const by = 32;
+    const cells = this.stamina * SEGMENTS;
+    const full = Math.floor(cells);
+    const partial = cells - full;
+    const locked = this.stamina < 0.05;
+    const color = locked || this.stamina < 0.18 ? 0xff5340 : this.stamina < 0.45 ? 0xffd95e : 0x9ff0b8;
+    const g = this.sprintBar;
+    g.clear();
+    // the rack: a dark tray with a lit top edge and corner notches
+    g.rect(bx - 5, by - 4, METER_W + 10, SEG_H + 8).fill({ color: 0x0c1018, alpha: 0.78 });
+    g.rect(bx - 5, by - 4, METER_W + 10, 1).fill({ color: 0xfff8e0, alpha: 0.25 });
+    g.rect(bx - 5, by + SEG_H + 3, METER_W + 10, 1).fill({ color: 0x000000, alpha: 0.45 });
+    for (const nx of [bx - 5, bx + METER_W + 2]) g.rect(nx, by - 4, 3, 3).fill({ color: 0xffd95e, alpha: 0.7 });
+    const shake = locked ? Math.round(Math.sin(this.sprintPulse * 3) * 1) : 0;
+    for (let i = 0; i < SEGMENTS; i++) {
+      const x = bx + i * (SEG_W + SEG_GAP) + shake;
+      if (i < full || (i === full && partial > 0.55)) {
+        // a lit cell wears a bevel: bright cap, body, dark floor
+        g.rect(x, by, SEG_W, SEG_H).fill({ color, alpha: 0.92 });
+        g.rect(x, by, SEG_W, 2).fill({ color: 0xffffff, alpha: 0.4 });
+        g.rect(x, by + SEG_H - 2, SEG_W, 2).fill({ color: 0x000000, alpha: 0.3 });
+      } else {
+        g.rect(x, by, SEG_W, SEG_H).fill({ color: 0x1a212e, alpha: 0.85 });
+        g.rect(x, by, SEG_W, 1).fill({ color: 0xfff8e0, alpha: 0.07 });
+        if (i === full && !this.sprinting && this.stamina < 0.995) {
+          // the cell being refilled breathes
+          const tip = 0.5 + 0.5 * Math.sin(this.sprintPulse);
+          g.rect(x, by, SEG_W, SEG_H).fill({ color, alpha: 0.12 + 0.3 * tip * partial });
+        }
+      }
     }
 
     if (this.toastTimer > 0) {

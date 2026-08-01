@@ -112,16 +112,22 @@ export function advanceMatch(match: Match, dt: number, overrides: Record<number,
   const inputs = match.world.players.map((_, i) => overrides[i] ?? match.brains[i].tick(match.world, dt));
   match.world.step(dt, inputs);
 
-  // The clock: two halves, a break at the turn, a whistle at the end
+  // The clock: two halves, a break at the turn, a whistle at the end.
+  // The referee holds his whistle while the ball lives in either attacking
+  // quarter — a promising move gets up to 30 seconds to resolve.
   if (match.halfLength > 0 && !match.finished) {
     match.clock += dt;
-    if (match.clock >= match.halfLength) {
+    const bx = match.world.ball.pos.x;
+    const dangerZone = bx < PITCH.length * 0.25 || bx > PITCH.length * 0.75;
+    if (match.clock >= match.halfLength && (!dangerZone || match.clock >= match.halfLength + 30)) {
       if (match.half === 1) {
         match.half = 2;
         match.clock = 0;
         // the other side opens the second half
         match.world.kickoffTeam = match.kickoffFirst === 0 ? 1 : 0;
         match.world.kickoffReset();
+        // the break breathes: everyone to the spot, then three, two, one…
+        match.world.restartLock = 4.6;
         match.world.events.push({ kind: 'half' });
       } else {
         match.finished = true;

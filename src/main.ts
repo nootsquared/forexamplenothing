@@ -58,6 +58,8 @@ async function boot() {
   let attract: { match: Match; scene: Scene } | null = null;
   let cursor: TeamCursor | null = null;
   let gkIdx = -1;
+  let gkHoldCooldown = 0; // a fresh launch can't be instantly re-scooped
+  let halfCountdown = 0; // the 3-2-1 before the second half kicks off
   let humanIdle = Infinity;
   let passHints: number[] = [];
   let hintClock = 0;
@@ -125,7 +127,7 @@ async function boot() {
   menu.onQuick = () => { setupScreen.begin('quick'); show(setupScreen); };
   menu.onDraft = () => { setupScreen.begin('draft'); show(setupScreen); };
   menu.onGamble = () => { setupScreen.begin('gamble'); show(setupScreen); };
-  setupScreen.onBack = () => show(menu);
+  setupScreen.onBack = () => { menu.openPage('play'); show(menu); }; // back means BACK, not the front door
   setupScreen.onStart = (s) => {
     setup = s;
     if (s.mode === 'quick') {
@@ -182,6 +184,7 @@ async function boot() {
     screenName = 'menu';
     paused = false;
     ensureAttract();
+    menu.openPage('root'); // a finished match walks in through the front door
     show(menu);
     routeMusic();
   }
@@ -216,6 +219,7 @@ async function boot() {
     controls = new LocalControls();
     humanIdle = Infinity;
     keeperAiming = false;
+    halfCountdown = 0;
     drag.active = false;
     mouseKick = null;
     passHints = [];
@@ -308,6 +312,7 @@ async function boot() {
     });
     if (best >= 0) cursor.assign(best);
     keeperAiming = false;
+    gkHoldCooldown = 2;
     scene.setKeeperAim(null);
   };
 
@@ -342,6 +347,18 @@ async function boot() {
     cursor.update(world, match.teamBrains[0], dt);
     matchAudio.tick(match, cursor.idx, dt);
 
+    // A backpass into your keeper's hands opens his distribution sight too —
+    // recycling through the goalie is a real tool, not a brain-driven shuffle
+    gkHoldCooldown = Math.max(0, gkHoldCooldown - dt);
+    if (!keeperAiming && humanIdle < 2.5 && gkHoldCooldown <= 0 && world.restartLock <= 0 &&
+        gkIdx >= 0 && match.teamBrains[0].possessorIdx === gkIdx && world.ball.speed() < 5 &&
+        dist(world.players[gkIdx].pos, world.ball.pos) < 1.3) {
+      world.gkPickup(gkIdx);
+      keeperAiming = true;
+      world.holdLock = true;
+      audio.play('gk-catch', { vol: 0.7 });
+    }
+
     // A catch or goal kick for OUR keeper opens the distribution sight —
     // if someone's actually playing
     for (const e of world.events) {
@@ -352,7 +369,24 @@ async function boot() {
         world.holdLock = true;
       }
       if (e.kind === 'fulltime') fulltimeDelay = 1.5;
+      if (e.kind === 'half') halfCountdown = 4.3; // HALF TIME banner first, then 3-2-1
       if (e.kind === 'goal' && e.scorer >= 0) scene.toast(`${match.names[e.scorer]}!`);
+    }
+
+    // The second half arrives on a count, not a drop: 3… 2… 1… PLAY!
+    if (halfCountdown > 0) {
+      const before = halfCountdown;
+      halfCountdown -= dt;
+      for (const mark of [3, 2, 1]) {
+        if (before > mark && halfCountdown <= mark) {
+          scene.announce(String(mark));
+          audio.ui('move');
+        }
+      }
+      if (before > 0 && halfCountdown <= 0) {
+        scene.announce('PLAY!');
+        audio.play('whistle-kickoff');
+      }
     }
     if (keeperAiming) {
       const gk = world.players[gkIdx];
@@ -403,7 +437,9 @@ async function boot() {
     scene.setControlled(cursor.idx);
     scene.setSwitchTarget(cursor.suggested);
     scene.setBallGlow(ballIsMine());
-    scene.setClock(match.halfLength > 0 ? `${match.half === 1 ? '1ST' : '2ND'} ${fmtClock(match.clock)}` : '');
+    // stoppage time wears a plus — the referee is letting the move breathe
+    const et = match.halfLength > 0 && match.clock > match.halfLength ? '+' : '';
+    scene.setClock(match.halfLength > 0 ? `${match.half === 1 ? '1ST' : '2ND'} ${fmtClock(match.clock)}${et}` : '');
     scene.handleEvents(world.events);
 
     if (fulltimeDelay > 0 && match.finished) {
