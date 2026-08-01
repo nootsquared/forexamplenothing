@@ -104,26 +104,32 @@ export class Scene {
     this.glowOn = on;
   }
 
-  // The frame itself: a chunky outer band and a crenellated inner one, built
-  // once per resize — only its alpha animates
+  // The frame itself: a bold gold band over a dark pixel rim (the same
+  // outline trick the sprites use to pop off the grass), then a crenellated
+  // block row — built once per resize, only its alpha animates
   private buildGlow(w: number, h: number) {
     this.glowW = w;
     this.glowH = h;
     const g = this.possessionGlow;
-    const q = 6;
+    const q = 8;
     const gold = 0xffd95e;
+    const rim = 0x3a2c10;
     g.clear();
-    g.rect(0, 0, w, q).fill({ color: gold, alpha: 0.2 });
-    g.rect(0, h - q, w, q).fill({ color: gold, alpha: 0.2 });
-    g.rect(0, q, q, h - 2 * q).fill({ color: gold, alpha: 0.2 });
-    g.rect(w - q, q, q, h - 2 * q).fill({ color: gold, alpha: 0.2 });
-    for (let x = q; x < w - q * 2; x += q * 2) {
-      g.rect(x, q, q, q).fill({ color: gold, alpha: 0.11 });
-      g.rect(x + q, h - 2 * q, q, q).fill({ color: gold, alpha: 0.11 });
+    g.rect(0, 0, w, q).fill({ color: gold, alpha: 0.55 });
+    g.rect(0, h - q, w, q).fill({ color: gold, alpha: 0.55 });
+    g.rect(0, q, q, h - 2 * q).fill({ color: gold, alpha: 0.55 });
+    g.rect(w - q, q, q, h - 2 * q).fill({ color: gold, alpha: 0.55 });
+    g.rect(q, q, w - 2 * q, 2).fill({ color: rim, alpha: 0.45 });
+    g.rect(q, h - q - 2, w - 2 * q, 2).fill({ color: rim, alpha: 0.45 });
+    g.rect(q, q, 2, h - 2 * q).fill({ color: rim, alpha: 0.45 });
+    g.rect(w - q - 2, q, 2, h - 2 * q).fill({ color: rim, alpha: 0.45 });
+    for (let x = q + 2; x < w - q * 2; x += q * 2) {
+      g.rect(x, q + 2, q, q).fill({ color: gold, alpha: 0.3 });
+      g.rect(x + q, h - 2 * q - 2, q, q).fill({ color: gold, alpha: 0.3 });
     }
-    for (let y = q; y < h - q * 2; y += q * 2) {
-      g.rect(q, y + q, q, q).fill({ color: gold, alpha: 0.11 });
-      g.rect(w - 2 * q, y, q, q).fill({ color: gold, alpha: 0.11 });
+    for (let y = q + 2; y < h - q * 2; y += q * 2) {
+      g.rect(q + 2, y + q, q, q).fill({ color: gold, alpha: 0.3 });
+      g.rect(w - 2 * q - 2, y, q, q).fill({ color: gold, alpha: 0.3 });
     }
   }
 
