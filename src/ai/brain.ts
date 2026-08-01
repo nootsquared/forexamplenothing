@@ -343,16 +343,16 @@ export class Brain {
         + this.bb.axisOf(target.x) * (me.id.role === 'FW' ? 0.09 : me.id.role === 'MF' ? 0.05 : 0.015)
         + this.rng.next() * 0.4; // dither so 11 brains never lockstep
       const nearestMate = this.nearestTeammateDist(world, target);
-      if (nearestMate < 7) s -= (7 - nearestMate) * 0.6; // spread out — bunching kills plays
+      if (nearestMate < 9) s -= (9 - nearestMate) * 0.8; // spread out — bunching kills plays
       // A run beyond the second-last defender is a flag, not a run
       if (this.bb.phase === 'attack' && this.bb.axisOf(target.x) > this.bb.offsideAxis - 0.4) s -= 2.5;
       if (carrier && carrier !== me) {
         // The carrier needs AIR, not company: never crowd him, and if I'm
         // already on top of him, runs that open the gap score higher
         const dTarget = dist(target, carrier.pos);
-        if (dTarget < 6) s -= (6 - dTarget) * 0.55;
+        if (dTarget < 7.5) s -= (7.5 - dTarget) * 0.7;
         const dNow = dist(me.pos, carrier.pos);
-        if (dNow < 6) s += (dTarget - dNow) * 0.07;
+        if (dNow < 7) s += (dTarget - dNow) * 0.09;
       }
       if (s > bestScore) { bestScore = s; best = target; }
     }

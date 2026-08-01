@@ -65,6 +65,7 @@ async function boot() {
   let hintClock = 0;
   let keeperAiming = false;
   let penAim: { col: number; row: number } | null = null; // the shooter's chosen bin
+  let throwAim: { taker: number } | null = null; // your throw-in, aimed like a keeper's throw
   const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2, clicked: false, moved: false };
   const drag = { active: false, anchorX: 0, anchorY: 0 };
   const DRAG_FULL_PX = 260;
@@ -110,9 +111,8 @@ async function boot() {
   // The soundtrack follows the room: anthem over the menus, the war-room
   // groove over squad building, and only the stadium during play
   const routeMusic = () => {
-    if (screenName === 'match') audio.music(null);
-    else if (screenName === 'draft') audio.music('music-draft');
-    else audio.music('music-menu');
+    if (screenName === 'draft') audio.music('music-draft');
+    else audio.music(null); // menus play the stadium, not a tune — user's call
   };
   audio.setVolumes(menu.musicVol, menu.sfxVol);
   menu.onAudio = (m, s) => audio.setVolumes(m, s);
@@ -222,6 +222,7 @@ async function boot() {
     humanIdle = Infinity;
     keeperAiming = false;
     penAim = null;
+    throwAim = null;
     halfCountdown = 0;
     drag.active = false;
     mouseKick = null;
@@ -373,6 +374,8 @@ async function boot() {
     const overrides: Record<number, PlayerInput> = {
       [cursor.idx]: penMine ? { move: vec(), sprint: false, kickCharging: false, kickReleased: null } : input,
     };
+    // a taker mid-throw stands at the line; the mouse owns the delivery
+    if (throwAim) overrides[throwAim.taker] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
     if (keeperAiming) overrides[gkIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
     // A team-0 ball rolling AT your keeper is a backpass in flight: he stands
     // ready for his hands — his brain may not panic-boot it while it arrives
@@ -418,7 +421,11 @@ async function boot() {
       // YOUR restarts belong to YOU: throw-ins, corners and free kicks hand
       // you the taker and the game waits for your delivery — no gray body
       // ever plays your dead ball for you
-      if (e.kind === 'restart' && e.team === 0 && e.taker >= 0 && e.restart !== 'goalkick') cursor.assign(e.taker);
+      if (e.kind === 'restart' && e.team === 0 && e.taker >= 0 && e.restart !== 'goalkick') {
+        cursor.assign(e.taker);
+        // your throw-in opens the throw sight — pick the man, not the walk
+        if (e.restart === 'throwin' && humanIdle < 2.5) throwAim = { taker: e.taker };
+      }
       if (e.kind === 'kickoff' && e.team === 0 && e.taker >= 0) cursor.assign(e.taker);
       // A penalty for US: you become the shooter and the sight opens
       if (e.kind === 'foul' && e.penalty && world.penalty?.team === 0) {
@@ -477,6 +484,58 @@ async function boot() {
         if (mouse.clicked) launchKeeper(target, kind, scatter);
       }
     }
+    // The throw-in sight: the keeper's throw ring, worn by the taker at the
+    // line. Click a spot inside it and the ball is slung there — control
+    // follows the throw to whoever it was for.
+    if (throwAim) {
+      const taker = world.players[throwAim.taker];
+      const gone = (world.restartLock <= 0 && world.ball.speed() > 2) ||
+        world.lastTouch?.team !== 0 || world.lastTouch.idx !== throwAim.taker;
+      if (gone) {
+        throwAim = null;
+        if (!keeperAiming) scene.setKeeperAim(null);
+      } else {
+        const throwR = 14 + 10 * taker.stats.power;
+        const origin = world.ball.pos;
+        if (humanIdle >= 6) {
+          // walked away: sling it safe to the nearest shirt
+          let best: Vec2 = vec(origin.x, origin.y < 37 ? origin.y + 10 : origin.y - 10);
+          let bestD = Infinity;
+          world.players.forEach((p, i) => {
+            if (p.id.team !== 0 || i === throwAim!.taker) return;
+            const d = dist(origin, p.pos);
+            if (d < throwR && d < bestD) { bestD = d; best = vec(p.pos.x, p.pos.y); }
+          });
+          world.gkLaunch(throwAim.taker, best, 'throw', 2);
+          throwAim = null;
+          if (!keeperAiming) scene.setKeeperAim(null);
+        } else {
+          const m = scene.screenToWorld(mouse.x, mouse.y);
+          const toM = vec(m.x - origin.x, m.y - origin.y);
+          const dRaw = Math.hypot(toM.x, toM.y);
+          const d = Math.min(dRaw, throwR);
+          const target = dRaw > 1e-4
+            ? vec(origin.x + (toM.x / dRaw) * d, origin.y + (toM.y / dRaw) * d)
+            : vec(origin.x + 6, origin.y);
+          const scatter = (0.8 + d * 0.05) * (1.35 - taker.stats.control * 0.7);
+          const pCenter = Math.pow(0.5, 1 / (0.5 + 0.6 * taker.stats.control));
+          scene.setKeeperAim({ gk: origin, target, throwR, puntR: throwR, scatter, kind: 'throw', pCenter });
+          if (mouse.clicked) {
+            world.gkLaunch(throwAim.taker, target, 'throw', scatter);
+            let best = -1;
+            let bestD = Infinity;
+            world.players.forEach((p, i) => {
+              if (p.id.team !== 0 || i === throwAim!.taker) return;
+              const dd = dist(p.pos, target);
+              if (dd < bestD) { bestD = dd; best = i; }
+            });
+            if (best >= 0) cursor.assign(best);
+            throwAim = null;
+            scene.setKeeperAim(null);
+          }
+        }
+      }
+    }
     mouse.clicked = false;
 
     // While you wind up a kick, the open men light up — the same
@@ -516,7 +575,6 @@ async function boot() {
         statsScreen.begin(match);
         show(statsScreen);
         matchAudio.end();
-        audio.music('music-menu', 2, 0.65); // the anthem hums under the sheet
       }
     }
   }

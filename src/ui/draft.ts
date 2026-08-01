@@ -21,7 +21,8 @@ const ROLE_TINT: Record<Role, number> = { GK: 0xf0c552, DF: 0x8ecff0, MF: 0x9ff0
 const FILTERS: (Role | 'ALL')[] = ['ALL', 'GK', 'DF', 'MF', 'FW'];
 const SHAPE_TIME = 15;
 const PICK_TIME = 30;
-const WEDGES = ['common', 'rare', 'common', 'epic', 'common', 'rare', 'common', 'legend'];
+const REEL_SCALE = 2;   // slot cards ride big
+const REEL_GAP = 10;    // air between cards on the strip
 
 const stat99 = (v: number) => String(Math.round(v * 99)).padStart(2, '0');
 
@@ -324,12 +325,20 @@ export class SquadBuilderScreen implements Screen {
   private cpuReveal: { view: Container; t: number } | null = null;
   private flyer: { view: Container; t: number; fx: number; fy: number; tx: number; ty: number } | null = null;
 
-  // gamble
-  private wheel: Sprite;
-  private wheelPtr: Sprite;
-  private spin: { t: number; dur: number; from: number; to: number; rarity: string; forCpu: boolean } | null = null;
-  private lastTickWedge = 0;
-  private gambleRole: Role | null = null;
+  // gamble: the slot reel — a shuffled strip of every player on the shelf
+  // scrolling past a needle until it lands. Every man an equal ticket.
+  private reelBack = new Graphics();   // dark band behind the strip
+  private reelFront = new Graphics();  // rails, needles, edge shade above it
+  private reelStrip = new Container();
+  private reelMaskG = new Graphics();
+  private roll: {
+    t: number; dur: number; from: number; to: number;
+    strip: { p: StarPlayer; poolIdx: number }[]; winStrip: number;
+    forCpu: boolean; role: Role; lastCell: number;
+  } | null = null;
+  private reelX = 0;
+  private reelY = 0;
+  private reelW = 700;
   private roleSel = 0;
   private revealCard: { view: Container; t: number } | null = null;
 
@@ -366,12 +375,7 @@ export class SquadBuilderScreen implements Screen {
     this.coin = new Sprite(assets.coinFrames[0]);
     this.coin.anchor.set(0.5);
     this.coin.scale.set(6);
-    this.wheel = new Sprite(assets.wheel);
-    this.wheel.anchor.set(0.5);
-    this.wheel.scale.set(2);
-    this.wheelPtr = new Sprite(assets.wheelPointer);
-    this.wheelPtr.anchor.set(0.5, 0);
-    this.wheelPtr.scale.set(2);
+    this.reelStrip.mask = this.reelMaskG;
     this.myTitle = new PixelText(assets, 3, 0xff9c8a);
     this.myTitle.text = 'YOUR SQUAD';
     this.cpuTitle = new PixelText(assets, 3, 0x9cc4f0);
@@ -389,7 +393,8 @@ export class SquadBuilderScreen implements Screen {
     this.market.addChild(this.filterRow, this.gridLayer, this.focusLayer);
     this.root.addChild(
       this.shade, this.header, this.turnText, this.clockBar, this.myPanel, this.cpuPanel,
-      this.market, this.shapePanels, this.coin, this.caption, this.wheel, this.wheelPtr, this.wheelPrompt, this.overlay, this.foot,
+      this.market, this.shapePanels, this.coin, this.caption,
+      this.reelBack, this.reelStrip, this.reelMaskG, this.reelFront, this.wheelPrompt, this.overlay, this.foot,
     );
   }
 
@@ -403,7 +408,12 @@ export class SquadBuilderScreen implements Screen {
     this.flyer?.view.destroy({ children: true });
     this.flyer = null;
     this.overlay.removeChildren().forEach((c) => c.destroy({ children: true }));
-    this.spin = null;
+    this.killReel();
+  }
+
+  private killReel() {
+    this.roll = null;
+    this.reelStrip.removeChildren().forEach((c) => c.destroy({ children: true }));
   }
 
   // ------------------------------------------------------------- lifecycle
@@ -424,11 +434,10 @@ export class SquadBuilderScreen implements Screen {
     this.gridScroll = 0;
     this.roleSel = 0;
     this.arrangement = [];
-    this.gambleRole = null;
-    this.header.text = mode === 'draft' ? 'THE DRAFT' : 'THE WHEEL';
+    this.header.text = mode === 'draft' ? 'THE DRAFT' : 'THE SLOTS';
     this.foot.text = mode === 'draft'
       ? 'WASD MOVE - ENTER SIGN - F FILTER - X ACADEMY - DRAG CHIPS TO REARRANGE'
-      : 'A D PICK A ROLE - ENTER SPIN - DRAG CHIPS TO REARRANGE';
+      : 'A D PICK A SHELF - ENTER ROLLS - DRAG CHIPS TO REARRANGE';
     audio.ui('coin');
     this.refreshPanels();
     this.layoutPhase();
@@ -677,68 +686,85 @@ export class SquadBuilderScreen implements Screen {
     this.advanceTurn();
   }
 
-  // ------------------------------------------------------------- the wheel
-  private startSpin(role: Role, forCpu: boolean) {
+  // -------------------------------------------------------------- the reel
+  // The whole shelf shuffled onto one long strip, every man an equal ticket.
+  // A flat roll decides the winner up front; the strip decelerates past the
+  // needle so you WATCH the near-misses right up until it lands.
+  private cellW(): number {
+    return this.assets.manifest.cards.w * REEL_SCALE + REEL_GAP;
+  }
+
+  private startRoll(role: Role, forCpu: boolean) {
+    if (this.roll) return; // one ride at a time — no re-rolling a bad spin
     const side = this.draft.sides[forCpu ? 1 : 0];
-    const roster = this.draft.pool.filter((p) => p.role === role);
+    const roster = this.draft.pool.map((p, poolIdx) => ({ p, poolIdx })).filter((e) => e.p.role === role);
     if (!roster.length || needsOf(side)[role] <= 0) return audio.ui('denied');
-    // the odds, tuned jackpot-generous — degraded gracefully when a shelf runs bare
-    const wants = Math.random();
-    let rarity = wants < 0.1 ? 'legend' : wants < 0.38 ? 'epic' : wants < 0.76 ? 'rare' : 'common';
-    const has = (r: string) => roster.some((p) => rarityOf(p.ovr) === r);
-    const ladder = ['legend', 'epic', 'rare', 'common'];
-    while (!has(rarity)) {
-      const next = ladder.indexOf(rarity) + 1;
-      if (next >= ladder.length) { rarity = ladder.find(has) ?? 'common'; break; }
-      rarity = ladder[next];
+    this.killReel();
+    this.revealCard?.view.destroy({ children: true });
+    this.revealCard = null;
+    const winner = roster[Math.floor(Math.random() * roster.length)];
+    const shuffled = [...roster];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
-    // pick the wedge of that rarity the pointer should stop under
-    const options = WEDGES.map((r, i) => ({ r, i })).filter((w) => w.r === rarity);
-    const wedge = options[Math.floor(Math.random() * options.length)].i;
-    const center = ((wedge + 0.5) / 8) * Math.PI * 2 - Math.PI; // texture-space angle
-    const target = -Math.PI / 2 - center; // pointer sits at 12 o'clock
-    const spins = forCpu ? 2 : 4;
-    this.gambleRole = role;
-    this.spin = {
+    // tile the shuffle until the strip is long enough to really travel, and
+    // land on the winner's LAST appearance so the ride uses the whole road
+    const travel = forCpu ? 16 : 32;
+    const strip: { p: StarPlayer; poolIdx: number }[] = [];
+    while (strip.length < travel + shuffled.length) strip.push(...shuffled);
+    let winStrip = strip.length - 1;
+    for (let i = strip.length - 1; i >= 0; i--) {
+      if (strip[i] === winner) { winStrip = i; break; }
+    }
+    const cell = this.cellW();
+    strip.forEach((e, i) => {
+      const card = new CardView(this.assets, e.p, REEL_SCALE, false);
+      card.position.set(i * cell, 0);
+      this.reelStrip.addChild(card);
+    });
+    this.reelStrip.y = this.reelY;
+    // land a touch off-center — a machine stops where physics says, not a ruler
+    const jitter = (Math.random() - 0.5) * 0.5 * (cell - REEL_GAP);
+    const center = this.w / 2;
+    this.roll = {
       t: 0,
-      dur: forCpu ? 1.0 : 2.3,
-      from: this.wheel.rotation % (Math.PI * 2),
-      to: target + spins * Math.PI * 2,
-      rarity,
+      dur: forCpu ? 1.4 : 3.4,
+      from: center - (cell - REEL_GAP) / 2,
+      to: center - (cell - REEL_GAP) / 2 - winStrip * cell + jitter,
+      strip,
+      winStrip,
       forCpu,
+      role,
+      lastCell: -1,
     };
-    this.lastTickWedge = -1;
     if (!forCpu) audio.ui('select');
   }
 
-  private resolveSpin() {
-    if (!this.spin) return;
-    const { rarity, forCpu } = this.spin;
-    this.spin = null;
-    const role = this.gambleRole!;
-    const side = this.draft.sides[forCpu ? 1 : 0];
-    const options = this.draft.pool
-      .map((p, i) => ({ p, i }))
-      .filter(({ p }) => p.role === role && rarityOf(p.ovr) === rarity);
-    const won = options[Math.floor(Math.random() * options.length)];
+  private resolveRoll() {
+    const r = this.roll;
+    if (!r) return;
+    this.roll = null; // the strip stays frozen on the winner until the next act
+    const side = this.draft.sides[r.forCpu ? 1 : 0];
+    const won = r.strip[r.winStrip];
     side.picks.push(won.p);
-    this.draft.pool.splice(won.i, 1);
+    this.draft.pool.splice(won.poolIdx, 1);
     this.draft.turn++;
-    audio.ui(rarity === 'legend' || rarity === 'epic' ? 'wheel-win' : 'buy');
-    if (!forCpu) this.placePick(side.picks.length - 1, role);
-    // the reveal: his card blooms center-stage
+    const band = rarityOf(won.p.ovr);
+    audio.ui(band === 'legend' || band === 'epic' ? 'wheel-win' : 'buy');
+    if (!r.forCpu) this.placePick(side.picks.length - 1, r.role);
+    // the landed card steps forward for its close-up
     this.revealCard?.view.destroy({ children: true });
     const view = new Container();
-    const card = new CardView(this.assets, won.p, forCpu ? 2 : 3, true);
-    card.pivot.set((this.assets.manifest.cards.w * (forCpu ? 2 : 3)) / 2, 0);
-    const cap = new PixelText(this.assets, 3, forCpu ? 0x9cc4f0 : RARITY_TINT[rarity]);
-    cap.text = forCpu ? 'CPU PULLS' : rarity.toUpperCase();
+    const card = new CardView(this.assets, won.p, r.forCpu ? 2 : 3, true);
+    card.pivot.set((this.assets.manifest.cards.w * (r.forCpu ? 2 : 3)) / 2, 0);
+    const cap = new PixelText(this.assets, 3, r.forCpu ? 0x9cc4f0 : RARITY_TINT[band]);
+    cap.text = r.forCpu ? 'CPU PULLS' : band.toUpperCase();
     cap.centerAt(0, -34);
     view.addChild(cap, card);
-    view.position.set(this.w / 2, this.h * 0.26);
-    this.revealCard = { view, t: forCpu ? 0.9 : 1.5 };
+    view.position.set(this.w / 2, this.h * 0.12);
+    this.revealCard = { view, t: r.forCpu ? 0.9 : 1.5 };
     this.overlay.addChild(view);
-    this.gambleRole = null;
     this.advanceTurn();
   }
 
@@ -794,11 +820,11 @@ export class SquadBuilderScreen implements Screen {
       if (code === 'KeyX') this.signAcademy();
       if ((code === 'Enter' || code === 'Space') && entries[this.gridSel]) this.trySign(entries[this.gridSel].poolIdx);
     } else {
-      if (this.spin || !this.myTurn) return;
+      if (this.roll || !this.myTurn) return;
       const roles: Role[] = ['GK', 'DF', 'MF', 'FW'];
       if (code === 'ArrowLeft' || code === 'KeyA') { this.roleSel = (this.roleSel + 3) % 4; audio.ui('move'); this.layoutPhase(); }
       if (code === 'ArrowRight' || code === 'KeyD') { this.roleSel = (this.roleSel + 1) % 4; audio.ui('move'); this.layoutPhase(); }
-      if (code === 'Enter' || code === 'Space') this.startSpin(roles[this.roleSel], false);
+      if (code === 'Enter' || code === 'Space') this.startRoll(roles[this.roleSel], false);
     }
   }
 
@@ -937,24 +963,26 @@ export class SquadBuilderScreen implements Screen {
     }
 
     if (this.mode === 'gamble') {
-      // the wheel talks you through it: what to do, or whose hands it's in
+      // the reel talks you through it: what to do, or whose hands it's in
       this.promptPulse += dt * 4;
-      this.wheelPrompt.text = this.spin ? '' :
-        this.myTurn ? 'PICK A SHELF - ENTER SPINS' : 'CPU AT THE WHEEL';
-      this.wheelPrompt.alpha = this.myTurn && !this.spin ? 0.7 + 0.3 * Math.sin(this.promptPulse) : 0.7;
-      this.wheelPrompt.centerAt(this.w / 2, this.h * 0.38 + this.wheel.height / 2 + 26);
+      this.wheelPrompt.text = this.roll ? '' :
+        this.myTurn ? 'PICK A SHELF - ENTER ROLLS' : 'CPU AT THE SLOTS';
+      this.wheelPrompt.alpha = this.myTurn && !this.roll ? 0.7 + 0.3 * Math.sin(this.promptPulse) : 0.7;
+      this.wheelPrompt.centerAt(this.w / 2, this.reelY - 36);
     }
-    if (this.mode === 'gamble' && this.spin) {
-      this.spin.t += dt;
-      const k = Math.min(1, this.spin.t / this.spin.dur);
-      const e = 1 - Math.pow(1 - k, 3);
-      this.wheel.rotation = this.spin.from + (this.spin.to - this.spin.from) * e;
-      const wedgeNow = Math.floor(((this.wheel.rotation % (Math.PI * 2)) / (Math.PI * 2)) * 8);
-      if (wedgeNow !== this.lastTickWedge) {
-        this.lastTickWedge = wedgeNow;
+    if (this.mode === 'gamble' && this.roll) {
+      const r = this.roll;
+      r.t += dt;
+      const k = Math.min(1, r.t / r.dur);
+      // quartic tail: a screaming start and a long agonizing crawl to the line
+      const e = 1 - Math.pow(1 - k, 4);
+      this.reelStrip.x = Math.round(r.from + (r.to - r.from) * e);
+      const cellNow = Math.floor((this.w / 2 - this.reelStrip.x) / this.cellW());
+      if (cellNow !== r.lastCell) {
+        r.lastCell = cellNow;
         audio.ui('wheel-tick');
       }
-      if (k >= 1) this.resolveSpin();
+      if (k >= 1) this.resolveRoll();
       return;
     }
 
@@ -989,7 +1017,7 @@ export class SquadBuilderScreen implements Screen {
           const needs = needsOf(this.draft.sides[1]);
           const wants = (['FW', 'MF', 'DF', 'GK'] as Role[]).filter((r) => needs[r] > 0);
           const role = wants[Math.floor(Math.random() * wants.length)];
-          if (role) this.startSpin(role, true);
+          if (role) this.startRoll(role, true);
         }
       }
     }
@@ -1023,20 +1051,62 @@ export class SquadBuilderScreen implements Screen {
     this.shapePanels.visible = this.phase === 'shape';
     this.coin.visible = this.phase === 'toss';
     this.caption.visible = this.phase === 'toss' && this.tossT >= 1.1;
-    const wheelOn = this.phase === 'market' && this.mode === 'gamble';
-    this.wheel.visible = wheelOn;
-    this.wheelPtr.visible = wheelOn;
-    this.wheelPrompt.visible = wheelOn;
+    const reelOn = this.phase === 'market' && this.mode === 'gamble';
+    this.reelBack.visible = reelOn;
+    this.reelFront.visible = reelOn;
+    this.reelStrip.visible = reelOn;
+    this.wheelPrompt.visible = reelOn;
+    if (!reelOn && this.reelStrip.children.length) this.killReel();
     this.turnText.visible = this.phase !== 'toss';
     this.myPanel.visible = this.phase !== 'toss';
     this.cpuPanel.visible = this.phase === 'market';
     this.clockBar.visible = this.phase === 'shape' || (this.phase === 'market' && this.mode === 'draft' && this.myTurn);
-    if (wheelOn) {
+    if (reelOn) {
       this.buildRoleButtons();
     } else {
       this.roleButtons?.destroy({ children: true });
       this.roleButtons = null;
     }
+  }
+
+  // The slot window: dark band the strip rides through, gold rails, a needle
+  // top and bottom marking the line of truth, stepped shade at both edges
+  private drawReelChrome() {
+    const ch = this.assets.manifest.cards.h * REEL_SCALE;
+    const x = this.reelX;
+    const y = this.reelY;
+    const w = this.reelW;
+    const back = this.reelBack;
+    back.clear();
+    back.rect(x, y - 10, w, ch + 20).fill({ color: 0x0a0e14, alpha: 0.88 });
+    back.rect(x, y - 10, w, 2).fill({ color: 0xfff8e0, alpha: 0.14 });
+    back.rect(x, y + ch + 8, w, 2).fill({ color: 0x000000, alpha: 0.5 });
+    const front = this.reelFront;
+    front.clear();
+    // gold rails
+    front.rect(x, y - 6, w, 2).fill({ color: 0xffd95e, alpha: 0.5 });
+    front.rect(x, y + ch + 4, w, 2).fill({ color: 0xffd95e, alpha: 0.5 });
+    // corner studs
+    for (const sx of [x, x + w - 3]) {
+      front.rect(sx, y - 10, 3, 3).fill({ color: 0xffd95e, alpha: 0.8 });
+      front.rect(sx, y + ch + 7, 3, 3).fill({ color: 0xffd95e, alpha: 0.8 });
+    }
+    // the needle: stacked pixel chevrons above and below the center line
+    const cx = Math.round(this.w / 2);
+    for (let i = 0; i < 4; i++) {
+      const half = 5 - i;
+      front.rect(cx - half, y - 10 + i * 2, half * 2, 2).fill({ color: 0xfff3c4, alpha: 0.95 });
+      front.rect(cx - half, y + ch + 8 - i * 2, half * 2, 2).fill({ color: 0xfff3c4, alpha: 0.95 });
+    }
+    // stepped edge shade so the strip fades into the machine
+    for (let i = 0; i < 3; i++) {
+      const sw = 30 - i * 9;
+      const alpha = 0.55 - i * 0.16;
+      front.rect(x, y - 8, sw, ch + 16).fill({ color: 0x0a0e14, alpha });
+      front.rect(x + w - sw, y - 8, sw, ch + 16).fill({ color: 0x0a0e14, alpha });
+    }
+    this.reelMaskG.clear();
+    this.reelMaskG.rect(x, y - 8, w, ch + 16).fill(0xffffff);
   }
 
   private roleButtons: Container | null = null;
@@ -1078,12 +1148,13 @@ export class SquadBuilderScreen implements Screen {
       b.cursor = 'pointer';
       b.on('pointertap', () => {
         this.roleSel = i;
-        if (open) this.startSpin(r, false);
+        if (open) this.startRoll(r, false);
         else audio.ui('denied');
       });
       wrap.addChild(b);
     });
-    wrap.position.set(Math.round(this.w / 2 - (4 * BW + 3 * GAP) / 2), Math.round(this.h * 0.38 + this.wheel.height / 2 + 64));
+    const ch = this.assets.manifest.cards.h * REEL_SCALE;
+    wrap.position.set(Math.round(this.w / 2 - (4 * BW + 3 * GAP) / 2), Math.round(this.reelY + ch + 42));
     this.roleButtons = wrap;
     this.root.addChild(wrap);
   }
@@ -1095,10 +1166,6 @@ export class SquadBuilderScreen implements Screen {
     this.header.centerAt(w / 2, 18);
     this.foot.centerAt(w / 2, h - 40);
     this.coin.position.set(w / 2, h * 0.4);
-    this.wheel.scale.set(2.4);
-    this.wheel.position.set(Math.round(w / 2), Math.round(h * 0.38));
-    this.wheelPtr.scale.set(2.4);
-    this.wheelPtr.position.set(Math.round(w / 2), Math.round(h * 0.38 - this.wheel.height / 2 - 6));
     // The two dugouts: full-height team boards flanking the whole screen
     const boardW = Math.max(264, Math.min(400, Math.round(w * 0.2)));
     const boardTop = 56;
@@ -1115,6 +1182,12 @@ export class SquadBuilderScreen implements Screen {
     this.cpuBudget.position.set(0, 28);
     this.cpuBoard.position.set(0, boardTop);
     this.cpuBoard.resize(boardW, boardH);
+    // the slot machine spans the gap between the dugouts
+    this.reelX = 16 + boardW + 24;
+    this.reelW = w - this.reelX * 2;
+    this.reelY = Math.round(h * 0.3);
+    this.reelStrip.y = this.reelY;
+    this.drawReelChrome();
     // the market between the two dugouts
     const s = 2;
     const cardW = this.assets.manifest.cards.w * s;

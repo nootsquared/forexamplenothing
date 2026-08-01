@@ -7,7 +7,7 @@ import { generateBallSheet, BALL_SIZE, BALL_DIRS, BALL_PHASES, BALL_VISUAL_R } f
 import { generateDustSheet, generateGrassBitsSheet, generateRingSheet, generateShadow, generateSkid, generateBladeSheet, generateAimArrowSheet, generateSwitchChevrons, generateGoalBar, BLADE_W, BLADE_H, BLADE_FRAMES, AIM_SIZE, AIM_DIRS, CHEV_W, CHEV_H } from './fx.mjs';
 import { generateFontSheet, generateMicroFontSheet, generateTitleSheet, GLYPHS, CELL_W, CELL_H, WIDTHS, MICRO_GLYPHS, MICRO_CELL_W, MICRO_CELL_H, MICRO_WIDTHS, TITLE_W, TITLE_H } from './font.mjs';
 import { generateStand, generateBoards, generateDugout, generateCornerFlag, generateCloudShadow, STAND_H, BOARD_H } from './stands.mjs';
-import { generateCardSheet, generateCardFigures, generateCoinSheet, generateWheel, generateWheelPointer, CARD_W, CARD_H, FIG_W, FIG_H, COIN_S, WHEEL_S, RARITIES } from './cards.mjs';
+import { generateCardSheet, generateCardFigures, generateCoinSheet, CARD_W, CARD_H, FIG_W, FIG_H, COIN_S, RARITIES } from './cards.mjs';
 
 const OUT = new URL('../../public/assets/', import.meta.url).pathname;
 mkdirSync(OUT, { recursive: true });
@@ -44,8 +44,6 @@ savePNG(generateCloudShadow(), `${OUT}cloud.png`);
 savePNG(generateCardSheet(), `${OUT}cards.png`);
 savePNG(generateCardFigures(), `${OUT}card-figures.png`);
 savePNG(generateCoinSheet(), `${OUT}coin.png`);
-savePNG(generateWheel(), `${OUT}wheel.png`);
-savePNG(generateWheelPointer(), `${OUT}wheel-pointer.png`);
 
 // Single source of truth the renderer reads: projection + frame geometry
 const manifest = {
@@ -71,7 +69,7 @@ const manifest = {
   stand: { h: STAND_H, frames: 2 },
   boards: { h: BOARD_H },
   flag: { w: 10, h: 16, frames: 2 },
-  cards: { w: CARD_W, h: CARD_H, figW: FIG_W, figH: FIG_H, rarities: RARITIES, coin: COIN_S, wheel: WHEEL_S },
+  cards: { w: CARD_W, h: CARD_H, figW: FIG_W, figH: FIG_H, rarities: RARITIES, coin: COIN_S },
   variants: VARIANTS.map((v) => ({ id: v.id, name: v.name, pitch: `pitch-${v.id}.png` })),
   playerSheets,
 };

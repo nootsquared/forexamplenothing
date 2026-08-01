@@ -43,7 +43,7 @@ describe('the world cup class', () => {
     expect(byRole).toEqual({ GK: 19, DF: 44, MF: 70, FW: 70 });
   });
 
-  it('every rarity shelf is stocked for every role, so the wheel always pays out', () => {
+  it('every rarity band is stocked for every role, so the reel always glitters', () => {
     for (const role of ['GK', 'DF', 'MF', 'FW'] as const) {
       for (const band of ['legend', 'epic', 'rare', 'common'] as const) {
         const stocked = PLAYER_POOL.filter((p) => p.role === role && rarityOf(p.ovr) === band);

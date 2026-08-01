@@ -306,7 +306,7 @@ describe('the whistle and the spot', () => {
       world.ball.pos = vec(50.8, 37); // the duel stays staged
       world.ball.vel = vec();
       carrier.pos = vec(50, 37);
-      hacker.pos = vec(49.15, 36.5);
+      hacker.pos = vec(49.45, 36.7); // through the MAN, nowhere near the ball
       world.step(DT, [idle, { ...idle, tackle: true }]);
       for (const e of world.events) {
         if (e.kind === 'foul') foul = true;

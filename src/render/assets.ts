@@ -18,7 +18,7 @@ export interface Manifest {
   stand: { h: number; frames: number };
   boards: { h: number };
   flag: { w: number; h: number; frames: number };
-  cards: { w: number; h: number; figW: number; figH: number; rarities: string[]; coin: number; wheel: number };
+  cards: { w: number; h: number; figW: number; figH: number; rarities: string[]; coin: number };
   variants: { id: string; name: string; pitch: string }[];
   playerSheets: string[];
 }
@@ -50,8 +50,6 @@ export interface GameAssets {
   cardFrames: Record<string, Texture>;   // rarity → frame
   cardFigures: Record<string, Texture>;  // rarity → kit figure
   coinFrames: Texture[]; // [red face, blue face, edge]
-  wheel: Texture;
-  wheelPointer: Texture;
 }
 
 function sliceRow(sheet: Texture, frameW: number, frameH: number, row: number, count: number): Texture[] {
@@ -69,7 +67,7 @@ export async function loadAssets(): Promise<GameAssets> {
     ...manifest.playerSheets,
     'ball.png', 'fx-dust.png', 'fx-grass.png', 'fx-ring.png', 'fx-shadow.png', 'fx-skid.png',
     'fx-blade.png', 'fx-aim.png', 'fx-chev.png', 'goal-bar.png', 'font.png', 'font-micro.png', 'title.png', 'stand.png', 'boards.png', 'dugout.png', 'flag.png', 'cloud.png',
-    'cards.png', 'card-figures.png', 'coin.png', 'wheel.png', 'wheel-pointer.png',
+    'cards.png', 'card-figures.png', 'coin.png',
   ];
   const loaded: Record<string, Texture> = {};
   await Promise.all(names.map(async (n) => { loaded[n] = await Assets.load(url(n)); }));
@@ -123,7 +121,5 @@ export async function loadAssets(): Promise<GameAssets> {
     cardFigures: Object.fromEntries(manifest.cards.rarities.map((r, i) => [r,
       new Texture({ source: loaded['card-figures.png'].source, frame: new Rectangle(i * manifest.cards.figW, 0, manifest.cards.figW, manifest.cards.figH) })])),
     coinFrames: sliceRow(loaded['coin.png'], manifest.cards.coin, manifest.cards.coin, 0, 3),
-    wheel: loaded['wheel.png'],
-    wheelPointer: loaded['wheel-pointer.png'],
   };
 }

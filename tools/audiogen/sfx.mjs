@@ -156,9 +156,9 @@ function crowdBed() {
   const mid = bandpass(Float32Array.from(raw), 520, 0.55);
   const high = bandpass(Float32Array.from(raw), 1150, 0.7);
   const bed = secs(dur);
-  addInto(bed, low, 0, 0.42);
-  addInto(bed, mid, 0, 0.85);
-  addInto(bed, high, 0, 0.5);
+  addInto(bed, low, 0, 0.58);
+  addInto(bed, mid, 0, 0.62);
+  addInto(bed, high, 0, 0.14);
   const looped = loopable(bed, 0.5); // exactly 9.0s now
   const L = looped.length / SR;
   for (let i = 0; i < looped.length; i++) {
@@ -279,7 +279,7 @@ function windLoop() {
   const raw = noise(dur, rng);
   let acc = 0;
   for (let i = 0; i < raw.length; i++) { acc = acc * 0.985 + raw[i] * 0.015; raw[i] = acc * 18; }
-  onePoleLP(raw, 340);
+  onePoleLP(raw, 240);
   onePoleHP(raw, 45);
   const looped = loopable(raw, 0.5);
   const L = looped.length / SR;
@@ -448,7 +448,7 @@ export function bakeSfx(write) {
     'step-a': { render: () => stepGrass(201), gain: 0.16 },
     'step-b': { render: () => stepGrass(202), gain: 0.16 },
     'step-c': { render: () => stepGrass(203), gain: 0.16 },
-    'crowd-bed': { render: crowdBed, loop: true, gain: 0.32 },
+    'crowd-bed': { render: crowdBed, loop: true, gain: 0.24 },
     'crowd-roar': { render: crowdRoar, gain: 0.85 },
     'crowd-ooh': { render: crowdOoh, gain: 0.5 },
     'crowd-cheer': { render: crowdCheer, gain: 0.45 },
@@ -456,7 +456,7 @@ export function bakeSfx(write) {
     'bird-b': { render: () => bird(2, [[0, 0.16, 2700, 22], [0.3, 0.12, 2900, 26]]), gain: 0.2 },
     'bird-c': { render: () => bird(3, [[0, 0.05, 4100, 52], [0.07, 0.05, 4300, 52], [0.14, 0.05, 4000, 52], [0.21, 0.05, 4200, 52]]), gain: 0.18 },
     'bird-d': { render: () => bird(4, [[0, 0.22, 3000, 14]]), gain: 0.2 },
-    'wind': { render: windLoop, loop: true, gain: 0.2 },
+    'wind': { render: windLoop, loop: true, gain: 0.13 },
     'ui-move': { render: uiMove, gain: 0.5 },
     'ui-select': { render: uiSelect, gain: 0.55 },
     'ui-back': { render: uiBack, gain: 0.5 },

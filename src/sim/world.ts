@@ -287,12 +287,18 @@ export class World {
     const carrierIdx = this.possessor();
     if (carrierIdx === null) return;
     const carrier = this.players[carrierIdx];
-    if (carrier.id.team === p.id.team || dist(p.pos, carrier.pos) > 0.95) return;
+    if (carrier.id.team === p.id.team || dist(p.pos, carrier.pos) > 0.85) return;
     this.lungeRolled.add(idx);
-    if (this.rng.next() > 0.3) return; // most late arrivals get away with it
+    if (this.rng.next() > 0.16) return; // almost every late arrival gets away with it
     p.lungeTimer = 0;
     p.tackleCooldown = Math.max(p.tackleCooldown, 1.2);
-    this.foulCooldown = 12;
+    this.foulCooldown = 25; // the whistle is an event, not a rhythm
+    // the victim goes DOWN — sprawled, shoved, and briefly out of the game.
+    // Half theater, half truth: it sells the whistle and it's funny to watch.
+    carrier.lungeTimer = Math.max(carrier.lungeTimer, 0.9);
+    carrier.vel = add(carrier.vel, scale(norm(sub(carrier.pos, p.pos)), 3.6));
+    carrier.touchCooldown = Math.max(carrier.touchCooldown, 0.8);
+    this.events.push({ kind: 'tackle', x: carrier.pos.x, y: carrier.pos.y });
     const boxDeep = p.id.team === 0 ? carrier.pos.x < 16.5 : carrier.pos.x > PITCH.length - 16.5;
     const inBox = boxDeep && Math.abs(carrier.pos.y - PITCH.width / 2) < 20.16;
     this.events.push({ kind: 'foul', x: carrier.pos.x, y: carrier.pos.y, penalty: inBox });
@@ -336,6 +342,7 @@ export class World {
     sp.pos = vec(spot.x - sgn * 1.7, spot.y);
     sp.vel = vec();
     sp.facing = vec(sgn, 0);
+    sp.lungeTimer = 0; // the fouled man picks himself up to take it
     sp.savePrev();
     if (keeper >= 0) {
       const gk = this.players[keeper];
@@ -719,6 +726,9 @@ export class World {
       p.vel = vec();
       p.facing = inward;
       p.savePrev();
+      // A goal kick goes to the keeper's HANDS: he reads the field and
+      // distributes like any collection — never a walked clearance
+      if (restart === 'goalkick' && p.id.role === 'GK') this.holdingGk = taker;
     }
     this.restartLock = 1.25;
     this.restartExclusion = restart === 'goalkick' ? 11 : 6.5;
