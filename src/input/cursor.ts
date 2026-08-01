@@ -50,9 +50,20 @@ export class TeamCursor {
       if (e.kind === 'kick' && e.idx === this.idx) this.myBallT = MY_BALL_WINDOW;
     }
 
-    // The ball is control: our carrier is YOU, the moment he has it — and a
-    // settled ball outranks any pass still being called after it. A carrier
-    // another seat is wearing stays THEIRS; you keep your own body.
+    // The ball is control, from the very first TOUCH: the last teammate to
+    // play it, still standing over it, is YOU — no waiting for an arriving
+    // ball to stop bouncing into formal 'possession' (the possessor gate
+    // ignores airborne balls, which read as switch lag). A carrier another
+    // seat is wearing stays THEIRS; the keeper is never taken.
+    const lt = world.lastTouch;
+    if (world.restartLock <= 0 && lt && lt.team === this.team && lt.idx !== this.idx &&
+        world.players[lt.idx].id.role !== 'GK' && !this.claimed(lt.idx) &&
+        dist(world.players[lt.idx].pos, world.ball.pos) < 1.7) {
+      this.take(lt.idx);
+      this.myBallT = 0;
+    }
+    // ...and a settled ball at a teammate's feet outranks any pass still
+    // being called after it
     if (bb.phase === 'attack' && bb.possessorIdx !== null &&
         world.players[bb.possessorIdx].id.role !== 'GK' && !this.claimed(bb.possessorIdx)) {
       this.take(bb.possessorIdx);

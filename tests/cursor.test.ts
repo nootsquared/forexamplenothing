@@ -41,10 +41,36 @@ describe('the possession-first cursor', () => {
       if (cursor.idx !== before) {
         const bb = match.teamBrains[0];
         const causedByPossession = bb.phase === 'attack' && bb.possessorIdx === cursor.idx;
+        const causedByTouch = world.lastTouch?.team === 0 && world.lastTouch.idx === cursor.idx;
         const causedByRestart = world.events.some((e) => e.kind === 'restart' && e.team === 0 && e.taker >= 0);
-        expect(causedByPossession || causedByRestart || sinceMyKick < 1.9).toBe(true);
+        expect(causedByPossession || causedByTouch || causedByRestart || sinceMyKick < 1.9).toBe(true);
       }
     }
+  });
+
+  it('a teammate touching an ARRIVING ball is instantly you — no waiting for the bounce to settle', () => {
+    const match = createMatch();
+    const cursor = new TeamCursor(0, match.world);
+    const world = match.world;
+    const idle: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+    const idleAll: Record<number, PlayerInput> = {};
+    world.players.forEach((_, i) => { idleAll[i] = idle; });
+    const receiver = world.players.findIndex((p) => p.id.team === 0 && p.id.role === 'MF');
+    world.restartLock = 0;
+    // a ball dropping IN from a pass: on target, still airborne when it lands
+    world.ball.pos = vec(world.players[receiver].pos.x + 2, world.players[receiver].pos.y);
+    world.ball.vel = vec(-6, 0);
+    world.ball.z = 0.9;
+    world.ball.vz = 2;
+    let touched = -1;
+    for (let t = 0; t < 120; t++) {
+      advanceMatch(match, DT, idleAll);
+      cursor.update(world, match.teamBrains[0], DT);
+      if (touched < 0 && world.lastTouch?.idx === receiver) touched = t;
+      if (touched >= 0 && t >= touched + 4) break; // a four-tick grace, no more
+    }
+    expect(touched).toBeGreaterThanOrEqual(0);
+    expect(cursor.idx).toBe(receiver);
   });
 
   it('T-mode hands the hunt to you; manual mode makes you press for it', () => {

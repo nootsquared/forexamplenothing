@@ -81,6 +81,7 @@ async function boot() {
   let netTick = 0;
   let pendingNetEvents: SimEvent[] = [];
   let guestSwitch = false;                           // E queued for the next packet
+  let guestEndT = 0;                                 // full-time beat before the lobby
   let guestSeatNames: Record<number, string> = {};
   let lastStartConfig: NetStartConfig | null = null; // late joiners get the stage too
   let myName = ''; // asked fresh every time — his call, no stored defaults
@@ -159,6 +160,7 @@ async function boot() {
     seatCursors.clear();
     guestSeatNames = {};
     lastStartConfig = null;
+    guestEndT = 0;
     if (screenName === 'match') return toMenu();
     menu.openPage('root');
     show(menu);
@@ -200,7 +202,9 @@ async function boot() {
     net.onMessage = (m) => {
       if (m.t === 'no-room') { onlineScreen.begin('code', myName); return; }
       if (m.t === 'room-closed') return leaveOnline();
-      if (m.t === 'lobby' && net) { if (screenName === 'menu') onlineScreen.setLobby(m.state, net.seat, false); return; }
+      // the lobby snap is ALWAYS kept fresh — a full-time return must never
+      // render a stale phase (the "captains are building" ghost)
+      if (m.t === 'lobby' && net) { onlineScreen.setLobby(m.state, net.seat, false); return; }
       if (m.t === 'start') { void guestStartMatch(m.config); return; }
       if (m.t === 'draft') {
         // the war room, mirrored: captains act through intents, everyone
@@ -224,7 +228,8 @@ async function boot() {
         return;
       }
       if (m.t === 'snap') { snapPlayer?.push(m.snap); return; }
-      if (m.t === 'end') { if (screenName === 'match') backToLobby(); return; }
+      // full time: let the banner land before walking back to the lobby
+      if (m.t === 'end') { if (screenName === 'match') guestEndT = 2.6; return; }
     };
     net.onClosed = () => { if (netRole === 'guest') leaveOnline(); };
     net.join(code, myName || 'PLAYER');
@@ -266,6 +271,7 @@ async function boot() {
     snapPlayer = netRole === 'guest' ? new SnapPlayer() : null;
     seatCursors.clear();
     lastStartConfig = null;
+    guestEndT = 0;
     screenName = 'menu';
     paused = false;
     ensureAttract();
@@ -458,6 +464,7 @@ async function boot() {
       });
       await loadNationSheets(assets, files);
       party!.phase = 'match';
+      party!.publish(); // every guest's lobby snap now says 'match', not 'draft'
       lastStartConfig = config;
       party!.broadcast({ t: 'start', config });
       startMatch(homeSquad, homeShape, awaySquad, awayShape, { kits: dress.kits, halfLength: dress.halfLength, kickoffFirst: toss });
@@ -560,6 +567,7 @@ async function boot() {
     scene.toast(`${config.teamNames[0]} V ${config.teamNames[1]}`);
     snapPlayer = new SnapPlayer();
     guestSeatNames = config.seatNames;
+    guestEndT = 0;
     controls = new LocalControls();
     cursor = new TeamCursor(config.seatTeams[net?.seat ?? -1] ?? 0, match.world);
     gkIdx = -1;
@@ -580,6 +588,10 @@ async function boot() {
   // One guest render-tick: send my hands, glide to the freshest truth
   function tickMatchGuest(dt: number) {
     if (!match || !scene || !net || !snapPlayer) return;
+    if (guestEndT > 0) {
+      guestEndT -= dt;
+      if (guestEndT <= 0) return backToLobby();
+    }
     const myIdx = snapPlayer.latest?.cursors[net.seat] ?? -1;
     const facing = myIdx >= 0 ? match.world.players[myIdx].facing : vec(1, 0);
     input = controls.sample(dt, kb, facing);

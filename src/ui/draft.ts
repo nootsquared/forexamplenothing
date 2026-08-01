@@ -352,6 +352,7 @@ export class SquadBuilderScreen implements Screen {
   private pickClock = PICK_TIME;
   private cpuTimer = 0;
   private remoteClock = REMOTE_TIME;
+  private doneT = 0; // boards full: the last reveal's beat before finish()
   private filter: Role | 'ALL' = 'ALL';
   private gridSel = 0;
   private gridScroll = 0;
@@ -542,6 +543,7 @@ export class SquadBuilderScreen implements Screen {
     this.gridSel = 0;
     this.gridScroll = 0;
     this.roleSel = 0;
+    this.doneT = 0;
     this.myTitle.text = this.teamNames[this.mySide];
     this.cpuTitle.text = this.teamNames[1 - this.mySide];
     this.header.text = setup.mode === 'draft' ? 'THE DRAFT' : 'THE SLOTS';
@@ -934,7 +936,9 @@ export class SquadBuilderScreen implements Screen {
   private afterTurn() {
     this.refreshPanels();
     if (this.draft.turn >= this.draft.order.length) {
-      this.finish();
+      this.doneT = 2.2; // the final close-up breathes before the boots go on
+      this.turnRefresh();
+      this.layoutPhase();
       return;
     }
     this.cpuTimer = 1.1 + Math.random() * 0.8;
@@ -1006,9 +1010,12 @@ export class SquadBuilderScreen implements Screen {
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
     // tile the shuffle until the strip is long enough to really travel, and
-    // land on the winner's LAST appearance so the ride uses the whole road
+    // land on the winner's LAST appearance so the ride uses the whole road.
+    // Every screen rides the SAME length for a given roll — host and guests
+    // resolve together, so the last pull is never cut mid-spin by kickoff.
     const myRide = op.side === this.mySide && this.iAmCaptain;
-    const travel = myRide ? 32 : 16;
+    const humanRoll = this.ctl[op.side].kind !== 'cpu';
+    const travel = humanRoll ? 32 : 16;
     const strip: { p: StarPlayer; poolIdx: number }[] = [];
     while (strip.length < travel + shuffled.length) strip.push(...shuffled);
     let winStrip = strip.length - 1;
@@ -1027,7 +1034,7 @@ export class SquadBuilderScreen implements Screen {
     const center = this.w / 2;
     this.roll = {
       t: 0,
-      dur: myRide ? 3.4 : 1.8,
+      dur: humanRoll ? 3.4 : 1.8,
       from: center - (cell - REEL_GAP) / 2,
       to: center - (cell - REEL_GAP) / 2 - winStrip * cell + jitter,
       strip,
@@ -1318,7 +1325,7 @@ export class SquadBuilderScreen implements Screen {
       // the reel talks you through it: what to do, or whose hands it's in —
       // and it steps aside while a landed card takes its close-up
       this.promptPulse += dt * 4;
-      this.wheelPrompt.text = this.roll || this.revealCard ? '' :
+      this.wheelPrompt.text = this.roll || this.revealCard || this.draft.turn >= this.draft.order.length ? '' :
         this.myTurn ? 'PICK A SHELF - ENTER ROLLS' : `${this.capNames[this.curSide]} AT THE SLOTS`;
       this.wheelPrompt.alpha = this.myTurn && !this.roll ? 0.7 + 0.3 * Math.sin(this.promptPulse) : 0.7;
       this.wheelPrompt.centerAt(this.w / 2, this.reelY - 36);
@@ -1336,6 +1343,13 @@ export class SquadBuilderScreen implements Screen {
         audio.ui('wheel-tick');
       }
       if (k >= 1) this.resolveRoll();
+      return;
+    }
+
+    // boards full: hold the last close-up on every screen, then the whistle
+    if (this.doneT > 0) {
+      this.doneT -= dt;
+      if (this.doneT <= 0) this.finish();
       return;
     }
 
@@ -1375,6 +1389,11 @@ export class SquadBuilderScreen implements Screen {
 
   private turnRefresh() {
     if (this.phase === 'done') return; // the lock line stands
+    if (this.draft.turn >= this.draft.order.length) {
+      this.turnText.text = 'SQUADS LOCKED - BOOTS ON';
+      this.turnText.centerAt(this.w / 2, 58);
+      return;
+    }
     const pickNo = Math.min(this.draft.turn + 1, this.draft.order.length);
     this.turnText.text = this.phase === 'shape'
       ? (this.iAmCaptain ? 'CALL YOUR SHAPE' : 'THE CAPTAINS CALL THE SHAPES')
