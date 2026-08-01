@@ -2,10 +2,25 @@ import { Container, Graphics } from 'pixi.js';
 import { GameAssets } from './assets';
 import { PixelText } from './pixelText';
 
+const CONTROLS: [string, string][] = [
+  ['WASD MOVE', 'DRAG PASS'],
+  ['SHIFT SPRINT', 'SPACE KICK'],
+  ['J L BEND', 'K TACKLE'],
+  ['E SWITCH', 'T AUTO'],
+  ['1 2 3 PITCH', ''],
+];
+const BOX_W = 306;
+const BOX_H = 5 * 15 + 14;
+
 // All HUD text is baked pixel font — nothing breaks the retro grid
 export class Hud {
   root = new Container();
-  private hint: PixelText;
+  private controlsBox = new Container();
+  private sprintBar = new Graphics();
+  private sprintLabel: PixelText;
+  private stamina = 1;
+  private sprinting = false;
+  private sprintPulse = 0;
   private toast: PixelText;
   private toastTimer = 0;
   private banner: PixelText;
@@ -15,9 +30,28 @@ export class Hud {
   private lastScore = '';
 
   constructor(assets: GameAssets) {
-    this.hint = new PixelText(assets, 2);
-    this.hint.text = 'WASD MOVE - SHIFT SPRINT - SPACE KICK - DRAG PASS - J L BEND - K TACKLE - E SWITCH - T AUTO - 1 2 3 PITCH';
-    this.hint.alpha = 0.72;
+    // Compact control card: two tight columns on a dark backing
+    const backing = new Graphics();
+    backing.rect(0, 0, BOX_W, BOX_H).fill({ color: 0x10141c, alpha: 0.62 });
+    backing.rect(0, 0, BOX_W, 1).fill({ color: 0xfff8e0, alpha: 0.18 });
+    backing.rect(0, BOX_H - 1, BOX_W, 1).fill({ color: 0x000000, alpha: 0.35 });
+    this.controlsBox.addChild(backing);
+    CONTROLS.forEach(([left, right], row) => {
+      const l = new PixelText(assets, 2, 0xd8dce6);
+      l.text = left;
+      l.position.set(8, 8 + row * 15);
+      this.controlsBox.addChild(l);
+      if (right) {
+        const r = new PixelText(assets, 2, 0xd8dce6);
+        r.text = right;
+        r.position.set(164, 8 + row * 15);
+        this.controlsBox.addChild(r);
+      }
+    });
+    this.controlsBox.alpha = 0.9;
+
+    this.sprintLabel = new PixelText(assets, 2, 0xd8dce6);
+    this.sprintLabel.text = 'SPRINT';
 
     this.toast = new PixelText(assets, 4, 0xffe27a);
     this.toast.visible = false;
@@ -27,11 +61,18 @@ export class Hud {
     this.banner.visible = false;
 
     this.scoreText = new PixelText(assets, 4);
-    this.root.addChild(this.scoreTabs, this.scoreText, this.hint, this.toast, this.banner);
+    this.root.addChild(this.scoreTabs, this.scoreText, this.controlsBox, this.sprintLabel, this.sprintBar, this.toast, this.banner);
+  }
+
+  // The controlled body's tank, fed every frame by the scene
+  setSprint(stamina: number, sprinting: boolean) {
+    this.stamina = stamina;
+    this.sprinting = sprinting;
   }
 
   layout(w: number, h: number, score: { left: number; right: number }) {
-    this.hint.position.set(14, h - 28);
+    this.controlsBox.position.set(10, h - BOX_H - 10);
+    this.sprintLabel.position.set(12, h - BOX_H - 30);
     this.toast.centerAt(w / 2, 54);
     this.banner.centerAt(w / 2, h / 2 - 70);
 
@@ -72,6 +113,25 @@ export class Hud {
   }
 
   update(dt: number, w: number, h: number) {
+    // Sprint tank: mint when full, gold when taxed, red when the legs are
+    // gone (sprint locks below 5%) — a bright tip crawls while it refills
+    this.sprintPulse += dt * 7;
+    const bx = 12 + this.sprintLabel.textWidth + 10;
+    const by = h - BOX_H - 31;
+    const bw = 96;
+    const fill = Math.round((bw - 2) * this.stamina);
+    const color = this.stamina < 0.18 ? 0xff5340 : this.stamina < 0.45 ? 0xffd95e : 0x9ff0b8;
+    this.sprintBar.clear();
+    this.sprintBar.rect(bx, by, bw, 9).fill({ color: 0x10141c, alpha: 0.72 });
+    this.sprintBar.rect(bx, by, bw, 1).fill({ color: 0xfff8e0, alpha: 0.18 });
+    if (fill > 0) this.sprintBar.rect(bx + 1, by + 1, fill, 7).fill({ color, alpha: 0.92 });
+    const recovering = !this.sprinting && this.stamina < 0.995;
+    if (recovering && fill > 1) {
+      // the leading edge glows as the tank refills
+      const tip = 0.5 + 0.5 * Math.sin(this.sprintPulse);
+      this.sprintBar.rect(bx + fill - 1, by + 1, 2, 7).fill({ color: 0xffffff, alpha: 0.35 + 0.4 * tip });
+    }
+
     if (this.toastTimer > 0) {
       this.toastTimer -= dt;
       this.toast.alpha = Math.min(1, this.toastTimer / 0.3);

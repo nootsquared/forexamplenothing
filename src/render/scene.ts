@@ -257,6 +257,8 @@ export class Scene {
     this.glowPulse += dt * 2.6;
     this.possessionGlow.visible = this.glowFade > 0.01;
     this.possessionGlow.alpha = this.glowFade * (0.8 + 0.2 * Math.sin(this.glowPulse));
+    const hero = this.world.players[this.controlledIdx];
+    if (hero) this.hud.setSprint(hero.stamina, hero.isSprinting);
     this.hud.layout(w, h, this.world.score);
     this.hud.update(dt, w, h);
   }
