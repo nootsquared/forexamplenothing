@@ -4,6 +4,7 @@ import { createMatch, advanceMatch } from '../src/match';
 import { World } from '../src/sim/world';
 import { PlayerBody, PlayerInput } from '../src/sim/player';
 import { TeamBrain } from '../src/ai/blackboard';
+import { passMargin, leadTarget } from '../src/ai/brain';
 
 const DT = 1 / 60;
 const idle: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
@@ -92,6 +93,57 @@ describe('the 22-brain match', () => {
     for (let i = 0; i < 60 * 5; i++) advanceMatch(match, DT);
     // Smothered and cleared — never left dribbling on the doorstep
     expect(match.world.ball.pos.x).toBeGreaterThan(8);
+  });
+});
+
+describe('the interception model', () => {
+  it('a defender sitting on the lane kills the pass; one wide of it does not', () => {
+    const from = vec(30, 34);
+    const to = vec(50, 34);
+    const onLane = passMargin(from, to, 16, [vec(40, 34.5)]);
+    const wideOf = passMargin(from, to, 16, [vec(40, 44)]);
+    expect(onLane).toBeLessThan(0.15);   // he steps in and takes it
+    expect(wideOf).toBeGreaterThan(0.5); // nine meters away — never getting there
+  });
+
+  it('a pass to a runner is aimed at where he WILL be, not where he stands', () => {
+    const from = vec(45, 34);
+    const runner = vec(60, 34);
+    const runnerVel = vec(0, -5); // sprinting north
+    const meet = leadTarget(from, runner, runnerVel, 16);
+    expect(meet.y).toBeLessThan(32); // led into the run, meters up the lane
+    // And the meeting is honest: ball time ≈ runner time to that point
+    const ballT = Math.hypot(meet.x - from.x, meet.y - from.y) / 16;
+    const runT = Math.hypot(meet.x - runner.x, meet.y - runner.y) / 5;
+    expect(Math.abs(ballT - runT)).toBeLessThan(0.15);
+  });
+
+  it('a fast ball beats a defender the same distance off the line', () => {
+    const from = vec(30, 34);
+    const to = vec(50, 34);
+    const slow = passMargin(from, to, 9, [vec(44, 38.5)]);
+    const fast = passMargin(from, to, 21, [vec(44, 38.5)]);
+    expect(fast).toBeGreaterThan(slow); // pace protects the pass
+  });
+
+  it('in possession the fullbacks push past the middle third while a CB stays home', () => {
+    const world = new World();
+    const mk = (role: 'GK' | 'DF' | 'MF' | 'FW', ax: number, ay: number, x: number, y: number) =>
+      world.players.push(new PlayerBody(vec(x, y), stats, { team: 0, role, anchor: vec(ax, ay), number: 1 }));
+    mk('GK', 0.04, 0.5, 4, 34);
+    mk('DF', 0.2, 0.15, 21, 10);  // fullback
+    mk('DF', 0.18, 0.38, 19, 26); // centre-back
+    mk('DF', 0.18, 0.62, 19, 42); // centre-back
+    mk('DF', 0.2, 0.85, 21, 58);  // fullback
+    mk('FW', 0.72, 0.5, 88, 34);  // holding it up at the away box
+    world.ball.pos = vec(88.5, 34);
+    const bb = new TeamBrain(0);
+    bb.update(world, DT);
+    expect(bb.phase).toBe('attack');
+    const fullback = bb.anchorOf(1);
+    const centreBack = bb.anchorOf(2);
+    expect(fullback.x).toBeGreaterThan(46);              // bombed on to control the middle
+    expect(fullback.x).toBeGreaterThan(centreBack.x + 3); // the insurance stays deeper
   });
 });
 

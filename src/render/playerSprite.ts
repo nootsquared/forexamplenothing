@@ -24,6 +24,7 @@ export class PlayerView {
   private kickTimer = 0;
   private aimPulse = 0;
   private markerPulse = 0;
+  private aiCharge = 0; // estimated windup of an AI body, for the charge tell
   private sheet: string;
 
   constructor(private assets: GameAssets, sheet: string) {
@@ -92,10 +93,12 @@ export class PlayerView {
     }
     this.body.texture = this.assets.players[this.sheet][this.headingRow(p)][frame];
 
-    // Charge tell: a small bar filling above the head — readable at couch distance
-    const charge = aim?.charge ?? 0;
+    // Charge tell above EVERY head, human or brain: you can read a wound-up
+    // strike coming across the pitch — and brace for it
+    this.aiCharge = p.isCharging ? Math.min(0.85, this.aiCharge + dt) : 0;
+    const charge = aim ? aim.charge : this.aiCharge / 0.85;
     this.chargeBar.clear();
-    if (charge > 0) {
+    if (charge > 0.02) {
       const w = 16;
       this.chargeBar.rect(-w / 2, -30, w, 3).fill({ color: 0x1a1626, alpha: 0.7 });
       this.chargeBar.rect(-w / 2 + 0.5, -29.5, (w - 1) * charge, 2).fill(charge > 0.8 ? 0xff5340 : 0xffdf5e);

@@ -81,13 +81,17 @@ export class World {
   private resolveLunge(p: PlayerBody, idx: number) {
     if (p.lungeTimer <= 0 || this.ball.z > (p.id.role === 'GK' ? 1.6 : 0.8)) return;
     if (dist(p.pos, this.ball.pos) > (p.id.role === 'GK' ? 1.15 : 0.8)) return;
-    // A keeper's lunge is a SAVE: the ball dies in the gloves, not poked away
+    // A keeper's lunge is a SAVE: hands, not feet. The ball dies in the
+    // gloves, the game takes a breath, then he picks his distribution.
     if (p.id.role === 'GK') {
-      this.ball.vel = scale(this.ball.vel, 0.05);
-      this.ball.vz = Math.min(this.ball.vz, 0);
+      this.ball.vel = vec();
+      this.ball.z = 0;
+      this.ball.vz = 0;
       this.ball.spin = 0;
+      this.ball.savePrev();
       p.lungeTimer = 0;
       p.touchCooldown = 0.2;
+      this.restartLock = 0.85;
       this.lastTouch = { team: p.id.team, idx };
       this.events.push({ kind: 'save', x: this.ball.pos.x, y: this.ball.pos.y });
       return;
@@ -156,7 +160,7 @@ export class World {
     const dir = rotate(aim, error);
 
     // Driven, not ballooned: capped pace and a low arc that stays playable
-    const speed = 10 + 13 * power;
+    const speed = 10 + 14 * power;
     this.ball.vel = scale(dir, speed);
     this.ball.spin = bend * (0.5 + 0.5 * power) * 0.62;
     this.ball.vz = power > 0.4 ? (power - 0.4) * 7.5 : 0.4;

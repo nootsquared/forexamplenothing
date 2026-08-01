@@ -77,12 +77,16 @@ export class TeamBrain {
       let bestScore = Infinity;
       for (const i of this.myIdxs) {
         if (i === e.idx || world.players[i].id.role === 'GK') continue;
-        const to = vec(world.players[i].pos.x - world.ball.pos.x, world.players[i].pos.y - world.ball.pos.y);
+        const mate = world.players[i];
+        const to = vec(mate.pos.x - world.ball.pos.x, mate.pos.y - world.ball.pos.y);
         const along = (to.x * dir.x + to.y * dir.y) / dLen;
         if (along < 2) continue; // behind or on top of the kick
-        const perp = Math.abs(to.x * dir.y - to.y * dir.x) / dLen;
-        const score = perp * 2 + Math.abs(along - Math.min(along, 30)) * 0.1 + along * 0.05;
-        if (perp < 6 && score < bestScore) { bestScore = score; best = i; }
+        const perp = (to.x * dir.y - to.y * dir.x) / dLen;
+        // A runner whose stride is CLOSING on the ball line owns a led pass —
+        // the ball ahead of him is for HIM, not for whoever stands nearest
+        const closingSpeed = -(perp >= 0 ? 1 : -1) * (mate.vel.x * dir.y - mate.vel.y * dir.x) / dLen;
+        const score = Math.abs(perp) * 2 + along * 0.05 - Math.max(0, closingSpeed) * 1.1;
+        if (Math.abs(perp) < 7 && score < bestScore) { bestScore = score; best = i; }
       }
       this.calledReceiver = best;
       this.calledFor = best >= 0 ? 1.6 : 0;
@@ -94,14 +98,16 @@ export class TeamBrain {
     }
   }
 
-  // The shape is elastic: it slides with the ball, pushes up in possession,
-  // and the back line stays a coherent unit behind the ball
+  // The shape is elastic but never SYNCHRONIZED: every player follows the
+  // ball with his own gain and his own push, so the block breathes instead of
+  // sliding as one welded wall. In possession the line steps UP — fullbacks
+  // join the midfield, centre-backs keep the insurance.
   private updateAnchors(world: World) {
     const ball = world.ball.pos;
     const sgn = this.attackSign();
     const push = this.phase === 'attack' ? 9 : this.phase === 'defend' ? -7 : 0;
     const ballAxis = this.axisOf(ball.x);
-    const defLineAxis = clamp(ballAxis - 9, 10, 42);
+    const defLineAxis = clamp(ballAxis - 9, 10, this.phase === 'attack' ? 54 : 44);
 
     for (const i of this.myIdxs) {
       const p = world.players[i];
@@ -111,15 +117,26 @@ export class TeamBrain {
         this.anchors[i] = vec(baseX, baseY);
         continue;
       }
-      let x = baseX + clamp((ball.x - PITCH.length / 2) * 0.35, -13, 13) + push * sgn;
-      const y = baseY + (ball.y - baseY) * 0.26;
+      const gain = 0.22 + this.grain(i) * 0.22;          // personal ball-follow gain
+      const myPush = push * (0.7 + this.grain(i + 17) * 0.6); // personal step-up appetite
+      let x = baseX + clamp((ball.x - PITCH.length / 2) * gain, -13, 13) + myPush * sgn;
+      const y = baseY + (ball.y - baseY) * (0.2 + this.grain(i + 5) * 0.14);
       if (p.id.role === 'DF') {
-        // Hold the line: no defender sits deeper than the unit needs to be
-        const axis = clamp(this.axisOf(x), 8, defLineAxis);
+        const fullback = Math.abs(p.id.anchor.y - 0.5) > 0.3;
+        let axis = clamp(this.axisOf(x), 8, defLineAxis);
+        if (this.phase === 'attack') {
+          // Fullbacks bomb on to control the middle third; centre-backs stay home
+          axis = fullback ? Math.min(axis + 9, 58) : Math.min(axis, defLineAxis - 3);
+        }
         x = this.team === 0 ? axis : PITCH.length - axis;
       }
       this.anchors[i] = vec(clamp(x, 1, PITCH.length - 1), clamp(y, 1, PITCH.width - 1));
     }
+  }
+
+  // Stable per-player grain in [0,1) — the personality of a shape without personalities
+  private grain(i: number): number {
+    return (Math.imul(i + 1, 2654435761) >>> 0) / 4294967296;
   }
 
   // Press auction: nearest hunts the carrier, next covers behind. Sticky by
