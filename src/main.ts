@@ -7,16 +7,19 @@ import { Match, createMatch, advanceMatch } from './match';
 import { leadTarget, passMargin } from './ai/brain';
 import { AI_PROFILES } from './ai/blackboard';
 import { FORMATIONS, formationsOfSize } from './data/formations';
-import { Draft, quickSplit, toSquad } from './data/draft';
+import { quickSplit, toSquad } from './data/draft';
 import { SquadPlayer } from './data/roster';
 import { Keyboard } from './input/keyboard';
 import { LocalControls } from './input/controls';
 import { TeamCursor } from './input/cursor';
+import { audio } from './audio/engine';
+import { MatchAudio } from './audio/matchAudio';
 import { loadAssets } from './render/assets';
 import { setProjection } from './render/projection';
 import { Scene } from './render/scene';
 import { MOODS } from './render/variants';
-import { Screen, MenuScreen, SetupScreen, DraftScreen, FormationScreen, PauseScreen, StatsScreen, MatchSetup, fmtClock } from './ui/screens';
+import { Screen, MenuScreen, SetupScreen, PauseScreen, StatsScreen, MatchSetup, fmtClock } from './ui/screens';
+import { SquadBuilderScreen } from './ui/draft';
 
 // The shell: menu → (draft → shape) → match → full time → menu. One Pixi
 // app, one loop; a match owns the pitch while it lives, screens own the top.
@@ -34,23 +37,23 @@ async function boot() {
   });
   document.querySelector('#game')!.appendChild(app.canvas);
 
-  const assets = await loadAssets();
+  const [assets] = await Promise.all([loadAssets(), audio.load()]);
   setProjection(assets.manifest.pxPerMeter, assets.manifest.iso);
 
   const kb = new Keyboard();
   let controls = new LocalControls();
 
   // ---- shell state -------------------------------------------------------
-  type ScreenName = 'menu' | 'draft' | 'formation' | 'match' | 'fulltime';
+  type ScreenName = 'menu' | 'draft' | 'match' | 'fulltime';
   let screenName: ScreenName = 'menu';
   let paused = false;
   let fulltimeDelay = 0; // a beat for the FULL TIME banner before the sheet
-  let draftPicks: Draft | null = null;
   let setup: MatchSetup = { mode: 'quick', size: 11, halfLength: 120, difficulty: 1 };
 
   // ---- match-scoped state (rebuilt every kickoff) ------------------------
   let match: Match | null = null;
   let scene: Scene | null = null;
+  const matchAudio = new MatchAudio();
   // The menu's living backdrop: an endless AI-vs-AI kickabout
   let attract: { match: Match; scene: Scene } | null = null;
   let cursor: TeamCursor | null = null;
@@ -69,8 +72,7 @@ async function boot() {
   const uiRoot = new Container();
   const menu = new MenuScreen(assets);
   const setupScreen = new SetupScreen(assets);
-  const draftScreen = new DraftScreen(assets);
-  const formationScreen = new FormationScreen(assets);
+  const draftScreen = new SquadBuilderScreen(assets);
   const pauseScreen = new PauseScreen(assets);
   const statsScreen = new StatsScreen(assets);
   let activeScreen: Screen | null = null;
@@ -81,6 +83,7 @@ async function boot() {
     if (s) {
       s.layout(app.renderer.width, app.renderer.height);
       uiRoot.addChild(s.root);
+      s.enter?.(); // entrances land on freshly laid-out rests
     }
   };
   window.addEventListener('resize', () => activeScreen?.layout(app.renderer.width, app.renderer.height));
@@ -101,8 +104,27 @@ async function boot() {
       },
     }));
 
+  // The soundtrack follows the room: anthem over the menus, the war-room
+  // groove over squad building, and only the stadium during play
+  const routeMusic = () => {
+    if (screenName === 'match') audio.music(null);
+    else if (screenName === 'draft') audio.music('music-draft');
+    else audio.music('music-menu');
+  };
+  audio.setVolumes(menu.musicVol, menu.sfxVol);
+  menu.onAudio = (m, s) => audio.setVolumes(m, s);
+  const unlock = () => {
+    audio.unlock();
+    routeMusic();
+    window.removeEventListener('pointerdown', unlock);
+    window.removeEventListener('keydown', unlock);
+  };
+  window.addEventListener('pointerdown', unlock);
+  window.addEventListener('keydown', unlock);
+
   menu.onQuick = () => { setupScreen.begin('quick'); show(setupScreen); };
   menu.onDraft = () => { setupScreen.begin('draft'); show(setupScreen); };
+  menu.onGamble = () => { setupScreen.begin('gamble'); show(setupScreen); };
   setupScreen.onBack = () => show(menu);
   setupScreen.onStart = (s) => {
     setup = s;
@@ -116,25 +138,14 @@ async function boot() {
         scaleSquad(toSquad(awayStars, FORMATIONS[awayShape]), DIFF_SCALE[s.difficulty]), awayShape,
       );
     } else {
-      draftScreen.begin(s.size);
+      draftScreen.begin(s.size, s.mode);
       screenName = 'draft';
       show(draftScreen);
+      routeMusic();
     }
   };
-  draftScreen.onDone = (draft) => {
-    draftPicks = draft;
-    formationScreen.begin(draft.sides[0].picks, setup.size);
-    screenName = 'formation';
-    show(formationScreen);
-  };
-  formationScreen.onDone = (shape) => {
-    if (!draftPicks) return;
-    const awayShapes = formationsOfSize(setup.size);
-    const awayShape = awayShapes[Math.floor(Math.random() * awayShapes.length)];
-    startMatch(
-      toSquad(draftPicks.sides[0].picks, FORMATIONS[shape]), shape,
-      scaleSquad(toSquad(draftPicks.sides[1].picks, FORMATIONS[awayShape]), DIFF_SCALE[setup.difficulty]), awayShape,
-    );
+  draftScreen.onDone = (home, homeShape, away, awayShape) => {
+    startMatch(home, homeShape, scaleSquad(away, DIFF_SCALE[setup.difficulty]), awayShape);
   };
   pauseScreen.onResume = () => pauseScreen.close(); // slide out, then release
   pauseScreen.onClosed = () => { paused = false; scene?.setHudVisible(true); show(null); };
@@ -151,7 +162,7 @@ async function boot() {
       awaySquad: toSquad(b, FORMATIONS['4-4-2']), awayShape: '4-4-2',
     });
     const s = new Scene(app, assets, m.world, loop);
-    m.world.players.forEach((p) => s.addPlayer(p.id.team === 0 ? 'home' : 'away'));
+    m.world.players.forEach((p, i) => s.addPlayer(p.id.team === 0 ? 'home' : 'away', m.names[i], p.id.number));
     s.setVariant(MOODS[menu.moodIdx]);
     s.setHudVisible(false);
     attract = { match: m, scene: s };
@@ -167,10 +178,12 @@ async function boot() {
     scene?.destroy();
     scene = null;
     match = null;
+    matchAudio.end();
     screenName = 'menu';
     paused = false;
     ensureAttract();
     show(menu);
+    routeMusic();
   }
 
   // ---- match lifecycle ---------------------------------------------------
@@ -191,7 +204,7 @@ async function boot() {
       awayProfile: AI_PROFILES[setup.difficulty],
     });
     scene = new Scene(app, assets, match.world, loop);
-    match.world.players.forEach((p) => scene!.addPlayer(p.id.team === 0 ? 'home' : 'away'));
+    match.world.players.forEach((p, i) => scene!.addPlayer(p.id.team === 0 ? 'home' : 'away', match!.names[i], p.id.number));
     scene.setVariant(MOODS[menu.moodIdx]);
     scene.toast(toss === 0 ? 'RED WINS THE TOSS' : 'BLUE WINS THE TOSS');
     cursor = new TeamCursor(0, match.world);
@@ -211,14 +224,16 @@ async function boot() {
     screenName = 'match';
     paused = false;
     show(null);
+    matchAudio.begin(MOODS[menu.moodIdx].id);
   }
 
   // ---- input plumbing ----------------------------------------------------
-  const uiKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'KeyW', 'KeyS'];
+  const uiKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyF', 'KeyX'];
   for (const code of uiKeys) kb.onPress(code, () => activeScreen?.key(code));
   kb.onPress('Space', () => activeScreen?.key('Space'));
   kb.onPress('Escape', () => {
     if (screenName === 'menu') return activeScreen?.key('Escape'); // menu pages or match setup
+    if (screenName === 'draft') { audio.ui('back'); return toMenu(); } // walk out of the war room
     if (screenName !== 'match' || !match || match.finished) return;
     if (paused) {
       pauseScreen.close(); // slide out; onClosed releases the match
@@ -229,6 +244,7 @@ async function boot() {
       scene?.setHudVisible(false); // the pause board carries the numbers itself
       show(pauseScreen);
     }
+    audio.ui('card');
   });
   kb.onPress('KeyE', () => { if (screenName === 'match' && !paused) cursor?.manualSwitch(); });
   kb.onPress('KeyT', () => {
@@ -236,7 +252,11 @@ async function boot() {
     cursor.autoMode = !cursor.autoMode;
     scene.toast(cursor.autoMode ? 'AUTO SWITCH ON' : 'AUTO SWITCH OFF');
   });
-  MOODS.forEach((mood, i) => kb.onPress(`Digit${i + 1}`, () => { if (screenName === 'match') scene?.setVariant(mood); }));
+  MOODS.forEach((mood, i) => kb.onPress(`Digit${i + 1}`, () => {
+    if (screenName !== 'match') return;
+    scene?.setVariant(mood);
+    matchAudio.setMood(mood.id);
+  }));
 
   // The pull, resolved on the FIELD: direction is anchor-minus-mouse in world
   // space (so the iso squash never skews your aim), power is hand travel
@@ -320,6 +340,7 @@ async function boot() {
     if (keeperAiming) overrides[gkIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
     advanceMatch(match, dt, overrides);
     cursor.update(world, match.teamBrains[0], dt);
+    matchAudio.tick(match, cursor.idx, dt);
 
     // A catch or goal kick for OUR keeper opens the distribution sight —
     // if someone's actually playing
@@ -331,6 +352,7 @@ async function boot() {
         world.holdLock = true;
       }
       if (e.kind === 'fulltime') fulltimeDelay = 1.5;
+      if (e.kind === 'goal' && e.scorer >= 0) scene.toast(`${match.names[e.scorer]}!`);
     }
     if (keeperAiming) {
       const gk = world.players[gkIdx];
@@ -391,6 +413,8 @@ async function boot() {
         scene.setHudVisible(false); // the sheet carries every number now
         statsScreen.begin(match);
         show(statsScreen);
+        matchAudio.end();
+        audio.music('music-menu', 2, 0.65); // the anthem hums under the sheet
       }
     }
   }
@@ -424,7 +448,7 @@ async function boot() {
       get passHints() { return passHints; },
       get keeperAiming() { return keeperAiming; },
       get cursor() { return cursor; },
-      menu, draftScreen, formationScreen,
+      menu, draftScreen,
     };
   }
 }

@@ -1,23 +1,21 @@
 import { Container, Graphics, Sprite } from 'pixi.js';
 import { GameAssets } from '../render/assets';
 import { PixelText } from '../render/pixelText';
+import { audio } from '../audio/engine';
 import { MOODS } from '../render/variants';
-import { PixelList, stepShade } from './kit';
-import { FORMATIONS, formationsOfSize } from '../data/formations';
-import { StarPlayer } from '../data/players';
-import {
-  Draft, createDraft, canPick, pick, pickAcademy, aiPickIndex, needsOf, fillWithAcademy, assignToFormation,
-} from '../data/draft';
+import { PixelList, Reveal, centerShade, stepShade } from './kit';
 import { Match } from '../match';
 
-// The game's screens: menu, draft, formation, pause, full-time. Each owns a
-// root container; the shell shows one at a time and routes keys into it.
+// The shell's screens: menu, setup, pause, full-time. The squad builder
+// (draft + gamble) lives in draft.ts. Each screen owns a root container;
+// the shell shows one at a time and routes keys into it.
 
 export interface Screen {
   root: Container;
   key(code: string): void;
   layout(w: number, h: number): void;
   update?(dt: number): void;
+  enter?(): void; // play the entrance — called after layout when shown
 }
 
 // One crisp left edge for every shade screen; list markers hang in the gutter
@@ -30,22 +28,26 @@ export const fmtClock = (t: number) =>
   `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 
 // What a play mode gets configured with before kickoff
+export type PlayMode = 'quick' | 'draft' | 'gamble';
 export interface MatchSetup {
-  mode: 'quick' | 'draft';
+  mode: PlayMode;
   size: number;
   halfLength: number;
   difficulty: 0 | 1 | 2;
 }
 
 // ---------------------------------------------------------------- main menu
-// A live AI match plays behind this screen; the menu sits on a pixel-stepped
-// shade on the left with the baked wordmark and the game's own rolling ball.
+// A live AI match plays behind this screen; the menu stands CENTERED in a
+// stepped spotlight pillar — wordmark up top, options stacked beneath, the
+// game's own ball rolling across the bottom of the frame.
 export class MenuScreen implements Screen {
   root = new Container();
   onQuick: () => void = () => {};
   onDraft: () => void = () => {};
+  onGamble: () => void = () => {};
   onMood: (moodIdx: number) => void = () => {};
   onFps: (cap: number | null) => void = () => {};
+  onAudio: (music: number, sfx: number) => void = () => {};
   moodIdx = 0;
   autoSwitch = false;
   fpsIdx = 0; // into FPS_CHOICES
@@ -56,10 +58,13 @@ export class MenuScreen implements Screen {
   private title: Sprite;
   private ball: Sprite;
   private ballPhase = 0;
+  private ballX = 0;
   private sub: PixelText;
   private crumb: PixelText;
   private foot: PixelText;
   private shade = new Graphics();
+  private reveal = new Reveal();
+  private w = 1280;
   private h = 720;
 
   constructor(private assets: GameAssets) {
@@ -71,25 +76,25 @@ export class MenuScreen implements Screen {
     this.foot.text = 'W S PICK - ENTER GO - ESC BACK';
     this.ball = new Sprite(assets.ballFrames[0][0]);
     this.ball.anchor.set(0.5);
-    this.ball.scale.set(3);
-    this.list = new PixelList(assets, 3, 30, 6);
+    this.ball.scale.set(2);
+    this.list = new PixelList(assets, 3, 34, 7, 13, true);
     this.list.onPick = (i) => this.act(i);
     this.root.addChild(this.shade, this.title, this.sub, this.ball, this.crumb, this.list.root, this.foot);
-    this.setPage('root');
+    this.setPage('root', false);
   }
 
-  private setPage(page: 'root' | 'play' | 'settings') {
+  private setPage(page: 'root' | 'play' | 'settings', animate = true) {
     this.page = page;
     this.list.sel = 0; // a fresh page starts at its top
     this.crumb.text = page === 'root' ? 'MAIN MENU' : page === 'play' ? 'PLAY' : 'SETTINGS';
-    this.refresh();
+    this.refresh(animate);
   }
 
-  private refresh() {
+  private refresh(animate = false) {
     const cap = FPS_CHOICES[this.fpsIdx];
     const rows =
       this.page === 'root' ? [{ label: 'PLAY' }, { label: 'SETTINGS' }] :
-      this.page === 'play' ? [{ label: 'QUICK MATCH' }, { label: 'DRAFT MODE' }, { label: 'BACK' }] :
+      this.page === 'play' ? [{ label: 'QUICK MATCH' }, { label: 'DRAFT MODE' }, { label: 'GAMBLE MODE' }, { label: 'BACK' }] :
       [
         { label: 'PITCH', value: MOODS[this.moodIdx].name.toUpperCase() },
         { label: 'AUTO SWITCH', value: this.autoSwitch ? 'ON' : 'OFF' },
@@ -98,7 +103,7 @@ export class MenuScreen implements Screen {
         { label: 'SFX VOL', value: String(this.sfxVol) },
         { label: 'BACK' },
       ];
-    this.list.setRows(rows.map((r) => ({ ...r, enabled: true })), true);
+    this.list.setRows(rows.map((r) => ({ ...r, enabled: true })), true, animate);
   }
 
   private act(i: number) {
@@ -107,13 +112,14 @@ export class MenuScreen implements Screen {
     } else if (this.page === 'play') {
       if (i === 0) this.onQuick();
       else if (i === 1) this.onDraft();
+      else if (i === 2) this.onGamble();
       else this.setPage('root');
     } else {
       if (i === 0) { this.moodIdx = (this.moodIdx + 1) % MOODS.length; this.onMood(this.moodIdx); }
       else if (i === 1) this.autoSwitch = !this.autoSwitch;
       else if (i === 2) { this.fpsIdx = (this.fpsIdx + 1) % FPS_CHOICES.length; this.onFps(FPS_CHOICES[this.fpsIdx]); }
-      else if (i === 3) this.musicVol = (this.musicVol + 1) % 11;
-      else if (i === 4) this.sfxVol = (this.sfxVol + 1) % 11;
+      else if (i === 3) { this.musicVol = (this.musicVol + 1) % 11; this.onAudio(this.musicVol, this.sfxVol); }
+      else if (i === 4) { this.sfxVol = (this.sfxVol + 1) % 11; this.onAudio(this.musicVol, this.sfxVol); }
       else return this.setPage('root');
       this.refresh();
     }
@@ -123,39 +129,57 @@ export class MenuScreen implements Screen {
     if (code === 'ArrowUp' || code === 'KeyW') this.list.move(-1);
     if (code === 'ArrowDown' || code === 'KeyS') this.list.move(1);
     if (code === 'Enter' || code === 'Space') this.list.activate();
-    if (code === 'Escape' && this.page !== 'root') this.setPage('root');
+    if (code === 'Escape' && this.page !== 'root') { audio.ui('back'); this.setPage('root'); }
   }
 
-  // The ball rolls in place beside the wordmark, breathing on the shade
+  // Shown fresh: back to the front page, the whole stack materializing
+  enter() {
+    this.page = 'root';
+    this.list.sel = 0;
+    this.crumb.text = 'MAIN MENU';
+    this.reveal.clear();
+    this.reveal.add(this.title, 0);
+    this.reveal.add(this.sub, 0.06);
+    this.reveal.add(this.crumb, 0.12);
+    this.reveal.add(this.foot, 0.34);
+    this.reveal.play();
+    this.refresh(true);
+  }
+
+  // The ball crosses the bottom of the screen, rolling for real
   update(dt: number) {
     const phases = this.assets.manifest.ball.phases;
-    this.ballPhase += dt * 9;
+    this.ballPhase += dt * 10;
+    this.ballX += dt * 42;
+    if (this.ballX > this.w + 60) this.ballX = -60;
     this.ball.texture = this.assets.ballFrames[0][Math.floor(this.ballPhase) % phases];
-    this.ball.position.y = this.h * 0.175 + Math.sin(this.ballPhase * 0.55) * 5;
+    this.ball.position.set(Math.round(this.ballX), this.h - 27);
+    this.list.update(dt);
+    this.reveal.update(dt);
   }
 
   layout(w: number, h: number) {
+    this.w = w;
     this.h = h;
-    stepShade(this.shade, w, h);
-    const scale = Math.max(6, Math.min(11, Math.floor((w * 0.3) / this.assets.manifest.title.w)));
+    centerShade(this.shade, w, h);
+    const scale = Math.max(6, Math.min(12, Math.floor((w * 0.34) / this.assets.manifest.title.w)));
     this.title.scale.set(scale);
-    this.title.position.set(LEFT - scale, h * 0.09); // the bake's 1px outline inset lands ON the edge
-    this.sub.position.set(LEFT, h * 0.09 + this.title.height + 10);
-    this.ball.position.set(LEFT - scale + this.title.width + 46, h * 0.175);
-    this.crumb.position.set(LEFT, h * 0.44);
-    this.list.root.position.set(LEFT - 16, h * 0.49); // labels at LEFT, marker in the gutter
-    this.foot.position.set(LEFT, h - 44);
+    this.title.position.set(Math.round(w / 2 - this.title.width / 2), Math.round(h * 0.1));
+    this.sub.centerAt(w / 2, h * 0.1 + this.title.height + 12);
+    this.crumb.centerAt(w / 2, h * 0.42);
+    this.list.root.position.set(Math.round(w / 2), Math.round(h * 0.47));
+    this.foot.centerAt(w / 2, h - 44);
   }
 }
 
 // ------------------------------------------------------------- match setup
 // Every play mode passes through here: sides, half length, difficulty, go.
-// It lives over the same attract match as the menu.
+// Centered on the same spotlight pillar as the menu, over the attract match.
 export class SetupScreen implements Screen {
   root = new Container();
   onStart: (setup: MatchSetup) => void = () => {};
   onBack: () => void = () => {};
-  private mode: 'quick' | 'draft' = 'quick';
+  private mode: PlayMode = 'quick';
   private size = 11;
   private halfLength = HALF_CHOICES[1];
   private difficulty: 0 | 1 | 2 = 1;
@@ -164,6 +188,7 @@ export class SetupScreen implements Screen {
   private title: PixelText;
   private foot: PixelText;
   private shade = new Graphics();
+  private reveal = new Reveal();
 
   constructor(assets: GameAssets) {
     this.title = new PixelText(assets, 5, 0xffd95e);
@@ -171,26 +196,26 @@ export class SetupScreen implements Screen {
     this.crumb.text = 'MATCH SETUP';
     this.foot = new PixelText(assets, 2, 0x69707f);
     this.foot.text = 'W S PICK - ENTER GO - ESC BACK';
-    this.list = new PixelList(assets, 3, 30, 6);
+    this.list = new PixelList(assets, 3, 34, 6, 13, true);
     this.list.onPick = (i) => this.act(i);
     this.root.addChild(this.shade, this.title, this.crumb, this.list.root, this.foot);
   }
 
-  begin(mode: 'quick' | 'draft') {
+  begin(mode: PlayMode) {
     this.mode = mode;
-    this.title.text = mode === 'quick' ? 'QUICK MATCH' : 'DRAFT MODE';
+    this.title.text = mode === 'quick' ? 'QUICK MATCH' : mode === 'draft' ? 'DRAFT MODE' : 'GAMBLE MODE';
     this.list.sel = 0;
     this.refresh();
   }
 
-  private refresh() {
+  private refresh(animate = false) {
     this.list.setRows([
       { label: 'SIDES', value: `${this.size} V ${this.size}`, enabled: true },
       { label: 'HALF LENGTH', value: fmtClock(this.halfLength), enabled: true },
       { label: 'DIFFICULTY', value: DIFF_NAMES[this.difficulty], enabled: true },
       { label: mode0(this.mode), enabled: true },
       { label: 'BACK', enabled: true },
-    ], true);
+    ], true, animate);
   }
 
   private act(i: number) {
@@ -209,199 +234,34 @@ export class SetupScreen implements Screen {
     if (code === 'ArrowUp' || code === 'KeyW') this.list.move(-1);
     if (code === 'ArrowDown' || code === 'KeyS') this.list.move(1);
     if (code === 'Enter' || code === 'Space') this.list.activate();
-    if (code === 'Escape') this.onBack();
+    if (code === 'Escape') { audio.ui('back'); this.onBack(); }
   }
 
-  layout(w: number, h: number) {
-    stepShade(this.shade, w, h);
-    this.title.position.set(LEFT, h * 0.14);
-    this.crumb.position.set(LEFT, h * 0.14 + 56);
-    this.list.root.position.set(LEFT - 16, h * 0.34);
-    this.foot.position.set(LEFT, h - 44);
-  }
-}
-
-const mode0 = (mode: 'quick' | 'draft') => (mode === 'quick' ? 'KICK OFF!' : 'TO THE DRAFT!');
-
-// ------------------------------------------------------------------- draft
-export class DraftScreen implements Screen {
-  root = new Container();
-  onDone: (draft: Draft) => void = () => {};
-  private draft!: Draft;
-  private aiTimer = 0;
-  private list: PixelList;
-  private header: PixelText;
-  private budgetLine: PixelText;
-  private needsLine: PixelText;
-  private squadTitle: PixelText;
-  private squadLines: PixelText[] = [];
-  private backdrop = new Graphics();
-  private squadPanel = new Container();
-
-  constructor(private assets: GameAssets) {
-    this.header = new PixelText(assets, 3, 0xffd95e);
-    this.budgetLine = new PixelText(assets, 2, 0x9ff0b8);
-    this.needsLine = new PixelText(assets, 2, 0x8a91a0);
-    this.squadTitle = new PixelText(assets, 2, 0xffd95e);
-    this.squadTitle.text = 'YOUR SQUAD';
-    this.list = new PixelList(assets, 2, 15, 18);
-    this.list.onPick = (i) => this.humanPick(i);
-    this.root.addChild(this.backdrop, this.header, this.budgetLine, this.needsLine, this.list.root, this.squadPanel);
-    this.squadPanel.addChild(this.squadTitle);
+  enter() {
+    this.reveal.clear();
+    this.reveal.add(this.title, 0);
+    this.reveal.add(this.crumb, 0.07);
+    this.reveal.add(this.foot, 0.3);
+    this.reveal.play();
+    this.refresh(true);
   }
 
-  begin(size = 11) {
-    const first = Math.random() < 0.5 ? 0 : 1;
-    this.draft = createDraft(first as 0 | 1, size);
-    this.aiTimer = 0.8;
-    this.refresh();
-  }
-
-  private get myTurn(): boolean {
-    return this.draft.order[this.draft.turn] === 0;
-  }
-
-  private rowsForPool() {
-    const side = this.draft.sides[0];
-    const rows = this.draft.pool.map((p) => ({
-      label: `${p.name.padEnd(12)}${p.role.padEnd(3)}${String(p.ovr).padEnd(4)}${p.price}M`,
-      enabled: this.myTurn && canPick(side, p),
-    }));
-    rows.push({ label: 'ACADEMY PICK  62  0.9M', enabled: this.myTurn });
-    return rows;
-  }
-
-  private refresh() {
-    if (this.draft.turn >= this.draft.order.length) {
-      fillWithAcademy(this.draft.sides[0]);
-      fillWithAcademy(this.draft.sides[1]);
-      this.onDone(this.draft);
-      return;
-    }
-    const pickNo = this.draft.turn + 1;
-    this.header.text = this.myTurn
-      ? `PICK ${pickNo} OF ${this.draft.order.length} - YOUR CALL`
-      : `PICK ${pickNo} OF ${this.draft.order.length} - CPU THINKING`;
-    const side = this.draft.sides[0];
-    const needs = needsOf(side);
-    this.budgetLine.text = `BUDGET ${side.budget.toFixed(1)}M`;
-    this.needsLine.text = `NEED GK ${needs.GK} DF ${needs.DF} MF ${needs.MF} FW ${needs.FW}`;
-    this.list.setRows(this.rowsForPool(), true);
-    for (const line of this.squadLines) line.destroy();
-    this.squadLines = side.picks.map((p, i) => {
-      const t = new PixelText(this.assets, 2, 0xe8ecf4);
-      t.text = `${p.role.padEnd(3)}${p.name}`;
-      t.position.set(0, 22 + i * 14);
-      this.squadPanel.addChild(t);
-      return t;
-    });
-  }
-
-  private humanPick(i: number) {
-    if (!this.myTurn) return;
-    if (i >= this.draft.pool.length) {
-      const needs = needsOf(this.draft.sides[0]);
-      const role = (['GK', 'DF', 'MF', 'FW'] as const).find((r) => needs[r] > 0);
-      if (role) pickAcademy(this.draft, role);
-    } else {
-      pick(this.draft, i);
-    }
-    this.aiTimer = 0.55;
-    this.refresh();
-  }
-
-  // CPU turns tick on a small dramatic delay
   update(dt: number) {
-    if (!this.draft || this.draft.turn >= this.draft.order.length || this.myTurn) return;
-    this.aiTimer -= dt;
-    if (this.aiTimer > 0) return;
-    const i = aiPickIndex(this.draft);
-    if (i >= 0) {
-      pick(this.draft, i);
-    } else {
-      const needs = needsOf(this.draft.sides[1]);
-      const role = (['GK', 'DF', 'MF', 'FW'] as const).find((r) => needs[r] > 0);
-      if (role) pickAcademy(this.draft, role);
-      else this.draft.turn++;
-    }
-    this.aiTimer = 0.55;
-    this.refresh();
-  }
-
-  key(code: string) {
-    if (code === 'ArrowUp' || code === 'KeyW') this.list.move(-1);
-    if (code === 'ArrowDown' || code === 'KeyS') this.list.move(1);
-    if (code === 'Enter' || code === 'Space') this.list.activate();
+    this.list.update(dt);
+    this.reveal.update(dt);
   }
 
   layout(w: number, h: number) {
-    this.backdrop.clear();
-    this.backdrop.rect(0, 0, w, h).fill(0x0a0e14);
-    this.backdrop.rect(30, 96, 560, h - 150).fill({ color: 0x10141c, alpha: 0.9 });
-    this.backdrop.rect(620, 96, 320, h - 150).fill({ color: 0x10141c, alpha: 0.9 });
-    this.header.position.set(30, 26);
-    this.budgetLine.position.set(30, 62);
-    this.needsLine.position.set(240, 62);
-    this.list.root.position.set(44, 110);
-    this.squadPanel.position.set(640, 110);
+    centerShade(this.shade, w, h);
+    this.title.centerAt(w / 2, h * 0.16);
+    this.crumb.centerAt(w / 2, h * 0.16 + 52);
+    this.list.root.position.set(Math.round(w / 2), Math.round(h * 0.36));
+    this.foot.centerAt(w / 2, h - 44);
   }
 }
 
-// -------------------------------------------------------------- formations
-export class FormationScreen implements Screen {
-  root = new Container();
-  onDone: (shape: string) => void = () => {};
-  private picks: StarPlayer[] = [];
-  private list: PixelList;
-  private header: PixelText;
-  private preview: PixelText[] = [];
-  private backdrop = new Graphics();
-  private shapes = formationsOfSize(11);
-
-  constructor(private assets: GameAssets) {
-    this.header = new PixelText(assets, 3, 0xffd95e);
-    this.header.text = 'PICK YOUR SHAPE';
-    this.list = new PixelList(assets, 3, 24, 8);
-    this.list.onPick = (i) => this.onDone(this.shapes[i]);
-    this.list.onSelect = () => { if (this.picks.length) this.renderPreview(); };
-    this.root.addChild(this.backdrop, this.header, this.list.root);
-  }
-
-  begin(picks: StarPlayer[], size = 11) {
-    this.picks = picks;
-    this.shapes = formationsOfSize(size);
-    this.list.setRows(this.shapes.map((s) => ({ label: s, enabled: true })));
-    this.renderPreview();
-  }
-
-  private renderPreview() {
-    for (const t of this.preview) t.destroy();
-    const shape = FORMATIONS[this.shapes[this.list.sel]];
-    const xi = assignToFormation(this.picks, shape.slots);
-    this.preview = xi.map((p, i) => {
-      const t = new PixelText(this.assets, 2, 0xe8ecf4);
-      t.text = `${shape.slots[i].role.padEnd(3)}${p.name}`;
-      t.position.set(430, 120 + i * 15);
-      this.root.addChild(t);
-      return t;
-    });
-  }
-
-  key(code: string) {
-    if (code === 'ArrowUp' || code === 'KeyW') { this.list.move(-1); this.renderPreview(); }
-    if (code === 'ArrowDown' || code === 'KeyS') { this.list.move(1); this.renderPreview(); }
-    if (code === 'Enter' || code === 'Space') this.list.activate();
-  }
-
-  layout(w: number, h: number) {
-    this.backdrop.clear();
-    this.backdrop.rect(0, 0, w, h).fill(0x0a0e14);
-    this.backdrop.rect(60, 96, 300, h - 160).fill({ color: 0x10141c, alpha: 0.9 });
-    this.backdrop.rect(400, 96, 340, h - 160).fill({ color: 0x10141c, alpha: 0.9 });
-    this.header.position.set(60, 30);
-    this.list.root.position.set(80, 116);
-  }
-}
+const mode0 = (mode: PlayMode) =>
+  mode === 'quick' ? 'KICK OFF!' : mode === 'draft' ? 'TO THE DRAFT!' : 'TO THE WHEEL!';
 
 // ------------------------------------------------------------------- pause
 // The team talk: the frozen match stays visible on the right while the shade
@@ -483,6 +343,7 @@ export class PauseScreen implements Screen {
   }
 
   update(dt: number) {
+    this.list.update(dt);
     const target = this.closing ? 0 : 1;
     const dir = Math.sign(target - this.anim);
     if (dir !== 0) {

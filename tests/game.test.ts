@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { vec } from '../src/core/math';
 import { createMatch, advanceMatch } from '../src/match';
 import { createDraft, aiPickIndex, pick, pickAcademy, needsOf, canPick, QUOTA, SQUAD_SIZE, quickSplit, toSquad } from '../src/data/draft';
-import { priceOf, TOP_50 } from '../src/data/players';
+import { priceOf, PLAYER_POOL } from '../src/data/players';
 import { FORMATIONS } from '../src/data/formations';
 import { Role } from '../src/data/formations';
 import { PITCH } from '../src/sim/constants';
@@ -79,15 +79,15 @@ describe('the draft', () => {
       (Object.keys(QUOTA) as Role[]).forEach((r) => expect(needs[r]).toBe(0));
     }
     // snake order means the two spends stay in the same league
-    const spend = draft.sides.map((s) => 100 - s.budget);
-    expect(Math.abs(spend[0] - spend[1])).toBeLessThan(45);
+    const spend = draft.sides.map((s) => 200 - s.budget);
+    expect(Math.abs(spend[0] - spend[1])).toBeLessThan(90);
   });
 
   it('canPick always leaves enough budget to finish the squad', () => {
     const draft = createDraft(0);
     const side = draft.sides[0];
     side.budget = 40;
-    const star = TOP_50[0]; // 36M+ superstar
+    const star = PLAYER_POOL[0]; // 36M+ superstar
     expect(canPick(side, star)).toBe(false); // 10 slots left would go unpaid
   });
 
@@ -106,7 +106,7 @@ describe('small-sided football', () => {
   it('a 5-a-side draft and quick split both field legal fives', () => {
     const draft = createDraft(0, 5);
     expect(draft.order.length).toBe(10);
-    expect(draft.sides[0].budget).toBe(45);
+    expect(draft.sides[0].budget).toBe(90);
     while (draft.turn < draft.order.length) {
       const i = aiPickIndex(draft);
       if (i >= 0) pick(draft, i);

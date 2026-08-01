@@ -3,6 +3,7 @@ import { lerp } from './interp';
 import { Vec2, len, norm } from '../core/math';
 import { PlayerBody } from '../sim/player';
 import { GameAssets } from './assets';
+import { PixelText } from './pixelText';
 import { project, pxPerMeter, squash } from './projection';
 
 // Charge + resolved aim the local player's view needs to draw its tell —
@@ -32,8 +33,10 @@ export class PlayerView {
   private chevPulse = 0;
   private aiCharge = 0; // estimated windup of an AI body, for the charge tell
   private sheet: string;
+  private nameLabel: PixelText;
+  private backNo: PixelText;
 
-  constructor(private assets: GameAssets, sheet: string) {
+  constructor(private assets: GameAssets, sheet: string, name = '', number = 0) {
     this.sheet = sheet;
     this.shadow = new Sprite(assets.shadow);
     this.shadow.anchor.set(0.5, 0.5);
@@ -63,12 +66,23 @@ export class PlayerView {
       chev.visible = false;
       chev.scale.set(1.4);
     }
-    this.root.addChild(this.marker, this.openHint, this.shadow, this.aimArrow, this.body, this.chargeBar, this.youChev, this.nextChev);
+    // Who IS this body: a whisper of a name at the boots, the shirt number
+    // between the shoulders whenever the back is turned
+    this.nameLabel = new PixelText(assets, 1, 0xdfe4ee, 'micro');
+    this.nameLabel.text = name;
+    this.nameLabel.alpha = 0.8;
+    this.nameLabel.centerAt(0, 6);
+    this.backNo = new PixelText(assets, 1, 0xf4f6fa, 'micro');
+    this.backNo.text = number > 0 ? String(number) : '';
+    this.backNo.visible = false;
+    this.root.addChild(this.marker, this.openHint, this.shadow, this.aimArrow, this.body, this.backNo, this.chargeBar, this.nameLabel, this.youChev, this.nextChev);
   }
 
   setControlled(on: boolean) {
     this.marker.visible = on;
     this.youChev.visible = on;
+    this.nameLabel.tint = on ? 0xffe27a : 0xdfe4ee;
+    this.nameLabel.alpha = on ? 1 : 0.8;
   }
 
   setSwitchTarget(on: boolean) {
@@ -134,7 +148,18 @@ export class PlayerView {
       frame = anims.idleStart + (Math.floor(this.idlePhase) % anims.idleLen);
       this.animPhase = 0;
     }
-    this.body.texture = this.assets.players[this.sheet][this.headingRow(p)][frame];
+    const row = this.headingRow(p);
+    this.body.texture = this.assets.players[this.sheet][row][frame];
+
+    // The shirt number lives between the shoulders — visible whenever the
+    // back is turned to camera, riding the run cycle's bob
+    const backTurned = row >= 10 && row <= 14 && p.lungeTimer <= 0 && p.recoverTimer <= 0.15;
+    this.backNo.visible = backTurned;
+    if (backTurned) {
+      const bob = speed > 0.7 && frame % 2 === 1 ? -1 : 0;
+      const { baseline } = this.assets.manifest.player;
+      this.backNo.position.set(Math.round(-this.backNo.textWidth / 2), Math.round(-baseline * 0.72) + bob);
+    }
 
     // Charge tell above EVERY head, human or brain: you can read a wound-up
     // strike coming across the pitch — and brace for it

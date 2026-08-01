@@ -1,10 +1,10 @@
 import { Formation, Role } from './formations';
 import { SquadPlayer } from './roster';
-import { StarPlayer, TOP_50, academyPlayer } from './players';
+import { StarPlayer, PLAYER_POOL, academyPlayer } from './players';
 
-// The pre-match draft, as specced: coin flip, snake picks (ABBA), a shared
-// 100M budget each, and role quotas so both sides leave with a real XI.
-// Pure logic — the UI renders it, the tests drive it headless.
+// The pre-match draft, as specced: coin flip, snake picks (ABBA), a budget
+// deep enough for a GALAXY of stars, and role quotas so both sides leave
+// with a real XI. Pure logic — the UI renders it, the tests drive it headless.
 
 // Role quotas and budgets scale with the side size — 5s, 7s, or full 11s
 export function quotaFor(size: number): Record<Role, number> {
@@ -13,7 +13,7 @@ export function quotaFor(size: number): Record<Role, number> {
   return { GK: 1, DF: 4, MF: 4, FW: 2 };
 }
 export function budgetFor(size: number): number {
-  return size === 5 ? 45 : size === 7 ? 65 : 100;
+  return size === 5 ? 90 : size === 7 ? 130 : 200;
 }
 export const QUOTA = quotaFor(11);
 export const SQUAD_SIZE = 11;
@@ -41,7 +41,7 @@ export function createDraft(first: 0 | 1, size = 11): Draft {
   }
   const side = (): DraftSide => ({ budget: budgetFor(size), picks: [], quota: quotaFor(size), size });
   return {
-    pool: [...TOP_50].sort((x, y) => y.ovr - x.ovr),
+    pool: [...PLAYER_POOL].sort((x, y) => y.ovr - x.ovr),
     sides: [side(), side()],
     order,
     turn: 0,
@@ -118,24 +118,58 @@ export function assignToFormation(picks: StarPlayer[], slots: { role: Role }[]):
   });
 }
 
-// Stars laid onto a shape as sim squad players — the slot is the position played
+// Stars laid onto a shape as sim squad players wearing their REAL shirt
+// numbers — collisions (two drafted tens) settle for the lowest free shirt
 export function toSquad(stars: StarPlayer[], shape: Formation): SquadPlayer[] {
-  return assignToFormation(stars, shape.slots).map((p, i) => ({
-    number: i + 1,
-    name: p.name,
-    role: shape.slots[i].role,
-    stats: p.stats,
-  }));
+  const assigned = assignToFormation(stars, shape.slots);
+  const worn = new Set<number>();
+  return assigned.map((p, i) => {
+    let number = p.number;
+    if (number <= 0 || worn.has(number)) {
+      number = 1;
+      while (worn.has(number)) number++;
+    }
+    worn.add(number);
+    return { number, name: p.name, role: shape.slots[i].role, stats: p.stats };
+  });
 }
 
-// Quick match: the top 50 dealt into two fair sides, alternating down each
-// role's rank with an offset so neither side hoards every number one
+// The UI's arranged XI, slot-for-slot: stars[i] PLAYS shape.slots[i] — no
+// auto-assignment second-guessing the manager's drag-and-drop
+export function toSquadOrdered(stars: StarPlayer[], shape: Formation): SquadPlayer[] {
+  const worn = new Set<number>();
+  return stars.map((p, i) => {
+    let number = p.number;
+    if (number <= 0 || worn.has(number)) {
+      number = 1;
+      while (worn.has(number)) number++;
+    }
+    worn.add(number);
+    return { number, name: p.name, role: shape.slots[i].role, stats: p.stats };
+  });
+}
+
+// Where a fresh signing stands: his own role's open slot first, else the
+// nearest role still empty
+export function bestOpenSlot(slots: { role: Role }[], taken: (number | null)[], role: Role): number {
+  let best = -1;
+  let bestScore = -Infinity;
+  slots.forEach((s, i) => {
+    if (taken[i] !== null) return;
+    const score = -Math.abs(ROLE_AXIS[s.role] - ROLE_AXIS[role]) * 10 - i * 0.01;
+    if (score > bestScore) { bestScore = score; best = i; }
+  });
+  return best;
+}
+
+// Quick match: the world's best dealt into two fair sides, alternating down
+// each role's rank with an offset so neither side hoards every number one
 export function quickSplit(size = 11): [StarPlayer[], StarPlayer[]] {
   const quota = quotaFor(size);
   const a: StarPlayer[] = [];
   const b: StarPlayer[] = [];
   (['GK', 'DF', 'MF', 'FW'] as Role[]).forEach((role, r) => {
-    TOP_50.filter((p) => p.role === role)
+    PLAYER_POOL.filter((p) => p.role === role)
       .sort((x, y) => y.ovr - x.ovr)
       .slice(0, quota[role] * 2)
       .forEach((p, i) => (((i + r) % 2 === 0) ? a : b).push(p));

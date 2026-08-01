@@ -160,7 +160,7 @@ export function advanceMatch(match: Match, dt: number, overrides: Record<number,
       }
     }
     if (e.kind === 'steal' && world.lastTouch) s.tacklesWon[world.lastTouch.team]++;
-    if (e.kind === 'save' && world.lastTouch) s.saves[world.lastTouch.team]++;
+    if ((e.kind === 'save' || e.kind === 'parry') && world.lastTouch) s.saves[world.lastTouch.team]++;
     if (e.kind === 'restart' && e.restart === 'corner') s.corners[e.team]++;
     if (e.kind === 'restart' && e.restart === 'throwin') s.throwins[e.team]++;
     if (e.kind === 'goal' && e.scorer >= 0) s.goals[e.scorer] = (s.goals[e.scorer] ?? 0) + 1;

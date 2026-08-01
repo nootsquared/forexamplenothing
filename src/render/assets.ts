@@ -10,11 +10,15 @@ export interface Manifest {
   };
   ball: { size: number; dirs: number; phases: number; worldR: number };
   fx: { dust: { size: number; frames: number }; grass: { size: number; frames: number }; ring: { size: number; frames: number }; blade: { w: number; h: number; frames: number }; aim: { size: number; frames: number }; chev: { w: number; h: number; frames: number } };
-  font: { cellW: number; cellH: number; glyphs: string };
+  font: {
+    cellW: number; cellH: number; glyphs: string; widths: Record<string, number>;
+    micro: { cellW: number; cellH: number; glyphs: string; widths: Record<string, number> };
+  };
   title: { w: number; h: number };
   stand: { h: number; frames: number };
   boards: { h: number };
   flag: { w: number; h: number; frames: number };
+  cards: { w: number; h: number; figW: number; figH: number; rarities: string[]; coin: number; wheel: number };
   variants: { id: string; name: string; pitch: string }[];
   playerSheets: string[];
 }
@@ -34,6 +38,7 @@ export interface GameAssets {
   chevFrames: Texture[]; // [0] solid gold "you", [1] white "E takes this man"
   flagFrames: Texture[];
   glyphs: Record<string, Texture>;
+  microGlyphs: Record<string, Texture>;
   title: Texture; // the baked GOLAZO wordmark
   shadow: Texture;
   skid: Texture;
@@ -42,6 +47,11 @@ export interface GameAssets {
   boards: Texture;
   dugout: Texture;
   cloud: Texture;
+  cardFrames: Record<string, Texture>;   // rarity → frame
+  cardFigures: Record<string, Texture>;  // rarity → kit figure
+  coinFrames: Texture[]; // [red face, blue face, edge]
+  wheel: Texture;
+  wheelPointer: Texture;
 }
 
 function sliceRow(sheet: Texture, frameW: number, frameH: number, row: number, count: number): Texture[] {
@@ -58,7 +68,8 @@ export async function loadAssets(): Promise<GameAssets> {
     ...manifest.variants.map((v) => v.pitch),
     ...manifest.playerSheets,
     'ball.png', 'fx-dust.png', 'fx-grass.png', 'fx-ring.png', 'fx-shadow.png', 'fx-skid.png',
-    'fx-blade.png', 'fx-aim.png', 'fx-chev.png', 'goal-bar.png', 'font.png', 'title.png', 'stand.png', 'boards.png', 'dugout.png', 'flag.png', 'cloud.png',
+    'fx-blade.png', 'fx-aim.png', 'fx-chev.png', 'goal-bar.png', 'font.png', 'font-micro.png', 'title.png', 'stand.png', 'boards.png', 'dugout.png', 'flag.png', 'cloud.png',
+    'cards.png', 'card-figures.png', 'coin.png', 'wheel.png', 'wheel-pointer.png',
   ];
   const loaded: Record<string, Texture> = {};
   await Promise.all(names.map(async (n) => { loaded[n] = await Assets.load(url(n)); }));
@@ -73,11 +84,15 @@ export async function loadAssets(): Promise<GameAssets> {
     players[key] = Array.from({ length: dirs }, (_, row) => sliceRow(loaded[sheetName], frameW, frameH, row, frames));
   }
 
-  const glyphs: Record<string, Texture> = {};
-  const { cellW, cellH, glyphs: order } = manifest.font;
-  [...order].forEach((ch, i) => {
-    glyphs[ch] = new Texture({ source: loaded['font.png'].source, frame: new Rectangle(i * cellW, 0, cellW, cellH) });
-  });
+  const sliceGlyphs = (sheet: Texture, cellW: number, cellH: number, order: string) => {
+    const out: Record<string, Texture> = {};
+    [...order].forEach((ch, i) => {
+      out[ch] = new Texture({ source: sheet.source, frame: new Rectangle(i * cellW, 0, cellW, cellH) });
+    });
+    return out;
+  };
+  const glyphs = sliceGlyphs(loaded['font.png'], manifest.font.cellW, manifest.font.cellH, manifest.font.glyphs);
+  const microGlyphs = sliceGlyphs(loaded['font-micro.png'], manifest.font.micro.cellW, manifest.font.micro.cellH, manifest.font.micro.glyphs);
 
   return {
     manifest,
@@ -93,6 +108,7 @@ export async function loadAssets(): Promise<GameAssets> {
     chevFrames: sliceRow(loaded['fx-chev.png'], manifest.fx.chev.w, manifest.fx.chev.h, 0, manifest.fx.chev.frames),
     flagFrames: sliceRow(loaded['flag.png'], manifest.flag.w, manifest.flag.h, 0, manifest.flag.frames),
     glyphs,
+    microGlyphs,
     title: loaded['title.png'],
     shadow: loaded['fx-shadow.png'],
     skid: loaded['fx-skid.png'],
@@ -102,5 +118,12 @@ export async function loadAssets(): Promise<GameAssets> {
     boards: loaded['boards.png'],
     dugout: loaded['dugout.png'],
     cloud: loaded['cloud.png'],
+    cardFrames: Object.fromEntries(manifest.cards.rarities.map((r, i) => [r,
+      new Texture({ source: loaded['cards.png'].source, frame: new Rectangle(i * manifest.cards.w, 0, manifest.cards.w, manifest.cards.h) })])),
+    cardFigures: Object.fromEntries(manifest.cards.rarities.map((r, i) => [r,
+      new Texture({ source: loaded['card-figures.png'].source, frame: new Rectangle(i * manifest.cards.figW, 0, manifest.cards.figW, manifest.cards.figH) })])),
+    coinFrames: sliceRow(loaded['coin.png'], manifest.cards.coin, manifest.cards.coin, 0, 3),
+    wheel: loaded['wheel.png'],
+    wheelPointer: loaded['wheel-pointer.png'],
   };
 }

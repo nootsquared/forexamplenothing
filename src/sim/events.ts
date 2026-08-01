@@ -4,9 +4,11 @@ export type SimEvent =
   | { kind: 'touch'; x: number; y: number; sprint: boolean }
   | { kind: 'cut'; x: number; y: number; dx: number; dy: number } // direction of the run being planted
   | { kind: 'bounce'; x: number; y: number; impact: number }
+  | { kind: 'post'; x: number; y: number; impact: number } // off the woodwork!
   | { kind: 'tackle'; x: number; y: number }
   | { kind: 'steal'; x: number; y: number } // a lunge that actually won the ball
-  | { kind: 'save'; x: number; y: number }  // the keeper got something on it
+  | { kind: 'save'; x: number; y: number }  // the keeper killed it in his gloves
+  | { kind: 'parry'; x: number; y: number } // strong hands turned it away, ball live
   | { kind: 'restart'; taker: number; team: 0 | 1; restart: 'throwin' | 'corner' | 'goalkick' | 'offside' }
   | { kind: 'offside'; x: number; y: number } // the flag goes up where he touched it
   | { kind: 'kickoff'; team: 0 | 1; taker: number } // whose ball starts the play

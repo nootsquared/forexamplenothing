@@ -1,9 +1,10 @@
-import { Container, Sprite, Texture } from 'pixi.js';
+import { Container, Graphics, Sprite, Texture } from 'pixi.js';
 import { GameLoop } from '../core/loop';
 import { Rng } from '../core/rng';
 import { SimEvent } from '../sim/events';
 import { Ball } from '../sim/ball';
 import { PlayerBody } from '../sim/player';
+import { PITCH } from '../sim/constants';
 import { GameAssets } from './assets';
 import { project, squash } from './projection';
 
@@ -24,7 +25,18 @@ interface Decal {
   alpha: number;
 }
 
+// A single square of falling joy: world meters + height, with a flutter phase
+interface Confetto {
+  x: number; y: number; z: number;
+  vx: number; vy: number; vz: number;
+  phase: number;
+  color: number;
+  age: number;
+  life: number;
+}
+
 const MAX_DECALS = 90;
+const CONFETTI_COLORS = [0xffd95e, 0xfff8e0, 0x9ff0b8, 0xff6a55, 0x5b98cf];
 
 // All the juice: dust, torn grass, kick rings, turf skids that linger where
 // play happened, screen kick, hitstop
@@ -33,6 +45,8 @@ export class Effects {
   shakeY = 0;
   private particles: Particle[] = [];
   private decals: Decal[] = [];
+  private confetti: Confetto[] = [];
+  private confettiG = new Graphics();
   private shakeAmp = 0;
   private shakeT = 0;
   private sprintDustTimer = 0;
@@ -45,7 +59,10 @@ export class Effects {
     private worldSorted: Container,
     private groundFx: Container,
     private loop: GameLoop,
-  ) {}
+  ) {
+    this.confettiG.zIndex = 1e6; // joy falls in front of everything on the pitch
+    worldSorted.addChild(this.confettiG);
+  }
 
   consume(events: SimEvent[]) {
     for (const e of events) {
@@ -90,10 +107,33 @@ export class Effects {
           this.spawn(this.assets.dustFrames, e.x, e.y, { life: 0.28, vx: this.rng.range(-8, 8) });
           this.spawn(this.assets.grassFrames, e.x, e.y, { life: 0.3, vx: this.rng.range(-4, 4) });
           break;
-        case 'goal':
+        case 'post':
+          // The woodwork says no — the whole ground feels that one
+          this.spawn(this.assets.ringFrames, e.x, e.y, { life: 0.2, fade: 0 });
+          this.kickShake(3 + e.impact * 0.3);
+          this.loop.hitstop(40, 0.35);
+          break;
+        case 'goal': {
           this.loop.hitstop(130, 0.08);
           this.kickShake(9);
+          // Confetti rains from the stands over the goal that just happened
+          const gx = e.side === 'left' ? 2 : PITCH.length - 2;
+          for (let i = 0; i < 110; i++) {
+            this.confetti.push({
+              x: gx + this.rng.range(-16, 16),
+              y: this.rng.range(-2, PITCH.width * 0.55),
+              z: this.rng.range(7, 13),
+              vx: this.rng.range(-2.5, 2.5),
+              vy: this.rng.range(-0.5, 2),
+              vz: this.rng.range(-0.5, 0.8),
+              phase: this.rng.range(0, Math.PI * 2),
+              color: CONFETTI_COLORS[Math.floor(this.rng.next() * CONFETTI_COLORS.length)],
+              age: 0,
+              life: this.rng.range(2.6, 4.4),
+            });
+          }
           break;
+        }
       }
     }
   }
@@ -185,6 +225,29 @@ export class Effects {
       pt.sprite.position.y += pt.vy * dt;
       if (pt.frames) pt.sprite.texture = pt.frames[Math.min(pt.frames.length - 1, Math.floor(t * pt.frames.length))];
       if (pt.fade > 0) pt.sprite.alpha = Math.max(0, 1 - t * pt.fade);
+    }
+
+    // Confetti flutters down: light gravity, a side-to-side sway, and a
+    // wink out on the grass — every square an honest 2px of pixel joy
+    this.confettiG.clear();
+    for (let i = this.confetti.length - 1; i >= 0; i--) {
+      const c = this.confetti[i];
+      c.age += dt;
+      if (c.age >= c.life) {
+        this.confetti.splice(i, 1);
+        continue;
+      }
+      c.vz -= dt * 3.2;
+      c.vz = Math.max(c.vz, -1.9); // drag: paper falls, it doesn't drop
+      c.z = Math.max(0, c.z + c.vz * dt);
+      c.phase += dt * 7;
+      c.x += (c.vx + Math.sin(c.phase) * 2.2) * dt;
+      c.y += c.vy * dt;
+      if (c.z <= 0) c.age = Math.max(c.age, c.life - 0.4); // grounded: fade out
+      const p = project(c.x, c.y, c.z);
+      const alpha = c.age > c.life - 0.5 ? (c.life - c.age) / 0.5 : 1;
+      const w = Math.sin(c.phase * 1.7) > 0 ? 3 : 2; // the tumble
+      this.confettiG.rect(Math.round(p.sx), Math.round(p.sy), w, 2).fill({ color: c.color, alpha });
     }
 
     this.shakeT += dt * 55;

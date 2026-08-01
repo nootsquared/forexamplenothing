@@ -20,6 +20,12 @@ const AIM_BEND_MAX = 1.31;   // ~75°: shots angle across the body, never backwa
 const PLAYER_R = 0.28;       // body radius against goal frames
 const BALL_R = 0.13;
 
+// How often the gloves beat the strike: slower, closer, more agile = safer.
+// This curve is the whole reason placement and power matter against a keeper.
+export function saveChance(pace: number, reachFrac: number, agility: number): number {
+  return clamp(1.3 - pace * 0.034 - reachFrac * 0.38 + (agility - 0.8) * 0.5, 0.05, 0.985);
+}
+
 export class World {
   ball = new Ball();
   players: PlayerBody[] = [];
@@ -45,6 +51,8 @@ export class World {
   private rng = new Rng(20260731);
   private goalScored = false;
   private goalResetT = 0;
+  // A goal buys the scorers a window to lose their minds before the spot
+  celebration: { team: 0 | 1; scorer: number; t: number } | null = null;
 
   step(dt: number, inputs: PlayerInput[]) {
     this.events.length = 0;
@@ -202,21 +210,37 @@ export class World {
     if (p.lungeTimer <= 0 || this.ball.z > (p.id.role === 'GK' ? 1.6 : 0.8)) return;
     // A keeper's dive REACH is his stats: agile hands get to more ball
     const reach = p.id.role === 'GK' ? 0.9 + p.stats.agility * 0.5 : 0.8;
-    if (dist(p.pos, this.ball.pos) > reach) return;
-    // A keeper's lunge is a SAVE: hands, not feet. The ball dies in the
-    // gloves, the game takes a breath, then he picks his distribution.
+    const handsD = dist(p.pos, this.ball.pos);
+    if (handsD > reach) return;
+    // A keeper's lunge is a CONTEST: hands versus pace. A slow ball at his
+    // chest dies in the gloves; a rocket at full stretch gets fingertips at
+    // best — and the worse he's beaten, the thinner the touch.
     if (p.id.role === 'GK') {
-      this.ball.vel = vec();
-      this.ball.z = 0;
-      this.ball.vz = 0;
-      this.ball.spin = 0;
-      this.ball.savePrev();
+      const pace = Math.hypot(this.ball.speed(), this.ball.vz);
+      const pCatch = saveChance(pace, clamp(handsD / reach, 0, 1), p.stats.agility);
+      const roll = this.rng.next();
       p.lungeTimer = 0;
-      p.touchCooldown = 0.2;
-      this.restartLock = 0.85;
-      this.restartExclusion = 6.5;
       this.lastTouch = { team: p.id.team, idx };
-      this.events.push({ kind: 'save', x: this.ball.pos.x, y: this.ball.pos.y });
+      if (pace < 2 || roll < pCatch) {
+        this.ball.vel = vec();
+        this.ball.z = 0;
+        this.ball.vz = 0;
+        this.ball.spin = 0;
+        this.ball.savePrev();
+        p.touchCooldown = 0.2;
+        this.restartLock = 0.85;
+        this.restartExclusion = 6.5;
+        this.events.push({ kind: 'save', x: this.ball.pos.x, y: this.ball.pos.y });
+      } else {
+        const failFactor = (roll - pCatch) / Math.max(0.05, 1 - pCatch);
+        const side = this.ball.pos.y >= PITCH.width / 2 ? 1 : -1;
+        const turn = side * (0.55 + this.rng.next() * 0.4) * (1 - failFactor * 0.85);
+        this.ball.vel = scale(rotate(norm(this.ball.vel), turn), this.ball.speed() * (0.42 + failFactor * 0.45));
+        this.ball.vz = Math.max(this.ball.vz * 0.4, 1.8 * (1 - failFactor));
+        this.ball.spin = 0;
+        p.touchCooldown = 0.45;
+        this.events.push({ kind: 'parry', x: this.ball.pos.x, y: this.ball.pos.y });
+      }
       return;
     }
     let dir = p.speed() > 0.5 ? norm(p.vel) : p.facing;
@@ -464,7 +488,7 @@ export class World {
         for (const post of [vec(lineX, yFar), vec(lineX, yNear)]) {
           // Off the woodwork! Posts ping instead of absorbing like net cord
           if (this.pushOffWall(this.ball.pos, this.ball.vel, post, post, BALL_R + 0.06, 0.72) && this.ball.speed() > 6) {
-            this.events.push({ kind: 'bounce', x: this.ball.pos.x, y: this.ball.pos.y, impact: this.ball.speed() * 0.5 });
+            this.events.push({ kind: 'post', x: this.ball.pos.x, y: this.ball.pos.y, impact: this.ball.speed() * 0.5 });
           }
         }
       }
@@ -501,16 +525,20 @@ export class World {
       const side = b.pos.x < 0 ? 'left' : 'right';
       this.score[side === 'left' ? 'right' : 'left']++;
       this.goalScored = true;
-      this.goalResetT = 1.5; // a beat to savor it before the spot restart
+      this.goalResetT = 4.2; // the celebration owns this window before the spot
+      const scorer = this.lastTouch?.idx ?? -1;
+      this.celebration = { team: side === 'left' ? 1 : 0, scorer, t: this.goalResetT };
       this.kickoffTeam = side === 'left' ? 0 : 1; // the conceder restarts the game
-      this.events.push({ kind: 'goal', side, scorer: this.lastTouch?.idx ?? -1 });
+      this.events.push({ kind: 'goal', side, scorer });
       return;
     }
 
     if (this.goalScored) {
-      // The net rigging catches it; the ball just dies in there, then restart
+      // The net rigging catches it; the ball just dies in there while the
+      // scorers wheel away — then the spot restart
       b.vel = scale(b.vel, 0.82);
       this.goalResetT -= dt;
+      if (this.celebration) this.celebration.t = this.goalResetT;
       if (this.goalResetT <= 0 && b.speed() < 2) this.resetAfterGoal();
       return;
     }
@@ -574,6 +602,7 @@ export class World {
 
   private resetAfterGoal() {
     this.goalScored = false;
+    this.celebration = null;
     this.kickoffReset();
   }
 

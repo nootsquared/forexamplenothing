@@ -65,8 +65,8 @@ export class Scene {
     app.stage.addChild(this.viewport, this.overlay, this.flash, this.possessionGlow, this.hud.root);
   }
 
-  addPlayer(sheet: string): PlayerView {
-    const view = new PlayerView(this.assets, sheet);
+  addPlayer(sheet: string, name = '', number = 0): PlayerView {
+    const view = new PlayerView(this.assets, sheet, name, number);
     this.worldSorted.addChild(view.root);
     this.playerViews.push(view);
     return view;
@@ -173,9 +173,11 @@ export class Scene {
   handleEvents(events: SimEvent[]) {
     this.effects.consume(events);
     for (const e of events) {
-      if (e.kind === 'bounce') this.ballView.triggerBounce();
+      if (e.kind === 'bounce' || e.kind === 'post') this.ballView.triggerBounce();
+      if (e.kind === 'post') this.hud.showToast('OFF THE POST!');
       if (e.kind === 'kick') this.playerViews[e.idx]?.triggerKick();
       if (e.kind === 'save') this.hud.showToast('SAVE!');
+      if (e.kind === 'parry') this.hud.showToast('STRONG HANDS!');
       if (e.kind === 'kickoff') this.hud.announce('KICK OFF');
       if (e.kind === 'half') this.hud.announce('HALF TIME');
       if (e.kind === 'fulltime') this.hud.announce('FULL TIME');
@@ -208,6 +210,9 @@ export class Scene {
       const x1 = left ? s.puntR + 10 : PITCH.length + 4;
       const zoom = clamp(Math.min(w / ((x1 - x0) * M), h / (2 * 38 * M * squash())), 0.7, 2.2);
       this.camera.override = { center: vec((x0 + x1) / 2, PITCH.width / 2), zoom };
+    } else if (this.world.celebration && this.world.players[this.world.celebration.scorer]) {
+      // The broadcast finds the man of the moment and stays with him
+      this.camera.override = { center: this.world.players[this.world.celebration.scorer].pos, zoom: 3.4 };
     } else {
       this.camera.override = null;
     }

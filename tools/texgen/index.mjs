@@ -5,8 +5,9 @@ import { generatePitchTexture, PITCH } from './pitch.mjs';
 import { generatePlayerSheet, FRAME_W, FRAME_H, BASELINE, DIRS, FRAMES } from './players.mjs';
 import { generateBallSheet, BALL_SIZE, BALL_DIRS, BALL_PHASES, BALL_VISUAL_R } from './ball.mjs';
 import { generateDustSheet, generateGrassBitsSheet, generateRingSheet, generateShadow, generateSkid, generateBladeSheet, generateAimArrowSheet, generateSwitchChevrons, generateGoalBar, BLADE_W, BLADE_H, BLADE_FRAMES, AIM_SIZE, AIM_DIRS, CHEV_W, CHEV_H } from './fx.mjs';
-import { generateFontSheet, generateTitleSheet, GLYPHS, CELL_W, CELL_H, TITLE_W, TITLE_H } from './font.mjs';
+import { generateFontSheet, generateMicroFontSheet, generateTitleSheet, GLYPHS, CELL_W, CELL_H, WIDTHS, MICRO_GLYPHS, MICRO_CELL_W, MICRO_CELL_H, MICRO_WIDTHS, TITLE_W, TITLE_H } from './font.mjs';
 import { generateStand, generateBoards, generateDugout, generateCornerFlag, generateCloudShadow, STAND_H, BOARD_H } from './stands.mjs';
+import { generateCardSheet, generateCardFigures, generateCoinSheet, generateWheel, generateWheelPointer, CARD_W, CARD_H, FIG_W, FIG_H, COIN_S, WHEEL_S, RARITIES } from './cards.mjs';
 
 const OUT = new URL('../../public/assets/', import.meta.url).pathname;
 mkdirSync(OUT, { recursive: true });
@@ -33,12 +34,18 @@ savePNG(generateAimArrowSheet(), `${OUT}fx-aim.png`);
 savePNG(generateSwitchChevrons(), `${OUT}fx-chev.png`);
 savePNG(generateGoalBar(), `${OUT}goal-bar.png`);
 savePNG(generateFontSheet(), `${OUT}font.png`);
+savePNG(generateMicroFontSheet(), `${OUT}font-micro.png`);
 savePNG(generateTitleSheet(), `${OUT}title.png`);
 savePNG(generateStand(), `${OUT}stand.png`);
 savePNG(generateBoards(), `${OUT}boards.png`);
 savePNG(generateDugout(), `${OUT}dugout.png`);
 savePNG(generateCornerFlag(), `${OUT}flag.png`);
 savePNG(generateCloudShadow(), `${OUT}cloud.png`);
+savePNG(generateCardSheet(), `${OUT}cards.png`);
+savePNG(generateCardFigures(), `${OUT}card-figures.png`);
+savePNG(generateCoinSheet(), `${OUT}coin.png`);
+savePNG(generateWheel(), `${OUT}wheel.png`);
+savePNG(generateWheelPointer(), `${OUT}wheel-pointer.png`);
 
 // Single source of truth the renderer reads: projection + frame geometry
 const manifest = {
@@ -56,11 +63,15 @@ const manifest = {
     aim: { size: AIM_SIZE, frames: AIM_DIRS },
     chev: { w: CHEV_W, h: CHEV_H, frames: 2 },
   },
-  font: { cellW: CELL_W, cellH: CELL_H, glyphs: GLYPHS },
+  font: {
+    cellW: CELL_W, cellH: CELL_H, glyphs: GLYPHS, widths: WIDTHS,
+    micro: { cellW: MICRO_CELL_W, cellH: MICRO_CELL_H, glyphs: MICRO_GLYPHS, widths: MICRO_WIDTHS },
+  },
   title: { w: TITLE_W, h: TITLE_H },
   stand: { h: STAND_H, frames: 2 },
   boards: { h: BOARD_H },
   flag: { w: 10, h: 16, frames: 2 },
+  cards: { w: CARD_W, h: CARD_H, figW: FIG_W, figH: FIG_H, rarities: RARITIES, coin: COIN_S, wheel: WHEEL_S },
   variants: VARIANTS.map((v) => ({ id: v.id, name: v.name, pitch: `pitch-${v.id}.png` })),
   playerSheets,
 };

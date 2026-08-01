@@ -31,6 +31,7 @@ export class PitchLayer {
   private crowdFrame = 0;
   private crowdT = 0;
   private crowdHype = 0; // seconds of goal-frenzy bouncing left
+  private flashes = new Graphics(); // phone cameras popping in the terraces
   private flags: { sprite: Sprite; phase: number }[] = [];
   private goals: Record<'left' | 'right', GoalRig> = {
     left: { panels: [], backSign: -1, rippleAge: -1, phase: 0 },
@@ -58,10 +59,11 @@ export class PitchLayer {
     for (const c of this.clouds) c.visible = id !== 'night'; // no cloud shade under floodlights
   }
 
-  // The ball just hit this net — set it swinging, and the crowd erupts
+  // The ball just hit this net — set it swinging, and the crowd erupts for
+  // the whole celebration window, camera flashes popping down the terraces
   rippleGoal(side: 'left' | 'right') {
     this.goals[side].rippleAge = 0;
-    this.crowdHype = 3.2;
+    this.crowdHype = 4.6;
   }
 
   update(dt: number) {
@@ -76,6 +78,17 @@ export class PitchLayer {
       this.crowdT = 0;
       this.crowdFrame = 1 - this.crowdFrame;
       this.stand.texture = this.assets.standFrames[this.crowdFrame];
+    }
+    // While the hype lasts, camera flashes twinkle at random down the stand
+    this.flashes.clear();
+    if (this.crowdHype > 0) {
+      const density = Math.min(1, this.crowdHype / 3.5) * 12;
+      for (let i = 0; i < density; i++) {
+        if (Math.random() < 0.55) continue; // pops, not a strobe wall
+        const fx = this.stand.position.x + Math.random() * this.stand.width;
+        const fy = this.stand.position.y + 8 + Math.random() * (this.assets.manifest.stand.h - 24);
+        this.flashes.rect(Math.round(fx), Math.round(fy), 2, 2).fill({ color: 0xffffff, alpha: 0.5 + Math.random() * 0.5 });
+      }
     }
 
     for (const side of ['left', 'right'] as const) {
@@ -129,6 +142,8 @@ export class PitchLayer {
     this.stand.position.set(standL.sx, standL.sy - this.assets.manifest.stand.h);
     this.stand.zIndex = standL.depth;
     worldSorted.addChild(this.stand);
+    this.flashes.zIndex = standL.depth + 0.1;
+    worldSorted.addChild(this.flashes);
 
     const boardsL = project(-4, -0.8, 0);
     const boardsR = project(PITCH.length + 4, -0.8, 0);

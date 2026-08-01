@@ -155,6 +155,33 @@ export class Brain {
       this.lastPhase = this.bb.phase;
     }
 
+    // A goal owns everybody: the scorer wheels away for the corner flag, his
+    // side sprints to mob him, and the conceded walk their thoughts home
+    if (world.celebration) {
+      this.kickPlan = null;
+      const c = world.celebration;
+      const goalX = c.team === 0 ? PITCH.length : 0;
+      const corner = vec(goalX === 0 ? 4 : PITCH.length - 4, 3);
+      const hero = world.players[c.scorer]?.id.team === c.team ? c.scorer : -1;
+      if (me.id.team !== c.team) {
+        this.intent = { kind: 'goto', target: vec(me.home.x, me.home.y), sprint: false };
+      } else if (this.idx === hero) {
+        const arrived = dist(me.pos, corner) < 2.2;
+        this.intent = {
+          kind: 'goto',
+          target: arrived ? add(corner, vec(this.rng.range(-1.6, 1.6), this.rng.range(-1.6, 1.6))) : corner,
+          sprint: !arrived,
+        };
+      } else {
+        const focus = hero >= 0 ? world.players[hero].pos : corner;
+        const near = dist(me.pos, focus) < 40; // the far keeper just applauds from home
+        this.intent = near
+          ? { kind: 'goto', target: add(focus, vec(this.rng.range(-2, 2), this.rng.range(-2, 2))), sprint: true }
+          : { kind: 'goto', target: vec(me.home.x, me.home.y), sprint: false };
+      }
+      return;
+    }
+
     // Restart law: while THEIR taker owns a dead or unplayed ball, give it
     // the mandated space — nobody jumps a kickoff or a goal kick
     if (world.restartExclusion > 0 && world.lastTouch && world.lastTouch.team !== me.id.team &&
