@@ -1,11 +1,11 @@
 import { makeCanvas, PixelGrid } from './lib.mjs';
 
 // 5×7 arcade caps. Each glyph cell bakes a 1px dark outline → 7×9 cells.
-export const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!-.:%';
+export const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!-.:%>';
 export const CELL_W = 7;
 export const CELL_H = 9;
 
-const ROWS = {
+export const ROWS = {
   A: ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
   B: ['####.', '#...#', '####.', '#...#', '#...#', '#...#', '####.'],
   C: ['.####', '#....', '#....', '#....', '#....', '#....', '.####'],
@@ -47,6 +47,7 @@ const ROWS = {
   '.': ['.....', '.....', '.....', '.....', '.....', '.....', '..#..'],
   ':': ['.....', '..#..', '.....', '.....', '.....', '..#..', '.....'],
   '%': ['##..#', '##..#', '...#.', '..#..', '.#...', '#..##', '#..##'],
+  '>': ['#....', '##...', '.##..', '..##.', '.##..', '##...', '#....'],
 };
 
 export function generateFontSheet() {
@@ -60,6 +61,34 @@ export function generateFontSheet() {
     grid.autoOutline('#1a1626');
     grid.blitTo(ctx, i * CELL_W, 0);
   }
+  return canvas;
+}
+
+// The title wordmark: GOLAZO cut from the game font at pixel level, wearing
+// a gold gradient with a white shine row, a chunky outline and a hard
+// south-east drop shadow — a logo, not a line of text.
+export const TITLE_W = 6 * 6 - 1 + 8;
+export const TITLE_H = 7 + 8;
+export function generateTitleSheet() {
+  const { canvas, ctx } = makeCanvas(TITLE_W, TITLE_H);
+  const grid = new PixelGrid(TITLE_W, TITLE_H);
+  const word = 'GOLAZO';
+  const shades = ['#fff9d9', '#ffef9e', '#ffe27a', '#ffd95e', '#f0b83f', '#dc9a30', '#c47c26'];
+  const stamp = (ox, oy, colorOf) => {
+    for (let i = 0; i < word.length; i++) {
+      const rows = ROWS[word[i]];
+      rows.forEach((row, ry) => {
+        for (let rx = 0; rx < 5; rx++) {
+          if (row[rx] === '#') grid.set(ox + i * 6 + rx, oy + ry, colorOf(ry));
+        }
+      });
+    }
+  };
+  stamp(4, 5, () => '#0a0806');       // the shadow, thrown low
+  stamp(3, 4, () => '#0a0806');
+  stamp(2, 2, (ry) => shades[ry]);    // the face
+  grid.autoOutline('#241a08');
+  grid.blitTo(ctx, 0, 0);
   return canvas;
 }
 

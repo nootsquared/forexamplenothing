@@ -3,30 +3,65 @@ import { World } from './sim/world';
 import { PlayerBody, PlayerInput } from './sim/player';
 import { PITCH } from './sim/constants';
 import { FORMATIONS, Formation } from './data/formations';
-import { buildSquad } from './data/roster';
+import { buildSquad, SquadPlayer } from './data/roster';
 import { TeamBrain } from './ai/blackboard';
 import { Brain } from './ai/brain';
 
 // A full 11v11: bodies, team blackboards, and a brain for every body.
 // The browser and the headless tests assemble the exact same match.
 
+export interface MatchConfig {
+  homeShape?: string;
+  awayShape?: string;
+  homeSquad?: SquadPlayer[]; // aligned to the shape's slots; archetypes otherwise
+  awaySquad?: SquadPlayer[];
+  halfLength?: number;       // seconds per half; 0 = endless kickabout
+}
+
+export interface MatchStats {
+  possession: [number, number]; // ticks holding the ball
+  kicks: [number, number];
+  saves: [number, number];
+  goals: Record<number, number>; // body idx → goals
+}
+
 export interface Match {
   world: World;
   teamBrains: [TeamBrain, TeamBrain];
   brains: Brain[];
+  names: string[]; // per body — HUD, scorers, the stats screen
+  half: 1 | 2;
+  clock: number;
+  halfLength: number;
+  finished: boolean;
+  stats: MatchStats;
 }
 
-export function createMatch(homeShape = '4-3-3', awayShape = '4-4-2'): Match {
+export function createMatch(config: MatchConfig = {}): Match {
   const world = new World();
-  fieldTeam(world, 0, FORMATIONS[homeShape], 101);
-  fieldTeam(world, 1, FORMATIONS[awayShape], 202);
+  const homeShape = FORMATIONS[config.homeShape ?? '4-3-3'];
+  const awayShape = FORMATIONS[config.awayShape ?? '4-4-2'];
+  const homeSquad = config.homeSquad ?? buildSquad(homeShape, 101);
+  const awaySquad = config.awaySquad ?? buildSquad(awayShape, 202);
+  fieldTeam(world, 0, homeShape, homeSquad);
+  fieldTeam(world, 1, awayShape, awaySquad);
   const teamBrains: [TeamBrain, TeamBrain] = [new TeamBrain(0), new TeamBrain(1)];
   const brains = world.players.map((p, i) => new Brain(i, teamBrains[p.id.team]));
-  return { world, teamBrains, brains };
+  return {
+    world,
+    teamBrains,
+    brains,
+    names: [...homeSquad.map((s) => s.name), ...awaySquad.map((s) => s.name)],
+    half: 1,
+    clock: 0,
+    halfLength: config.halfLength ?? 0,
+    finished: false,
+    stats: { possession: [0, 0], kicks: [0, 0], saves: [0, 0], goals: {} },
+  };
 }
 
 // One fixed tick: blackboards read the world, brains emit inputs, humans
-// override theirs, the sim steps. AI and people share one interface.
+// override theirs, the sim steps — then the clock and the ledger catch up.
 export function advanceMatch(match: Match, dt: number, overrides: Record<number, PlayerInput> = {}) {
   // The sheet knows which body a human is wearing — teammates favor that ball
   match.teamBrains[0].humanIdx = -1;
@@ -40,11 +75,35 @@ export function advanceMatch(match: Match, dt: number, overrides: Record<number,
   match.teamBrains[1].update(match.world, dt);
   const inputs = match.world.players.map((_, i) => overrides[i] ?? match.brains[i].tick(match.world, dt));
   match.world.step(dt, inputs);
+
+  // The clock: two halves, a break at the turn, a whistle at the end
+  if (match.halfLength > 0 && !match.finished) {
+    match.clock += dt;
+    if (match.clock >= match.halfLength) {
+      if (match.half === 1) {
+        match.half = 2;
+        match.clock = 0;
+        match.world.kickoffReset();
+        match.world.events.push({ kind: 'half' });
+      } else {
+        match.finished = true;
+        match.world.events.push({ kind: 'fulltime' });
+      }
+    }
+  }
+
+  // The ledger: possession ticks, kicks, saves, and who scored
+  const poss = match.world.possessor();
+  if (poss !== null) match.stats.possession[match.world.players[poss].id.team]++;
+  for (const e of match.world.events) {
+    if (e.kind === 'kick') match.stats.kicks[match.world.players[e.idx].id.team]++;
+    if (e.kind === 'save' && match.world.lastTouch) match.stats.saves[match.world.lastTouch.team]++;
+    if (e.kind === 'goal' && e.scorer >= 0) match.stats.goals[e.scorer] = (match.stats.goals[e.scorer] ?? 0) + 1;
+  }
 }
 
 // Kickoff spots: the formation squeezed into its own half
-function fieldTeam(world: World, team: 0 | 1, formation: Formation, seed: number) {
-  const squad = buildSquad(formation, seed);
+function fieldTeam(world: World, team: 0 | 1, formation: Formation, squad: SquadPlayer[]) {
   formation.slots.forEach((slot, i) => {
     const axis = 2.5 + slot.x * 46; // meters out from our own goal line
     const x = team === 0 ? axis : PITCH.length - axis;

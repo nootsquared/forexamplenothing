@@ -5,7 +5,7 @@ import { generatePitchTexture, PITCH } from './pitch.mjs';
 import { generatePlayerSheet, FRAME_W, FRAME_H, BASELINE, DIRS, FRAMES } from './players.mjs';
 import { generateBallSheet, BALL_SIZE, BALL_DIRS, BALL_PHASES, BALL_VISUAL_R } from './ball.mjs';
 import { generateDustSheet, generateGrassBitsSheet, generateRingSheet, generateShadow, generateSkid, generateBladeSheet, generateAimArrowSheet, generateSwitchChevrons, generateGoalBar, BLADE_W, BLADE_H, BLADE_FRAMES, AIM_SIZE, AIM_DIRS, CHEV_W, CHEV_H } from './fx.mjs';
-import { generateFontSheet, GLYPHS, CELL_W, CELL_H } from './font.mjs';
+import { generateFontSheet, generateTitleSheet, GLYPHS, CELL_W, CELL_H, TITLE_W, TITLE_H } from './font.mjs';
 import { generateStand, generateBoards, generateDugout, generateCornerFlag, generateCloudShadow, STAND_H, BOARD_H } from './stands.mjs';
 
 const OUT = new URL('../../public/assets/', import.meta.url).pathname;
@@ -33,6 +33,7 @@ savePNG(generateAimArrowSheet(), `${OUT}fx-aim.png`);
 savePNG(generateSwitchChevrons(), `${OUT}fx-chev.png`);
 savePNG(generateGoalBar(), `${OUT}goal-bar.png`);
 savePNG(generateFontSheet(), `${OUT}font.png`);
+savePNG(generateTitleSheet(), `${OUT}title.png`);
 savePNG(generateStand(), `${OUT}stand.png`);
 savePNG(generateBoards(), `${OUT}boards.png`);
 savePNG(generateDugout(), `${OUT}dugout.png`);
@@ -56,6 +57,7 @@ const manifest = {
     chev: { w: CHEV_W, h: CHEV_H, frames: 2 },
   },
   font: { cellW: CELL_W, cellH: CELL_H, glyphs: GLYPHS },
+  title: { w: TITLE_W, h: TITLE_H },
   stand: { h: STAND_H, frames: 2 },
   boards: { h: BOARD_H },
   flag: { w: 10, h: 16, frames: 2 },

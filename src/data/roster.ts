@@ -9,6 +9,7 @@ import { Role } from './formations';
 
 export interface SquadPlayer {
   number: number;
+  name: string;
   role: Role;
   stats: PlayerStats;
 }
@@ -27,6 +28,7 @@ export function buildSquad(formation: Formation, seed: number): SquadPlayer[] {
     const vary = (v: number, spread: number) => v * (1 + (rng.next() - 0.5) * spread);
     return {
       number: i + 1,
+      name: `NO ${i + 1}`,
       role: slot.role,
       stats: {
         topSpeed: vary(base.topSpeed, 0.08),

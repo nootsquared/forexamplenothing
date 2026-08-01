@@ -142,7 +142,9 @@ export class World {
   // shins: a dispossession changes the play's direction, it doesn't ping-pong.
   private resolveLunge(p: PlayerBody, idx: number) {
     if (p.lungeTimer <= 0 || this.ball.z > (p.id.role === 'GK' ? 1.6 : 0.8)) return;
-    if (dist(p.pos, this.ball.pos) > (p.id.role === 'GK' ? 1.15 : 0.8)) return;
+    // A keeper's dive REACH is his stats: agile hands get to more ball
+    const reach = p.id.role === 'GK' ? 0.9 + p.stats.agility * 0.5 : 0.8;
+    if (dist(p.pos, this.ball.pos) > reach) return;
     // A keeper's lunge is a SAVE: hands, not feet. The ball dies in the
     // gloves, the game takes a breath, then he picks his distribution.
     if (p.id.role === 'GK') {
@@ -441,7 +443,7 @@ export class World {
       this.score[side === 'left' ? 'right' : 'left']++;
       this.goalScored = true;
       this.goalResetT = 1.5; // a beat to savor it before the spot restart
-      this.events.push({ kind: 'goal', side });
+      this.events.push({ kind: 'goal', side, scorer: this.lastTouch?.idx ?? -1 });
       return;
     }
 
@@ -509,6 +511,11 @@ export class World {
 
   private resetAfterGoal() {
     this.goalScored = false;
+    this.kickoffReset();
+  }
+
+  // Center spot, everyone home, a beat of ceremony — goals and half-time both
+  kickoffReset() {
     this.ball.pos = vec(PITCH.length / 2, PITCH.width / 2);
     this.ball.vel = vec();
     this.ball.z = 0;

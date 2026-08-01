@@ -90,6 +90,18 @@ export class Scene {
     this.keeperAimState = state;
   }
 
+  // Match clock for the HUD; empty string hides it (endless kickabout)
+  setClock(text: string) {
+    this.hud.setClock(text);
+  }
+
+  // Tear the whole display tree off the stage between matches
+  destroy() {
+    for (const r of [this.viewport, this.overlay, this.flash, this.possessionGlow, this.hud.root]) {
+      r.destroy({ children: true });
+    }
+  }
+
   // The slingshot sight — non-null while a drag-back is charging a strike
   setKickDrag(d: { from: Vec2; dir: Vec2; power: number } | null) {
     this.kickDrag = d;
@@ -158,6 +170,8 @@ export class Scene {
       if (e.kind === 'kick') this.playerViews[e.idx]?.triggerKick();
       if (e.kind === 'save') this.hud.showToast('SAVE!');
       if (e.kind === 'kickoff') this.hud.announce('KICK OFF');
+      if (e.kind === 'half') this.hud.announce('HALF TIME');
+      if (e.kind === 'fulltime') this.hud.announce('FULL TIME');
       if (e.kind === 'restart') {
         this.hud.announce(e.restart === 'corner' ? 'CORNER KICK' : e.restart === 'goalkick' ? 'GOAL KICK' : 'THROW IN');
       }

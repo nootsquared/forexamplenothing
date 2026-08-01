@@ -9,4 +9,6 @@ export type SimEvent =
   | { kind: 'save'; x: number; y: number }  // the keeper got something on it
   | { kind: 'restart'; taker: number; team: 0 | 1; restart: 'throwin' | 'corner' | 'goalkick' }
   | { kind: 'kickoff' }
-  | { kind: 'goal'; side: 'left' | 'right' };
+  | { kind: 'goal'; side: 'left' | 'right'; scorer: number } // last touch owns it
+  | { kind: 'half' }      // pushed by the match clock at the break
+  | { kind: 'fulltime' }; // and at the whistle

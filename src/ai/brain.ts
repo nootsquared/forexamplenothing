@@ -424,6 +424,8 @@ export class Brain {
         const sideY = world.ball.pos.y < PITCH.width / 2 ? 12 : PITCH.width - 12;
         this.planKick(norm(add(scale(vec(this.bb.attackSign(), 0), 30), vec(0, sideY - me.pos.y))), 0.9);
       }
+      // A keeper CLEARS: short windup, no wandering off with the ball
+      if (this.kickPlan) this.kickPlan.windup = Math.min(this.kickPlan.windup, 16);
       return;
     }
     this.kickPlan = null;
@@ -447,7 +449,9 @@ export class Brain {
 
     if (this.kickPlan) {
       const plan = this.kickPlan;
-      input.move = plan.aim;
+      // The stick sets the sight. Keepers PLANT while they wind up — striding
+      // through a windup is how a clearance walks itself to death.
+      input.move = me.id.role === 'GK' ? scale(plan.aim, 0.3) : plan.aim;
       input.kickCharging = true;
       if (dist(me.pos, world.ball.pos) > 2.2) this.kickPlan = null; // lost it mid-windup
       else if (--plan.windup <= 0) {

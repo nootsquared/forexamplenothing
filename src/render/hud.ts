@@ -21,6 +21,7 @@ export class Hud {
   private stamina = 1;
   private sprinting = false;
   private sprintPulse = 0;
+  private clockText!: PixelText;
   private toast: PixelText;
   private toastTimer = 0;
   private banner: PixelText;
@@ -53,6 +54,8 @@ export class Hud {
     this.sprintLabel = new PixelText(assets, 2, 0xd8dce6);
     this.sprintLabel.text = 'SPRINT';
 
+    this.clockText = new PixelText(assets, 3, 0xfff3c4);
+
     this.toast = new PixelText(assets, 4, 0xffe27a);
     this.toast.visible = false;
 
@@ -61,7 +64,11 @@ export class Hud {
     this.banner.visible = false;
 
     this.scoreText = new PixelText(assets, 4);
-    this.root.addChild(this.scoreTabs, this.scoreText, this.controlsBox, this.sprintLabel, this.sprintBar, this.toast, this.banner);
+    this.root.addChild(this.scoreTabs, this.scoreText, this.clockText, this.controlsBox, this.sprintLabel, this.sprintBar, this.toast, this.banner);
+  }
+
+  setClock(text: string) {
+    this.clockText.text = text;
   }
 
   // The controlled body's tank, fed every frame by the scene
@@ -79,6 +86,7 @@ export class Hud {
     const scoreLabel = `${score.left} - ${score.right}`;
     this.scoreText.text = scoreLabel;
     this.scoreText.centerAt(w / 2, 14);
+    this.clockText.centerAt(w / 2, 52);
     if (scoreLabel !== this.lastScore) {
       this.lastScore = scoreLabel;
       // Kit-colored tabs flanking the score, drawn once per change

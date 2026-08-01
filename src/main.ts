@@ -1,10 +1,13 @@
-import { Application, TextureSource } from 'pixi.js';
+import { Application, Container, TextureSource } from 'pixi.js';
 import { GameLoop } from './core/loop';
 import { Vec2, vec, dist, clamp } from './core/math';
 import { PlayerInput } from './sim/player';
 import { World } from './sim/world';
-import { createMatch, advanceMatch } from './match';
+import { Match, createMatch, advanceMatch } from './match';
 import { leadTarget, passMargin } from './ai/brain';
+import { FORMATIONS } from './data/formations';
+import { Draft, quickSplit, toSquad } from './data/draft';
+import { SquadPlayer } from './data/roster';
 import { Keyboard } from './input/keyboard';
 import { LocalControls } from './input/controls';
 import { TeamCursor } from './input/cursor';
@@ -12,6 +15,10 @@ import { loadAssets } from './render/assets';
 import { setProjection } from './render/projection';
 import { Scene } from './render/scene';
 import { MOODS } from './render/variants';
+import { Screen, MenuScreen, DraftScreen, FormationScreen, PauseScreen, StatsScreen, fmtClock } from './ui/screens';
+
+// The shell: menu → (draft → shape) → match → full time → menu. One Pixi
+// app, one loop; a match owns the pitch while it lives, screens own the top.
 
 async function boot() {
   TextureSource.defaultOptions.scaleMode = 'nearest'; // crisp pixels everywhere
@@ -29,31 +36,135 @@ async function boot() {
   const assets = await loadAssets();
   setProjection(assets.manifest.pxPerMeter, assets.manifest.iso);
 
-  // Every body has a brain, always. The human hand simply overrides one of
-  // them — release it and the brain resumes mid-stride, no lobotomy.
-  const match = createMatch();
-  const world = match.world;
+  const kb = new Keyboard();
+  let controls = new LocalControls();
 
-  // The seat: your body is YOURS, always — no input means he stands with the
-  // ball, because this team does not play itself. The cursor follows
-  // possession (a pass, a pickup, an interception is instantly you); off the
-  // ball E takes the previewed man, or T turns on auto-switch.
-  const cursor = new TeamCursor(0, world);
-  const gkIdx = world.players.findIndex((p) => p.id.team === 0 && p.id.role === 'GK');
-  let humanIdle = Infinity; // only the keeper failsafe cares — an absent human shouldn't stall a dead ball
+  // ---- shell state -------------------------------------------------------
+  type ScreenName = 'menu' | 'draft' | 'formation' | 'match' | 'fulltime';
+  let screenName: ScreenName = 'menu';
+  let paused = false;
+  let fulltimeDelay = 0; // a beat for the FULL TIME banner before the sheet
+  let draftPicks: Draft | null = null;
+
+  // ---- match-scoped state (rebuilt every kickoff) ------------------------
+  let match: Match | null = null;
+  let scene: Scene | null = null;
+  let cursor: TeamCursor | null = null;
+  let gkIdx = -1;
+  let humanIdle = Infinity;
   let passHints: number[] = [];
   let hintClock = 0;
   let keeperAiming = false;
   const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2, clicked: false, moved: false };
-  // Slingshot passing: press, DRAG BACK to charge — the arrow points the shot
-  // the other way and thickens with power — release to let it fly
   const drag = { active: false, anchorX: 0, anchorY: 0 };
-  const DRAG_FULL_PX = 260; // hand travel for a full-power strike
+  const DRAG_FULL_PX = 260;
   let mouseKick: { power: number; aimAt: Vec2 } | null = null;
+  let input: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+
+  // ---- screens -----------------------------------------------------------
+  const uiRoot = new Container();
+  const menu = new MenuScreen(assets);
+  const draftScreen = new DraftScreen(assets);
+  const formationScreen = new FormationScreen(assets);
+  const pauseScreen = new PauseScreen(assets);
+  const statsScreen = new StatsScreen(assets);
+  let activeScreen: Screen | null = null;
+
+  const show = (s: Screen | null) => {
+    uiRoot.removeChildren();
+    activeScreen = s;
+    if (s) {
+      s.layout(app.renderer.width, app.renderer.height);
+      uiRoot.addChild(s.root);
+    }
+  };
+  window.addEventListener('resize', () => activeScreen?.layout(app.renderer.width, app.renderer.height));
+
+  menu.onQuick = () => {
+    const [homeStars, awayStars] = quickSplit();
+    startMatch(toSquad(homeStars, FORMATIONS['4-3-3']), '4-3-3', toSquad(awayStars, FORMATIONS['4-4-2']), '4-4-2');
+  };
+  menu.onDraft = () => {
+    draftScreen.begin();
+    screenName = 'draft';
+    show(draftScreen);
+  };
+  draftScreen.onDone = (draft) => {
+    draftPicks = draft;
+    formationScreen.begin(draft.sides[0].picks);
+    screenName = 'formation';
+    show(formationScreen);
+  };
+  formationScreen.onDone = (shape) => {
+    if (!draftPicks) return;
+    const awayShapes = Object.keys(FORMATIONS);
+    const awayShape = awayShapes[Math.floor(Math.random() * awayShapes.length)];
+    startMatch(
+      toSquad(draftPicks.sides[0].picks, FORMATIONS[shape]), shape,
+      toSquad(draftPicks.sides[1].picks, FORMATIONS[awayShape]), awayShape,
+    );
+  };
+  pauseScreen.onResume = () => { paused = false; show(null); };
+  pauseScreen.onQuit = () => toMenu();
+  statsScreen.onDone = () => toMenu();
+
+  function toMenu() {
+    screenName = 'menu';
+    paused = false;
+    show(menu);
+  }
+
+  // ---- match lifecycle ---------------------------------------------------
+  const ballIsMine = () => {
+    if (!match || !cursor) return false;
+    const poss = match.teamBrains[0].possessorIdx;
+    if (poss !== null && match.world.players[poss].id.team !== 0) return false;
+    return dist(match.world.players[cursor.idx].pos, match.world.ball.pos) < 3.5;
+  };
+
+  function startMatch(homeSquad: SquadPlayer[], homeShape: string, awaySquad: SquadPlayer[], awayShape: string) {
+    scene?.destroy();
+    match = createMatch({ homeSquad, homeShape, awaySquad, awayShape, halfLength: menu.halfLength });
+    scene = new Scene(app, assets, match.world, loop);
+    match.world.players.forEach((p) => scene!.addPlayer(p.id.team === 0 ? 'home' : 'away'));
+    scene.setVariant(MOODS[0]);
+    cursor = new TeamCursor(0, match.world);
+    gkIdx = match.world.players.findIndex((p) => p.id.team === 0 && p.id.role === 'GK');
+    scene.setControlled(cursor.idx);
+    controls = new LocalControls();
+    humanIdle = Infinity;
+    keeperAiming = false;
+    drag.active = false;
+    mouseKick = null;
+    passHints = [];
+    fulltimeDelay = 0;
+    app.stage.addChild(uiRoot); // UI rides above the fresh pitch
+    screenName = 'match';
+    paused = false;
+    show(null);
+  }
+
+  // ---- input plumbing ----------------------------------------------------
+  const uiKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'KeyW', 'KeyS'];
+  for (const code of uiKeys) kb.onPress(code, () => activeScreen?.key(code));
+  kb.onPress('Space', () => activeScreen?.key('Space'));
+  kb.onPress('Escape', () => {
+    if (screenName !== 'match' || !match || match.finished) return;
+    paused = !paused;
+    show(paused ? pauseScreen : null);
+  });
+  kb.onPress('KeyE', () => { if (screenName === 'match' && !paused) cursor?.manualSwitch(); });
+  kb.onPress('KeyT', () => {
+    if (screenName !== 'match' || paused || !cursor || !scene) return;
+    cursor.autoMode = !cursor.autoMode;
+    scene.toast(cursor.autoMode ? 'AUTO SWITCH ON' : 'AUTO SWITCH OFF');
+  });
+  MOODS.forEach((mood, i) => kb.onPress(`Digit${i + 1}`, () => { if (screenName === 'match') scene?.setVariant(mood); }));
 
   // The pull, resolved on the FIELD: direction is anchor-minus-mouse in world
   // space (so the iso squash never skews your aim), power is hand travel
   const resolveDrag = () => {
+    if (!scene) return null;
     const a = scene.screenToWorld(drag.anchorX, drag.anchorY);
     const m = scene.screenToWorld(mouse.x, mouse.y);
     const pull = vec(a.x - m.x, a.y - m.y);
@@ -67,26 +178,10 @@ async function boot() {
     };
   };
 
-  const kb = new Keyboard();
-  const controls = new LocalControls();
-  let input: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
-
-  kb.onPress('KeyE', () => cursor.manualSwitch());
-  kb.onPress('KeyT', () => {
-    cursor.autoMode = !cursor.autoMode;
-    scene.toast(cursor.autoMode ? 'AUTO SWITCH ON' : 'AUTO SWITCH OFF');
-  });
   app.canvas.addEventListener('mousemove', (e) => { mouse.x = e.clientX; mouse.y = e.clientY; mouse.moved = true; });
-  // The ball counts as YOURS while it's in playing reach and not theirs —
-  // dribble touches pop it a stride ahead, and that must not drop the sling
-  const ballIsMine = () => {
-    const poss = match.teamBrains[0].possessorIdx;
-    if (poss !== null && world.players[poss].id.team !== 0) return false;
-    return dist(world.players[cursor.idx].pos, world.ball.pos) < 3.5;
-  };
-
   app.canvas.addEventListener('mousedown', (e) => {
     mouse.clicked = true;
+    if (screenName !== 'match' || paused) return;
     // The sling only arms with the ball at YOUR feet — no phantom arrows
     if (!keeperAiming && ballIsMine()) {
       drag.active = true;
@@ -98,17 +193,18 @@ async function boot() {
     if (!drag.active) return;
     drag.active = false;
     const pull = resolveDrag();
-    if (!pull) return; // a stray click is not a kick
-    const hero = world.players[cursor.idx];
+    if (!pull || !match || !cursor) return; // a stray click is not a kick
+    const hero = match.world.players[cursor.idx];
     mouseKick = { power: pull.power, aimAt: vec(hero.pos.x + pull.dir.x * 30, hero.pos.y + pull.dir.y * 30) };
   });
 
   // The keeper launches, and control moves to the man his ball was for
   const launchKeeper = (target: Vec2, kind: 'throw' | 'punt', scatter: number) => {
-    world.gkLaunch(gkIdx, target, kind, scatter);
+    if (!match || !cursor || !scene) return;
+    match.world.gkLaunch(gkIdx, target, kind, scatter);
     let best = -1;
     let bestD = Infinity;
-    world.players.forEach((p, i) => {
+    match.world.players.forEach((p, i) => {
       if (p.id.team !== 0 || p.id.role === 'GK') return;
       const d = dist(p.pos, target);
       if (d < bestD) { bestD = d; best = i; }
@@ -118,118 +214,137 @@ async function boot() {
     scene.setKeeperAim(null);
   };
 
+  // ---- the match tick (unchanged control feel, now clock-aware) ----------
+  function tickMatch(dt: number) {
+    if (!match || !scene || !cursor) return;
+    const world = match.world;
+
+    input = controls.sample(dt, kb, world.players[cursor.idx].facing);
+    if (mouseKick) {
+      input.kickReleased = { power: mouseKick.power, aimOffset: 0, aimAt: mouseKick.aimAt };
+      mouseKick = null;
+    }
+    const active = input.move.x !== 0 || input.move.y !== 0 ||
+      input.sprint || input.kickCharging || !!input.kickReleased || !!input.tackle || mouse.moved;
+    mouse.moved = false;
+    humanIdle = active ? 0 : humanIdle + dt;
+
+    // Auto-tackle: with hands on and THEIR carrier's ball in winning range,
+    // the lunge throws itself — you defend by arriving, not by hotkey
+    const poss = match.teamBrains[0].possessorIdx;
+    if (humanIdle < 2.5 && poss !== null && world.players[poss].id.team === 1 &&
+        world.players[cursor.idx].tackleCooldown <= 0 &&
+        dist(world.players[cursor.idx].pos, world.ball.pos) < 1.3) {
+      input.tackle = true;
+    }
+
+    // YOUR body is always yours — an empty input means he holds, not plays on
+    const overrides: Record<number, PlayerInput> = { [cursor.idx]: input };
+    if (keeperAiming) overrides[gkIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+    advanceMatch(match, dt, overrides);
+    cursor.update(world, match.teamBrains[0], dt);
+
+    // A catch or goal kick for OUR keeper opens the distribution sight —
+    // if someone's actually playing
+    for (const e of world.events) {
+      const caught = e.kind === 'save' && world.lastTouch?.team === 0 && world.lastTouch.idx === gkIdx;
+      const goalKick = e.kind === 'restart' && e.team === 0 && e.taker === gkIdx;
+      if ((caught || goalKick) && humanIdle < 2.5) {
+        keeperAiming = true;
+        world.holdLock = true;
+      }
+      if (e.kind === 'fulltime') fulltimeDelay = 1.5;
+    }
+    if (keeperAiming) {
+      const gk = world.players[gkIdx];
+      if (humanIdle >= 6 || world.restartLock <= 0) {
+        launchKeeper(vec(clamp(gk.pos.x + 38, 8, 97), world.ball.pos.y < 34 ? 22 : 46), 'punt', 5);
+      } else {
+        const throwR = 24 + 14 * gk.stats.power;
+        const puntR = clamp(60 + 34 * gk.stats.power, 60, 88);
+        const m = scene.screenToWorld(mouse.x, mouse.y);
+        const toM = vec(m.x - gk.pos.x, m.y - gk.pos.y);
+        const dRaw = Math.hypot(toM.x, toM.y);
+        const d = Math.min(dRaw, puntR);
+        const target = dRaw > 1e-4
+          ? vec(gk.pos.x + (toM.x / dRaw) * d, gk.pos.y + (toM.y / dRaw) * d)
+          : vec(gk.pos.x + 10, gk.pos.y);
+        const kind: 'throw' | 'punt' = d <= throwR ? 'throw' : 'punt';
+        const scatter = kind === 'throw'
+          ? (0.8 + d * 0.045) * (1.35 - gk.stats.control * 0.7)
+          : (2.2 + d * 0.075) * (1.45 - gk.stats.control * 0.7);
+        const pCenter = Math.pow(0.5, 1 / (0.5 + 0.6 * gk.stats.control));
+        scene.setKeeperAim({ gk: gk.pos, target, throwR, puntR, scatter, kind, pCenter });
+        if (mouse.clicked) launchKeeper(target, kind, scatter);
+      }
+    }
+    mouse.clicked = false;
+
+    // While you wind up a kick, the open men light up — the same
+    // interception model the brains trust, working for your eyes
+    hintClock += dt;
+    if (input.kickCharging && match.teamBrains[0].possessorIdx === cursor.idx) {
+      if (hintClock > 0.1) {
+        hintClock = 0;
+        passHints = openTeammates(world, cursor.idx);
+      }
+    } else passHints = [];
+    scene.setPassHints(passHints);
+
+    // The drag sight: an arrow off your boot, growing longer and thicker
+    // as you pull back — the meter IS the arrow. Lose the ball, lose the sling.
+    if (drag.active && !ballIsMine()) drag.active = false;
+    if (drag.active) {
+      const pull = resolveDrag();
+      scene.setKickDrag(pull ? { from: world.players[cursor.idx].pos, dir: pull.dir, power: pull.power } : null);
+    } else {
+      scene.setKickDrag(null);
+    }
+
+    scene.setControlled(cursor.idx);
+    scene.setSwitchTarget(cursor.suggested);
+    scene.setBallGlow(ballIsMine());
+    scene.setClock(match.halfLength > 0 ? `${match.half === 1 ? '1ST' : '2ND'} ${fmtClock(match.clock)}` : '');
+    scene.handleEvents(world.events);
+
+    if (fulltimeDelay > 0 && match.finished) {
+      fulltimeDelay -= dt;
+      if (fulltimeDelay <= 0) {
+        screenName = 'fulltime';
+        statsScreen.begin(match);
+        show(statsScreen);
+      }
+    }
+  }
+
   const loop = new GameLoop(
     1 / 60,
     (dt) => {
-      input = controls.sample(dt, kb, world.players[cursor.idx].facing);
-      // A released mouse drag IS a kick — both hands work the same body
-      if (mouseKick) {
-        input.kickReleased = { power: mouseKick.power, aimOffset: 0, aimAt: mouseKick.aimAt };
-        mouseKick = null;
-      }
-      const active = input.move.x !== 0 || input.move.y !== 0 ||
-        input.sprint || input.kickCharging || !!input.kickReleased || !!input.tackle || mouse.moved;
-      mouse.moved = false;
-      humanIdle = active ? 0 : humanIdle + dt;
-
-      // Auto-tackle: with hands on and THEIR carrier's ball in winning range,
-      // the lunge throws itself — you defend by arriving, not by hotkey
-      const poss = match.teamBrains[0].possessorIdx;
-      if (humanIdle < 2.5 && poss !== null && world.players[poss].id.team === 1 &&
-          world.players[cursor.idx].tackleCooldown <= 0 &&
-          dist(world.players[cursor.idx].pos, world.ball.pos) < 1.3) {
-        input.tackle = true;
-      }
-
-      // YOUR body is always yours — an empty input means he holds, not plays on
-      const overrides: Record<number, PlayerInput> = { [cursor.idx]: input };
-      if (keeperAiming) overrides[gkIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
-      advanceMatch(match, dt, overrides);
-      cursor.update(world, match.teamBrains[0], dt);
-
-      // A catch or goal kick for OUR keeper opens the distribution sight —
-      // if someone's actually playing
-      for (const e of world.events) {
-        const caught = e.kind === 'save' && world.lastTouch?.team === 0 && world.lastTouch.idx === gkIdx;
-        const goalKick = e.kind === 'restart' && e.team === 0 && e.taker === gkIdx;
-        if ((caught || goalKick) && humanIdle < 2.5) {
-          keeperAiming = true;
-          world.holdLock = true;
-        }
-      }
-      if (keeperAiming) {
-        const gk = world.players[gkIdx];
-        if (humanIdle >= 6 || world.restartLock <= 0) {
-          // Stalled out or walked away: he hoofs it upfield himself
-          launchKeeper(vec(clamp(gk.pos.x + 38, 8, 97), world.ball.pos.y < 34 ? 22 : 46), 'punt', 5);
-        } else {
-          const throwR = 24 + 14 * gk.stats.power;
-          const puntR = clamp(60 + 34 * gk.stats.power, 60, 88);
-          const m = scene.screenToWorld(mouse.x, mouse.y);
-          const toM = vec(m.x - gk.pos.x, m.y - gk.pos.y);
-          const dRaw = Math.hypot(toM.x, toM.y);
-          const d = Math.min(dRaw, puntR);
-          const target = dRaw > 1e-4
-            ? vec(gk.pos.x + (toM.x / dRaw) * d, gk.pos.y + (toM.y / dRaw) * d)
-            : vec(gk.pos.x + 10, gk.pos.y);
-          const kind: 'throw' | 'punt' = d <= throwR ? 'throw' : 'punt';
-          const scatter = kind === 'throw'
-            ? (0.8 + d * 0.045) * (1.35 - gk.stats.control * 0.7)
-            : (2.2 + d * 0.075) * (1.45 - gk.stats.control * 0.7);
-          const pCenter = Math.pow(0.5, 1 / (0.5 + 0.6 * gk.stats.control));
-          scene.setKeeperAim({ gk: gk.pos, target, throwR, puntR, scatter, kind, pCenter });
-          if (mouse.clicked) launchKeeper(target, kind, scatter);
-        }
-      }
-      mouse.clicked = false;
-
-      // While you wind up a kick, the open men light up — the same
-      // interception model the brains trust, working for your eyes
-      hintClock += dt;
-      if (input.kickCharging && match.teamBrains[0].possessorIdx === cursor.idx) {
-        if (hintClock > 0.1) {
-          hintClock = 0;
-          passHints = openTeammates(world, cursor.idx);
-        }
-      } else passHints = [];
-      scene.setPassHints(passHints);
-
-      // The drag sight: an arrow off your boot, growing longer and thicker
-      // as you pull back — the meter IS the arrow. Lose the ball, lose the sling.
-      if (drag.active && !ballIsMine()) drag.active = false;
-      if (drag.active) {
-        const pull = resolveDrag();
-        scene.setKickDrag(pull ? { from: world.players[cursor.idx].pos, dir: pull.dir, power: pull.power } : null);
-      } else {
-        scene.setKickDrag(null);
-      }
-
-      scene.setControlled(cursor.idx);
-      scene.setSwitchTarget(cursor.suggested);
-      scene.setBallGlow(ballIsMine());
-      scene.handleEvents(world.events);
+      if (screenName === 'match' && match && !paused && (!match.finished || fulltimeDelay > 0)) tickMatch(dt);
+      if (screenName === 'draft') draftScreen.update(dt);
     },
-    (alpha, renderDt) => scene.render(alpha, renderDt, { charge: controls.charge, move: input.move, dir: controls.aimDir }),
+    (alpha, renderDt) => {
+      scene?.render(alpha, renderDt, { charge: controls.charge, move: input.move, dir: controls.aimDir });
+    },
   );
 
-  const scene = new Scene(app, assets, world, loop);
-  world.players.forEach((p) => scene.addPlayer(p.id.team === 0 ? 'home' : 'away'));
-  scene.setControlled(cursor.idx);
-  scene.setVariant(MOODS[0]);
-
-  MOODS.forEach((mood, i) => kb.onPress(`Digit${i + 1}`, () => scene.setVariant(mood)));
-
+  app.stage.addChild(uiRoot);
+  toMenu();
   loop.start();
 
   if (import.meta.env.DEV) {
     (window as unknown as { __game: object }).__game = {
-      world, scene, match,
-      get hero() { return world.players[cursor.idx]; },
-      get controlledIdx() { return cursor.idx; },
-      get suggested() { return cursor.suggested; },
+      get match() { return match; },
+      get world() { return match?.world; },
+      get scene() { return scene; },
+      get screen() { return screenName; },
+      get hero() { return match && cursor ? match.world.players[cursor.idx] : null; },
+      get controlledIdx() { return cursor?.idx ?? -1; },
+      get suggested() { return cursor?.suggested ?? -1; },
       get passHints() { return passHints; },
       get keeperAiming() { return keeperAiming; },
-      cursor,
+      get cursor() { return cursor; },
+      menu, draftScreen, formationScreen,
     };
   }
 }
