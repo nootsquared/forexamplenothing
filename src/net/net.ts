@@ -117,16 +117,44 @@ export class NetSession {
   role: 'host' | 'guest' | null = null;
   code = '';
   seat = -1; // my seat id as a guest
+  rtt = 0;   // smoothed ms to the relay — the connection meter
   onMessage: Handler = () => {};
   onClosed: () => void = () => {};
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private pingSentAt = 0;
+  private wakeRelease: (() => void) | null = null;
 
-  private open(onReady: () => void) {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    this.ws = new WebSocket(`${proto}://${location.host}/mp`);
-    this.ws.onopen = onReady;
+  // Who you are rides the URL — the relay must route the room before the
+  // first message. Same-origin by default (the game and relay ship
+  // together); VITE_RELAY_URL points a split deployment at its relay.
+  private open(params: string) {
+    const override = import.meta.env.VITE_RELAY_URL as string | undefined;
+    const root = override
+      ? override.replace(/\/+$/, '')
+      : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+    // A held web lock keeps Chrome from freezing a backgrounded party tab —
+    // an online HOST is the match itself and must never be put to sleep
+    navigator.locks?.request('golazo-party', () => new Promise<void>((release) => {
+      this.wakeRelease = release;
+    })).catch(() => { /* no locks API, no lock */ });
+    this.ws = new WebSocket(`${root}/mp?${params}`);
+    this.ws.onopen = () => {
+      // the RTT meter: a 2s heartbeat the relay echoes from wherever it lives
+      this.pingTimer = setInterval(() => {
+        if (this.ws?.readyState === 1) {
+          this.pingSentAt = performance.now();
+          this.ws.send('{"t":"ping"}');
+        }
+      }, 2000);
+    };
     this.ws.onmessage = (e) => {
       try {
         const m = JSON.parse(String(e.data));
+        if (m.t === 'pong') {
+          const ms = performance.now() - this.pingSentAt;
+          this.rtt = this.rtt > 0 ? this.rtt * 0.7 + ms * 0.3 : ms;
+          return;
+        }
         // record identity FIRST — handlers read code/seat the moment they fire
         if (m.t === 'hosted') this.code = m.code;
         if (m.t === 'joined') this.seat = m.seat;
@@ -135,17 +163,21 @@ export class NetSession {
         else this.onMessage(m);
       } catch { /* garbage on the wire is nobody's problem */ }
     };
-    this.ws.onclose = () => this.onClosed();
+    this.ws.onclose = () => {
+      if (this.pingTimer) clearInterval(this.pingTimer);
+      this.pingTimer = null;
+      this.onClosed();
+    };
   }
 
   host() {
     this.role = 'host';
-    this.open(() => this.raw({ t: 'host' }));
+    this.open('role=host');
   }
 
   join(code: string, name: string) {
     this.role = 'guest';
-    this.open(() => this.raw({ t: 'join', code, name }));
+    this.open(`role=guest&code=${encodeURIComponent(code.trim().toUpperCase())}&name=${encodeURIComponent(name)}`);
   }
 
   // host → one guest / all guests
@@ -167,6 +199,10 @@ export class NetSession {
   }
 
   close() {
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    this.pingTimer = null;
+    this.wakeRelease?.();
+    this.wakeRelease = null;
     this.ws?.close();
     this.ws = null;
     this.role = null;

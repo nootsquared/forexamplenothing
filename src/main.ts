@@ -11,11 +11,12 @@ import { quickSplit, toSquad } from './data/draft';
 import { SquadPlayer } from './data/roster';
 import { Keyboard } from './input/keyboard';
 import { LocalControls } from './input/controls';
+import { pads } from './input/gamepad';
 import { TeamCursor } from './input/cursor';
 import { audio } from './audio/engine';
 import { MatchAudio } from './audio/matchAudio';
 import { loadAssets } from './render/assets';
-import { setProjection } from './render/projection';
+import { setProjection, squash } from './render/projection';
 import { Scene } from './render/scene';
 import { MOODS } from './render/variants';
 import { Screen, MenuScreen, SetupScreen, PauseScreen, StatsScreen, MatchSetup, fmtClock } from './ui/screens';
@@ -47,7 +48,7 @@ async function boot() {
   setProjection(assets.manifest.pxPerMeter, assets.manifest.iso);
 
   const kb = new Keyboard();
-  let controls = new LocalControls();
+  let controls = new LocalControls(squash());
 
   // ---- shell state -------------------------------------------------------
   type ScreenName = 'menu' | 'draft' | 'match' | 'fulltime';
@@ -82,6 +83,7 @@ async function boot() {
   let pendingNetEvents: SimEvent[] = [];
   let guestSwitch = false;                           // E queued for the next packet
   let guestEndT = 0;                                 // full-time beat before the lobby
+  let guestStaleT = 0;                               // cadence for the waiting-for-host toast
   let guestSeatNames: Record<number, string> = {};
   let lastStartConfig: NetStartConfig | null = null; // late joiners get the stage too
   let myName = ''; // asked fresh every time — his call, no stored defaults
@@ -200,7 +202,15 @@ async function boot() {
     net = new NetSession();
     netRole = 'guest';
     net.onMessage = (m) => {
-      if (m.t === 'no-room') { onlineScreen.begin('code', myName); return; }
+      if (m.t === 'no-room') {
+        // a typo'd code stays a typo, not an ejection — quietly drop the dead
+        // socket and hand the code pad back
+        if (net) { net.onClosed = () => {}; net.close(); }
+        net = null;
+        netRole = null;
+        onlineScreen.begin('code', myName);
+        return;
+      }
       if (m.t === 'room-closed') return leaveOnline();
       // the lobby snap is ALWAYS kept fresh — a full-time return must never
       // render a stale phase (the "captains are building" ghost)
@@ -398,6 +408,21 @@ async function boot() {
     return dist(match.world.players[cursor.idx].pos, match.world.ball.pos) < 3.5;
   };
 
+  // The stick's sling and the mouse's sling land in the same place: a
+  // field-point kick released this frame, aimed FROM THE BALL. Any release
+  // also kicks the pad's motors, scaled to the ball it just hit.
+  const applyFlick = (into: PlayerInput, world: World) => {
+    const flick = controls.takeFlick();
+    if (flick && !into.kickReleased) {
+      into.kickReleased = {
+        power: flick.power,
+        aimOffset: 0,
+        aimAt: vec(world.ball.pos.x + flick.dir.x * 30, world.ball.pos.y + flick.dir.y * 30),
+      };
+    }
+    if (into.kickReleased) pads.rumble(0.2 + into.kickReleased.power * 0.45, 90);
+  };
+
   // The host presses START: his claimed side becomes SIM TEAM 0 (every local
   // aid — keeper sight, penalty bins, drag pass — keeps working unchanged),
   // nations dress the teams, seated friends become cursors, and the whole
@@ -560,15 +585,20 @@ async function boot() {
     scene = new Scene(app, assets, match.world, loop);
     if (import.meta.env.DEV) {
       (window as unknown as { __match?: Match; __net?: object }).__match = match;
-      (window as unknown as { __net?: object }).__net = { get myIdx() { return snapPlayer?.latest?.cursors[net?.seat ?? -1] ?? -1; } };
+      (window as unknown as { __net?: object }).__net = {
+        get myIdx() { return snapPlayer?.latest?.cursors[net?.seat ?? -1] ?? -1; },
+        get suggest() { return snapPlayer?.latest?.suggest?.[net?.seat ?? -1] ?? -1; },
+        get rtt() { return net?.rtt ?? 0; },
+      };
     }
     match.world.players.forEach((p, i) => scene!.addPlayer(p.id.team === 0 ? config.kits[0] : config.kits[1], match!.names[i], p.id.number));
     scene.setVariant(MOODS[menu.moodIdx]);
+    scene.setPadHints(pads.connected);
     scene.toast(`${config.teamNames[0]} V ${config.teamNames[1]}`);
     snapPlayer = new SnapPlayer();
     guestSeatNames = config.seatNames;
     guestEndT = 0;
-    controls = new LocalControls();
+    controls = new LocalControls(squash());
     cursor = new TeamCursor(config.seatTeams[net?.seat ?? -1] ?? 0, match.world);
     gkIdx = -1;
     keeperAiming = false;
@@ -599,11 +629,19 @@ async function boot() {
       input.kickReleased = { power: mouseKick.power, aimOffset: 0, aimAt: mouseKick.aimAt };
       mouseKick = null;
     }
+    applyFlick(input, match.world);
     net.send({ t: 'input', input: packInput(input, guestSwitch) });
     guestSwitch = false;
     snapPlayer.apply(match.world, dt);
     const evs = snapPlayer.drainEvents();
     if (evs.length) scene.handleEvents(evs);
+    for (const e of evs) if (e.kind === 'goal') pads.rumble(1, 350);
+    // a silent host tab reads as a broken game — say what's actually wrong
+    guestStaleT -= dt;
+    if (snapPlayer.lastAt > 0 && performance.now() - snapPlayer.lastAt > 2500 && guestStaleT <= 0) {
+      scene.toast('WAITING FOR HOST...');
+      guestStaleT = 4;
+    }
     matchAudio.tick(match, Math.max(0, myIdx), dt, evs);
     const snap = snapPlayer.latest;
     if (snap) {
@@ -620,11 +658,14 @@ async function boot() {
       scene.setSeatTags(tags);
       scene.setClock(`${snap.half === 1 ? '1ST' : '2ND'} ${fmtClock(snap.clock)}`);
     }
+    scene.setPing(net.rtt > 0 ? net.rtt : null);
     // the sling arrow rides the same code the host uses
     if (drag.active && !ballIsMine()) drag.active = false;
     if (drag.active) {
       const pull = resolveDrag();
       scene.setKickDrag(pull && myIdx >= 0 ? { from: match.world.players[myIdx].pos, dir: pull.dir, power: pull.power } : null);
+    } else if (controls.flickAim && myIdx >= 0 && ballIsMine()) {
+      scene.setKickDrag({ from: match.world.players[myIdx].pos, dir: controls.flickAim.dir, power: controls.flickAim.power });
     } else scene.setKickDrag(null);
     mouse.clicked = false;
   }
@@ -646,6 +687,7 @@ async function boot() {
     const kits = opts?.kits ?? ['home', 'away'];
     match.world.players.forEach((p, i) => scene!.addPlayer(p.id.team === 0 ? kits[0] : kits[1], match!.names[i], p.id.number));
     scene.setVariant(MOODS[menu.moodIdx]);
+    scene.setPadHints(pads.connected);
     scene.toast(toss === 0 ? 'RED WINS THE TOSS' : 'BLUE WINS THE TOSS');
     cursor = new TeamCursor(0, match.world);
     cursor.autoMode = menu.autoSwitch;
@@ -653,7 +695,7 @@ async function boot() {
     if (toss === 0 && match.world.lastTouch) cursor.assign(match.world.lastTouch.idx);
     gkIdx = match.world.players.findIndex((p) => p.id.team === 0 && p.id.role === 'GK');
     scene.setControlled(cursor.idx);
-    controls = new LocalControls();
+    controls = new LocalControls(squash());
     humanIdle = Infinity;
     keeperAiming = false;
     penAim = null;
@@ -695,10 +737,11 @@ async function boot() {
     }
     return false;
   };
+  const routeKey = (code: string) => { if (!penaltyKey(code)) activeScreen?.key(code); };
   const uiKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyF', 'KeyX'];
-  for (const code of uiKeys) kb.onPress(code, () => { if (!penaltyKey(code)) activeScreen?.key(code); });
+  for (const code of uiKeys) kb.onPress(code, () => routeKey(code));
   kb.onPress('Space', () => activeScreen?.key('Space'));
-  kb.onPress('Escape', () => {
+  const pressEscape = () => {
     if (activeScreen === onlineScreen) return leaveOnline(); // walk out of the party
     if (screenName === 'match' && netRole === 'guest') return leaveOnline(); // a guest can always leave
     if (screenName === 'menu') return activeScreen?.key('Escape'); // menu pages or match setup
@@ -717,17 +760,41 @@ async function boot() {
       show(pauseScreen);
     }
     audio.ui('card');
-  });
-  kb.onPress('KeyE', () => {
+  };
+  kb.onPress('Escape', pressEscape);
+  const pressSwitch = () => {
     if (screenName !== 'match' || paused) return;
     if (netRole === 'guest') { guestSwitch = true; return; } // rides the next packet
     cursor?.manualSwitch();
-  });
-  kb.onPress('KeyT', () => {
+  };
+  kb.onPress('KeyE', pressSwitch);
+  const toggleAutoSwitch = () => {
     if (screenName !== 'match' || paused || !cursor || !scene) return;
     cursor.autoMode = !cursor.autoMode;
     scene.toast(cursor.autoMode ? 'AUTO SWITCH ON' : 'AUTO SWITCH OFF');
-  });
+  };
+  kb.onPress('KeyT', toggleAutoSwitch);
+
+  // ---- the pad speaks every language: sticks in play, dpad in menus ------
+  pads.onConnect = () => {
+    audio.ui('move');
+    scene?.toast('PAD ON - RIGHT STICK SLINGS THE PASS');
+    scene?.setPadHints(true);
+  };
+  pads.onDisconnect = () => scene?.setPadHints(false);
+  const tickPad = (dt: number) => {
+    pads.poll(dt);
+    if (!pads.connected) return;
+    if (activeScreen || penAim) for (const code of pads.navCodes()) routeKey(code);
+    if (pads.pressed('a')) routeKey('Enter');
+    if (pads.pressed('start')) pressEscape();
+    if (pads.pressed('b') && activeScreen) pressEscape(); // B backs out of menus; in play it tackles
+    if (pads.pressed('lb') || pads.pressed('x')) pressSwitch();
+    if (pads.pressed('y')) {
+      toggleAutoSwitch();                  // in play: hand-me-the-hunter mode
+      if (activeScreen) routeKey('KeyF');  // in the lobby: READY UP
+    }
+  };
   MOODS.forEach((mood, i) => kb.onPress(`Digit${i + 1}`, () => {
     if (screenName !== 'match') return;
     scene?.setVariant(mood);
@@ -800,6 +867,7 @@ async function boot() {
       input.kickReleased = { power: mouseKick.power, aimOffset: 0, aimAt: mouseKick.aimAt };
       mouseKick = null;
     }
+    applyFlick(input, world);
     const active = input.move.x !== 0 || input.move.y !== 0 ||
       input.sprint || input.kickCharging || !!input.kickReleased || !!input.tackle || mouse.moved;
     mouse.moved = false;
@@ -841,6 +909,15 @@ async function boot() {
           s.pendingKick = null;
         } else if (seatIn.kickReleased) {
           seatIn.kickReleased = null; // stale kp in a repeated packet never double-fires
+        }
+        // the same auto-tackle the host enjoys: a hands-on guest near an
+        // opponent's carried ball lunges without the button
+        const seatBody = world.players[sc.cursor.idx];
+        const seatPoss = match.teamBrains[sc.team].possessorIdx;
+        if (!seatIn.tackle && seatPoss !== null && world.players[seatPoss].id.team !== sc.team &&
+            performance.now() - s.activeAt < 2500 && seatBody.tackleCooldown <= 0 &&
+            dist(seatBody.pos, world.ball.pos) < 1.3) {
+          seatIn.tackle = true;
         }
         overrides[sc.cursor.idx] = seatIn;
       }
@@ -929,6 +1006,7 @@ async function boot() {
         if (netRole === 'host' && party) party.broadcast({ t: 'end', score: [world.score.left, world.score.right] });
       }
       if (e.kind === 'half') halfCountdown = 4.3; // HALF TIME banner first, then 3-2-1
+      if (e.kind === 'goal') pads.rumble(1, 350);
       if (e.kind === 'goal' && e.scorer >= 0) scene.toast(`${match.names[e.scorer]}!`);
     }
 
@@ -1058,6 +1136,9 @@ async function boot() {
     if (drag.active) {
       const pull = resolveDrag();
       scene.setKickDrag(pull ? { from: world.players[cursor.idx].pos, dir: pull.dir, power: pull.power } : null);
+    } else if (controls.flickAim && ballIsMine()) {
+      // the pad's wind-up wears the same arrow the mouse sling does
+      scene.setKickDrag({ from: world.players[cursor.idx].pos, dir: controls.flickAim.dir, power: controls.flickAim.power });
     } else {
       scene.setKickDrag(null);
     }
@@ -1065,6 +1146,7 @@ async function boot() {
     scene.setControlled(cursor.idx);
     scene.setSwitchTarget(cursor.suggested);
     scene.setBallGlow(ballIsMine());
+    scene.setPing(netRole && net && net.rtt > 0 ? net.rtt : null);
     // stoppage time wears a plus — the referee is letting the move breathe
     const et = match.halfLength > 0 && match.clock > match.halfLength ? '+' : '';
     scene.setClock(match.halfLength > 0 ? `${match.half === 1 ? '1ST' : '2ND'} ${fmtClock(match.clock)}${et}` : '');
@@ -1085,6 +1167,7 @@ async function boot() {
   const loop = new GameLoop(
     1 / 60,
     (dt) => {
+      tickPad(dt); // pads are read first so every consumer shares one poll
       if (screenName === 'match' && match && !paused) {
         if (netRole === 'guest') tickMatchGuest(dt);
         else if (!match.finished || fulltimeDelay > 0) tickMatch(dt);

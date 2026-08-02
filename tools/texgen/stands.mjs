@@ -5,68 +5,229 @@ import { stampText, textWidth } from './font.mjs';
 // dugouts, corner flags, and drifting cloud shadows.
 
 export const STAND_H = 96;
-export const STAND_FRAMES = 2; // the crowd breathes: fans bob between frames
-const CROWD = ['#cf5f56', '#d1a94e', '#5b98cf', '#74bd5f', '#d8d2c4', '#9c72c2', '#d9d9d9', '#cf824e'];
-const EMPTY_SEAT = '#2a3750';
+export const STAND_IDLE_FRAMES = 4; // a rolling murmur: bobs and sways drift down the terraces
+export const STAND_HYPE_FRAMES = 4; // goal frenzy: jumps, thrown arms, scarves and flags overhead
+export const STAND_FRAMES = STAND_IDLE_FRAMES + STAND_HYPE_FRAMES;
 
-// Two stacked frames of the same stand — identical seats and fans, but on
-// frame two half the crowd rises a pixel. Cycled slow at rest, fast on goals.
+const STAND_W = 256;
+const ROWS = 7;
+const ROW_H = 10;
+const ROOF_H = 10;
+const SKIN = ['#e8b98a', '#d3a476', '#b1885e', '#8a6a4c', '#6f4f33'];
+const HAIR = ['#191411', '#191411', '#3d2817', '#6e4a26', '#c9a45a', '#8d8d90', null]; // null = bald
+const SCARF = ['#e0c04a', '#cf5f56', '#5b98cf', '#d8d2c4'];
+// Supporter blocks: each 32px section of the tile leans a palette, so the
+// crowd reads as ends and pockets instead of confetti static
+const SECTIONS = [
+  ['#cf5f56', '#c44a3f', '#d8d2c4', '#a33d33'],                       // home end reds
+  ['#cf5f56', '#d1a94e', '#5b98cf', '#74bd5f', '#d8d2c4', '#9c72c2'], // neutrals
+  ['#5b98cf', '#3f6fb5', '#d8d2c4', '#2f5691'],                       // away pocket blues
+  ['#d8b13a', '#d1a94e', '#cf824e', '#d8d2c4'],                       // gold ultras
+  ['#cf5f56', '#d8d2c4', '#a33d33', '#c44a3f'],
+  ['#74bd5f', '#d1a94e', '#5b98cf', '#d9d9d9', '#cf5f56'],
+  ['#3f6fb5', '#5b98cf', '#d8d2c4', '#9c72c2'],
+  ['#cf5f56', '#c44a3f', '#d1a94e', '#d8d2c4'],
+];
+const AISLES = [{ x0: 62, x1: 67 }, { x0: 190, x1: 195 }]; // stair gaps splitting the terraces
+// Bob cycles indexed by per-fan phase: idle murmurs, hype leaps
+const IDLE_CALM = [0, 0, -1, -1];
+const IDLE_KEEN = [0, -1, -2, -1];
+const HYPE_JUMP = [0, -2, -4, -2];
+const SWAY = [0, 1, 0, -1];
+
+// Every fan rolled ONCE, then drawn identically on all eight frames — only
+// the pose moves, never the person
+function buildFans() {
+  const rng = mulberry32(2024);
+  const fans = [];
+  for (let r = 0; r < ROWS; r++) {
+    const y = ROOF_H + r * ROW_H;
+    for (let x = 1; x < STAND_W - 3; x += 4) {
+      if (AISLES.some((a) => x + 2 >= a.x0 && x <= a.x1)) {
+        // aisle edges get the odd hi-vis steward, standing sideways to the game
+        if (rng() < 0.1) fans.push({ x, y: y + 3, r, shirt: '#e3d43c', skin: SKIN[1], hair: '#191411', bodyH: 4, phase: 0, keen: false, sway: 0, prop: 'steward' });
+        continue;
+      }
+      if (rng() >= 0.9) continue; // an empty seat
+      const section = SECTIONS[Math.floor(x / 32) % SECTIONS.length];
+      const shirt = rng() < 0.62
+        ? section[Math.floor(rng() * section.length)]
+        : SECTIONS[1][Math.floor(rng() * SECTIONS[1].length)];
+      const propRoll = rng();
+      fans.push({
+        x: x + (rng() < 0.5 ? 0 : 1),
+        // the back row sits two px lower so risen hair never clips the roof
+        y: y + 2 + Math.floor(rng() * 2) + (r === 0 ? 2 : 0),
+        r,
+        shirt,
+        skin: SKIN[Math.floor(rng() * SKIN.length)],
+        hair: HAIR[Math.floor(rng() * HAIR.length)],
+        bodyH: 3 + Math.floor(rng() * 2),
+        // the wave phase rides x with a little jitter, so bobs travel down
+        // the stand instead of popping at random
+        phase: (Math.floor(x / 13) + (rng() < 0.3 ? 1 : 0)) % 4,
+        jumpPhase: (Math.floor(x / 32) + (rng() < 0.25 ? 1 : 0)) % 4,
+        keen: rng() < 0.35,
+        sway: rng() < 0.25 ? (rng() < 0.5 ? 1 : -1) : 0,
+        prop: propRoll < 0.07 ? 'scarf' : propRoll < 0.09 ? 'flag' : null,
+        propColor: SCARF[Math.floor(rng() * SCARF.length)],
+      });
+    }
+  }
+  return fans;
+}
+
+// Eight stacked frames of one stand: 4 idle bobs, then 4 hype leaps.
+// Cycled slow at rest, fast and loud on goals.
 export function generateStand() {
-  const w = 256;
-  const { canvas, ctx } = makeCanvas(w, STAND_H * STAND_FRAMES);
-  for (let f = 0; f < STAND_FRAMES; f++) drawStandFrame(ctx, w, f * STAND_H, f);
+  const fans = buildFans();
+  const { canvas, ctx } = makeCanvas(STAND_W, STAND_H * STAND_FRAMES);
+  for (let f = 0; f < STAND_IDLE_FRAMES; f++) drawStandFrame(ctx, f * STAND_H, fans, f, false);
+  for (let f = 0; f < STAND_HYPE_FRAMES; f++) drawStandFrame(ctx, (STAND_IDLE_FRAMES + f) * STAND_H, fans, f, true);
   return canvas;
 }
 
-function drawStandFrame(ctx, w, oy, frame) {
-  const rng = mulberry32(2024); // same seed both frames: same fans, same shirts
+// Rows are lit like a real bowl: dim under the roof at the back, brightening
+// toward the pitch
+const rowLight = (r) => 0.78 + (r / (ROWS - 1)) * 0.28;
 
-  // Roof deck at the top
+function drawStandFrame(ctx, oy, fans, step, hype) {
+  // Roof deck: lit lip, ribbed underside, dark drip edge
   ctx.fillStyle = '#161d2e';
-  ctx.fillRect(0, oy, w, 10);
+  ctx.fillRect(0, oy, STAND_W, ROOF_H);
   ctx.fillStyle = '#6b7a9b';
-  ctx.fillRect(0, oy, w, 1);
+  ctx.fillRect(0, oy, STAND_W, 1);
+  ctx.fillStyle = '#202a42';
+  for (let x = 4; x < STAND_W; x += 16) ctx.fillRect(x, oy + 2, 1, 6);
   ctx.fillStyle = '#0e1320';
-  ctx.fillRect(0, oy + 9, w, 1);
+  ctx.fillRect(0, oy + ROOF_H - 1, STAND_W, 1);
 
-  // Seven crowd terraces stepping down toward the pitch
-  const rows = 7;
-  const rowH = 10;
-  let fan = 0;
-  for (let r = 0; r < rows; r++) {
-    const y = oy + 10 + r * rowH;
-    ctx.fillStyle = r % 2 === 0 ? '#243050' : '#202a46';
-    ctx.fillRect(0, y, w, rowH);
+  // Terraces stepping down toward the pitch, each with a lit tread edge
+  for (let r = 0; r < ROWS; r++) {
+    const y = oy + ROOF_H + r * ROW_H;
+    const f = rowLight(r);
+    ctx.fillStyle = shade(r % 2 === 0 ? '#243050' : '#202a46', f);
+    ctx.fillRect(0, y, STAND_W, ROW_H);
+    ctx.fillStyle = shade('#3a4a74', f);
+    ctx.fillRect(0, y, STAND_W, 1); // tread edge catching the sun
     ctx.fillStyle = '#151d33';
-    ctx.fillRect(0, y + rowH - 1, w, 1); // step shadow
-    for (let x = 0; x < w; x += 3) {
-      if (rng() < 0.82) {
-        const c = rng() < 0.12 ? EMPTY_SEAT : CROWD[Math.floor(rng() * CROWD.length)];
-        const px = x + (rng() < 0.5 ? 0 : 1);
-        const bob = frame === 1 && c !== EMPTY_SEAT && fan++ % 2 === 0 ? -1 : 0;
-        const py = y + 2 + Math.floor(rng() * 3) + bob;
-        ctx.fillStyle = c;
-        ctx.fillRect(px, py, 2, 3);                        // body
-        ctx.fillStyle = rng() < 0.5 ? '#caa27e' : '#8a6a4c';
-        ctx.fillRect(px, py - 1, 2, 1);                    // head
-      }
+    ctx.fillRect(0, y + ROW_H - 1, STAND_W, 1); // step riser shadow
+  }
+
+  // Stair aisles cut through the terraces
+  for (const a of AISLES) {
+    for (let r = 0; r < ROWS; r++) {
+      const y = oy + ROOF_H + r * ROW_H;
+      const f = rowLight(r);
+      ctx.fillStyle = shade('#31406a', f);
+      ctx.fillRect(a.x0, y, a.x1 - a.x0 + 1, ROW_H);
+      ctx.fillStyle = shade('#4a5c8c', f);
+      ctx.fillRect(a.x0, y + 4, a.x1 - a.x0 + 1, 1); // half-step tread
+      ctx.fillStyle = '#141b2f';
+      ctx.fillRect(a.x0, y + ROW_H - 1, a.x1 - a.x0 + 1, 1);
+      ctx.fillRect(a.x0 - 1, y, 1, ROW_H); // handrail shadow lines
+      ctx.fillRect(a.x1 + 1, y, 1, ROW_H);
     }
   }
 
-  // Front fascia wall with rail
-  const fasciaY = oy + 10 + rows * rowH;
+  // The crowd, back row first so front bodies overlap cleanly
+  for (const fan of fans) drawFan(ctx, oy, fan, step, hype);
+
+  // The roof throws its shade over the back rows — over the fans too
+  for (const [dy, a] of [[0, 0.3], [3, 0.2], [6, 0.1]]) {
+    ctx.fillStyle = `rgba(8, 10, 20, ${a})`;
+    ctx.fillRect(0, oy + ROOF_H + dy, STAND_W, 3);
+  }
+
+  // Front fascia wall: lit rail, panel seams, hanging supporter banners
+  const fasciaY = oy + ROOF_H + ROWS * ROW_H;
+  const fasciaH = oy + STAND_H - fasciaY;
   ctx.fillStyle = '#38466b';
-  ctx.fillRect(0, fasciaY, w, oy + STAND_H - fasciaY);
+  ctx.fillRect(0, fasciaY, STAND_W, fasciaH);
   ctx.fillStyle = '#8fa0c5';
-  ctx.fillRect(0, fasciaY, w, 1);
+  ctx.fillRect(0, fasciaY, STAND_W, 1);
   ctx.fillStyle = '#202a46';
-  for (let x = 16; x < w; x += 32) ctx.fillRect(x, fasciaY + 2, 1, oy + STAND_H - fasciaY - 3);
+  for (let x = 16; x < STAND_W; x += 32) ctx.fillRect(x, fasciaY + 2, 1, fasciaH - 3);
+  for (const [bx, bw, c1, c2] of [[26, 24, '#c44a3f', '#d8d2c4'], [112, 28, '#3f6fb5', '#d8b13a'], [206, 22, '#d8d2c4', '#c44a3f']]) {
+    ctx.fillStyle = c1;
+    ctx.fillRect(bx, fasciaY + 3, bw, 5);
+    ctx.fillStyle = c2;
+    ctx.fillRect(bx, fasciaY + 8, bw, 4);
+    ctx.fillStyle = 'rgba(10, 13, 26, 0.5)';
+    ctx.fillRect(bx, fasciaY + 12, bw, 1); // banner's own shadow on the wall
+  }
   ctx.fillStyle = '#141a28';
-  ctx.fillRect(0, oy + STAND_H - 1, w, 1);
+  ctx.fillRect(0, oy + STAND_H - 1, STAND_W, 1);
 
   // Roof support posts in front of everything
   ctx.fillStyle = '#10151f';
-  for (let x = 20; x < w; x += 72) ctx.fillRect(x, oy, 3, STAND_H);
+  for (let x = 20; x < STAND_W; x += 72) {
+    ctx.fillRect(x, oy, 3, STAND_H);
+    ctx.fillStyle = '#2a3450';
+    ctx.fillRect(x, oy, 1, STAND_H); // lit post edge
+    ctx.fillStyle = '#10151f';
+  }
+}
+
+// One supporter: grounded shadow, sun-shaded body, head with hair, and on
+// hype frames thrown arms with scarves and flags overhead. The shadow stays
+// on the step while the body rises — that gap is what sells the jump.
+function drawFan(ctx, oy, fan, step, hype) {
+  const light = rowLight(fan.r);
+  let dy = 0;
+  let dx = 0;
+  if (fan.prop !== 'steward') {
+    if (hype) {
+      dy = HYPE_JUMP[(step + fan.jumpPhase) % 4];
+      if (fan.r === 0) dy = Math.max(dy, -2); // the back row can't leap into the roof
+    } else {
+      dy = (fan.keen ? IDLE_KEEN : IDLE_CALM)[(step + fan.phase) % 4];
+      dx = fan.sway * SWAY[(step + fan.phase) % 4];
+    }
+  }
+  const x = fan.x + dx;
+  const y = oy + fan.y + dy;
+  const airborne = -dy; // px of daylight under the boots
+
+  // Cast shadow, pinned to the terrace: fainter the higher they rise
+  ctx.fillStyle = `rgba(5, 8, 18, ${0.4 - airborne * 0.06})`;
+  ctx.fillRect(fan.x, oy + fan.y + fan.bodyH, 3, 1);
+
+  // Body: lit left flank, shaded right, darker hem
+  ctx.fillStyle = shade(fan.shirt, light);
+  ctx.fillRect(x, y, 2, fan.bodyH);
+  ctx.fillStyle = shade(fan.shirt, light * 0.72);
+  ctx.fillRect(x + 2, y, 1, fan.bodyH);
+  ctx.fillStyle = shade(fan.shirt, light * 0.85);
+  ctx.fillRect(x, y + fan.bodyH - 1, 2, 1);
+
+  // Head and hair
+  const headY = y - 2;
+  ctx.fillStyle = shade(fan.skin, light);
+  ctx.fillRect(x, headY, 2, 2);
+  if (fan.hair) {
+    ctx.fillStyle = shade(fan.hair, light);
+    ctx.fillRect(x, headY - 1, 2, 1);
+  }
+
+  // Hype: arms fly up on the rise, props wave overhead
+  const armsUp = hype && dy <= -2 && fan.prop !== 'steward';
+  if (armsUp) {
+    ctx.fillStyle = shade(fan.skin, light);
+    ctx.fillRect(x - 1, headY - 1, 1, 2);
+    ctx.fillRect(x + 3, headY - 1, 1, 2);
+  }
+  if (fan.prop === 'scarf') {
+    ctx.fillStyle = shade(fan.propColor, light);
+    if (armsUp) ctx.fillRect(x - 1, headY - 2, 5, 1);       // stretched overhead
+    else ctx.fillRect(x - 1, y + 1, 5, 1);                  // worn at the chest
+  } else if (fan.prop === 'flag') {
+    const wave = (step + fan.phase) % 2;
+    ctx.fillStyle = '#c9c9c2';
+    ctx.fillRect(x + 2, headY - 4, 1, 4);                   // pole
+    ctx.fillStyle = shade(fan.propColor, light);
+    ctx.fillRect(wave ? x + 3 : x - 1, headY - 4 + wave, 3, 2);
+  }
 }
 
 const BOARD_ADS = [

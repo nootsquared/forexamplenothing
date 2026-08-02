@@ -414,6 +414,10 @@ export class Brain {
     const myAxis = this.bb.axisOf(me.pos.x);
     const isWinger = me.id.role === 'FW' && Math.abs(me.id.anchor.y - 0.5) > 0.27;
 
+    // In shooting range the head is ALREADY up — nobody receives in the box
+    // and stands composing himself while the chance dies
+    if (goalDist < 21) this.settleLeft = 0;
+
     // The settle touch: a fresh ball is CARRIED for a beat while the head
     // comes up — unless a presser forces the issue, and a forced release
     // wears extra error (the hurried ball is how pressing gets paid)
@@ -421,13 +425,15 @@ export class Brain {
     const rushed = this.settleLeft > 0 && pressure >= 0.55;
 
     const central = 1 - Math.abs(me.pos.y - PITCH.width / 2) / (PITCH.width / 2);
+    const lane = goalDist < 21 ? this.shotLane(me.pos, goal) : 0;
     let shoot = -1;
     if (!settling && goalDist < 21) {
       shoot = (21 - goalDist) * 0.075
         + central * 0.5
-        + this.shotLane(me.pos, goal) * 0.5   // a SIGHT of goal, not a prayer
+        + lane * 0.5                          // a SIGHT of goal, not a prayer
         - pressure * 0.3
-        + (myAxis > 86 && central > 0.4 ? 0.35 : 0); // in the box: hit it
+        + (goalDist < 13 ? (13 - goalDist) * 0.05 : 0) // point-blank conviction
+        + (myAxis > 86 && central > 0.4 ? 0.35 : 0);   // in the box: hit it
     }
 
     // Every option is judged by INTERCEPTION: can any defender I know about
@@ -465,7 +471,9 @@ export class Brain {
       if (world.players.indexOf(p) === this.bb.humanIdx) s += 0.5;   // the human's ball, naturally
       if (me.id.role === 'MF' && p.id.role === 'FW') s += 0.25;      // mids feed the line
       if (isWinger && myAxis > 66 && p.id.role === 'FW' && !mateWide) s += 0.85; // the cutback
-      if (pressure > 0.5 && progress < 0 && margin > 0.6) s += 0.45; // the relief valve back
+      // the relief valve back — but never from shooting range: this close,
+      // turning around is how chances die, not how pressure is escaped
+      if (pressure > 0.5 && progress < 0 && margin > 0.6 && goalDist > 21) s += 0.45;
       if (s > passScore) { passScore = s; passTo = p; passAim = meet; passSpeed = speedWanted; }
     }
 
@@ -476,8 +484,10 @@ export class Brain {
       const laneAhead = this.spaceAt(add(me.pos, scale(vec(this.bb.attackSign(), 0), 8)));
       if (laneAhead > 4) dribble += 0.55; // the flank is open — take them on
     }
-    // In sight of goal you HIT it — nobody walks the ball over the line
-    if (goalDist < 13) dribble -= (13 - goalDist) * 0.12;
+    // In sight of goal you HIT it — nobody walks the ball over the line.
+    // But when the lane is SHUT, the drive stays on the table: you carry to
+    // OPEN an angle, you don't turn your back on the goal
+    if (goalDist < 13) dribble -= (13 - goalDist) * 0.12 * (0.4 + 0.6 * lane);
 
     if (myAxis < 16 && pressure > 0.8) {
       const sideY = me.pos.y < PITCH.width / 2 ? 8 : PITCH.width - 8;

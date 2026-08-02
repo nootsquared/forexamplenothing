@@ -17,6 +17,7 @@ export interface Seat {
   // a kick release LATCHES until the sim consumes it — packets outrun ticks,
   // and a release overwritten before its tick would eat the pass
   pendingKick: { power: number; x: number; y: number } | null;
+  activeAt: number;           // last packet whose hands DID something — the AFK gate
 }
 
 const DEFAULT_NATIONS: [string, string] = ['bra', 'arg'];
@@ -35,7 +36,7 @@ export class Party {
   private claimSeq = 1; // ticket roll for claim order
 
   constructor(public net: NetSession, hostName: string, public nationIds: string[]) {
-    this.seats.set(0, { seat: 0, name: hostName, team: null, claimedAt: 0, ready: false, lastInput: null, switchPressed: false, pendingKick: null });
+    this.seats.set(0, { seat: 0, name: hostName, team: null, claimedAt: 0, ready: false, lastInput: null, switchPressed: false, pendingKick: null, activeAt: 0 });
   }
 
   // The captain of a team is whoever CLAIMED it first — first in the shirt,
@@ -126,7 +127,7 @@ export class Party {
   attach(): void {
     this.net.onMessage = (m) => {
       if (m.t === 'peer-joined') {
-        this.seats.set(m.seat, { seat: m.seat, name: m.name, team: null, claimedAt: 0, ready: false, lastInput: null, switchPressed: false, pendingKick: null });
+        this.seats.set(m.seat, { seat: m.seat, name: m.name, team: null, claimedAt: 0, ready: false, lastInput: null, switchPressed: false, pendingKick: null, activeAt: 0 });
         this.publish();
         this.onSeatJoined(m.seat);
       } else if (m.t === 'peer-left') {
@@ -156,6 +157,8 @@ export class Party {
         if (s) {
           if (msg.input.sw) s.switchPressed = true;
           if (msg.input.kp > 0) s.pendingKick = { power: msg.input.kp, x: msg.input.kx, y: msg.input.ky };
+          const i = msg.input;
+          if (i.mx !== 0 || i.my !== 0 || i.sp || i.ch || i.kp > 0 || i.tk || i.sw) s.activeAt = performance.now();
           s.lastInput = msg.input;
         }
         break;

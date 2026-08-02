@@ -28,7 +28,8 @@ export class PitchLayer {
   private pitchSprite: Sprite;
   private clouds: Sprite[] = [];
   private stand!: TilingSprite;
-  private crowdFrame = 0;
+  private standBaseY = 0;
+  private crowdSeq = 0;
   private crowdT = 0;
   private crowdHype = 0; // seconds of goal-frenzy bouncing left
   private flashes = new Graphics(); // phone cameras popping in the terraces
@@ -70,14 +71,18 @@ export class PitchLayer {
     this.time += dt;
     const t = this.time;
 
-    // The crowd is alive: a slow murmur bob at rest, a bouncing wall on goals
+    // The crowd is alive: a wave of bobs and sways rolling down the terraces
+    // at rest, a leaping wall on goals — the whole tier bouncing with them
     this.crowdHype = Math.max(0, this.crowdHype - dt);
     this.crowdT += dt;
-    const bobEvery = this.crowdHype > 0 ? 0.13 : 0.55;
-    if (this.crowdT >= bobEvery) {
+    const idleN = this.assets.manifest.stand.idleFrames;
+    const hypeN = this.assets.manifest.stand.frames - idleN;
+    const hyped = this.crowdHype > 0;
+    if (this.crowdT >= (hyped ? 0.09 : 0.3)) {
       this.crowdT = 0;
-      this.crowdFrame = 1 - this.crowdFrame;
-      this.stand.texture = this.assets.standFrames[this.crowdFrame];
+      this.crowdSeq++;
+      this.stand.texture = this.assets.standFrames[hyped ? idleN + (this.crowdSeq % hypeN) : this.crowdSeq % idleN];
+      this.stand.position.y = this.standBaseY - (hyped ? this.crowdSeq % 2 : 0);
     }
     // While the hype lasts, camera flashes twinkle at random down the stand
     this.flashes.clear();
@@ -140,6 +145,7 @@ export class PitchLayer {
       height: this.assets.manifest.stand.h,
     });
     this.stand.position.set(standL.sx, standL.sy - this.assets.manifest.stand.h);
+    this.standBaseY = this.stand.position.y;
     this.stand.zIndex = standL.depth;
     worldSorted.addChild(this.stand);
     this.flashes.zIndex = standL.depth + 0.1;

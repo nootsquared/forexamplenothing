@@ -54,6 +54,47 @@ describe('the match clock', () => {
     expect(scorer).toBe(9);
     expect(match.stats.goals[9]).toBe(1);
   });
+
+  it('a striker fed in the box with a sight of goal SHOOTS — no settle freeze, no turning back', () => {
+    const match = createMatch();
+    const world = match.world;
+    world.restartLock = 0;
+    world.restartExclusion = 0;
+    const goal = vec(PITCH.length, PITCH.width / 2);
+    const striker = world.players.findIndex((p) => p.id.team === 0 && p.id.role === 'FW');
+    world.players[striker].pos = vec(goal.x - 12, goal.y);
+    // every away outfielder is beaten upfield; one presser closes from
+    // behind, wide of the ball's line so the feed arrives clean
+    let presserPlaced = false;
+    world.players.forEach((p) => {
+      if (p.id.team !== 1 || p.id.role === 'GK') return;
+      if (!presserPlaced) {
+        p.pos = vec(goal.x - 15.5, goal.y + 5.5);
+        presserPlaced = true;
+      } else {
+        p.pos = vec(60, p.pos.y);
+      }
+    });
+    // the through ball arrives from a teammate — a fresh reception, the exact
+    // moment the old brain used to stand on it and then lay it off backwards
+    const feeder = world.players.findIndex((p, i) => p.id.team === 0 && p.id.role === 'MF' && i !== striker);
+    world.lastTouch = { team: 0, idx: feeder };
+    world.ball.pos = vec(goal.x - 17, goal.y);
+    world.ball.vel = vec(10, 0);
+
+    let struck = false;
+    for (let t = 0; t < 150 && !struck; t++) {
+      advanceMatch(match, DT);
+      for (const e of world.events) {
+        if (e.kind === 'kick' && e.idx === striker) {
+          // the first ball he plays leaves TOWARD the goal, with venom
+          expect(world.ball.vel.x).toBeGreaterThan(8);
+          struck = true;
+        }
+      }
+    }
+    expect(struck).toBe(true);
+  });
 });
 
 describe('the draft', () => {

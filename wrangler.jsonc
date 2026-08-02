@@ -1,0 +1,19 @@
+// Cloudflare deployment: one Worker serves the built game from dist/ and
+// runs the /mp relay as per-room Durable Objects (see server/worker.mjs).
+// Deploy: pnpm build && pnpm exec wrangler deploy
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "golazo-arcade",
+  "main": "server/worker.mjs",
+  "compatibility_date": "2025-05-01",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "GolazoRoom" }]
+  },
+  // SQLite-backed classes — required on the free plan, right choice anyway
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GolazoRoom"] }],
+  "observability": { "enabled": true }
+}

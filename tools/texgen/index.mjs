@@ -6,7 +6,7 @@ import { generatePlayerSheet, FRAME_W, FRAME_H, BASELINE, DIRS, FRAMES } from '.
 import { generateBallSheet, BALL_SIZE, BALL_DIRS, BALL_PHASES, BALL_VISUAL_R } from './ball.mjs';
 import { generateDustSheet, generateGrassBitsSheet, generateRingSheet, generateShadow, generateSkid, generateBladeSheet, generateAimArrowSheet, generateSwitchChevrons, generateGoalBar, BLADE_W, BLADE_H, BLADE_FRAMES, AIM_SIZE, AIM_DIRS, CHEV_W, CHEV_H } from './fx.mjs';
 import { generateFontSheet, generateMicroFontSheet, generateTitleSheet, GLYPHS, CELL_W, CELL_H, WIDTHS, MICRO_GLYPHS, MICRO_CELL_W, MICRO_CELL_H, MICRO_WIDTHS, TITLE_W, TITLE_H } from './font.mjs';
-import { generateStand, generateBoards, generateDugout, generateCornerFlag, generateCloudShadow, STAND_H, BOARD_H } from './stands.mjs';
+import { generateStand, generateBoards, generateDugout, generateCornerFlag, generateCloudShadow, STAND_H, STAND_FRAMES, STAND_IDLE_FRAMES, BOARD_H } from './stands.mjs';
 import { generateCardSheet, generateCardFigures, generateCoinSheet, CARD_W, CARD_H, FIG_W, FIG_H, COIN_S, RARITIES } from './cards.mjs';
 import { NATIONS, generateFlagSheet, FLAG_W, FLAG_H } from './nations.mjs';
 
@@ -82,7 +82,7 @@ const manifest = {
     micro: { cellW: MICRO_CELL_W, cellH: MICRO_CELL_H, glyphs: MICRO_GLYPHS, widths: MICRO_WIDTHS },
   },
   title: { w: TITLE_W, h: TITLE_H },
-  stand: { h: STAND_H, frames: 2 },
+  stand: { h: STAND_H, frames: STAND_FRAMES, idleFrames: STAND_IDLE_FRAMES },
   boards: { h: BOARD_H },
   flag: { w: 10, h: 16, frames: 2 },
   cards: { w: CARD_W, h: CARD_H, figW: FIG_W, figH: FIG_H, rarities: RARITIES, coin: COIN_S },

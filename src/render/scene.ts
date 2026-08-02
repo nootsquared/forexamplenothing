@@ -95,6 +95,16 @@ export class Scene {
     this.hud.setPenaltyAim(state);
   }
 
+  // A pad is driving — hint text speaks its buttons instead of the keys
+  setPadHints(on: boolean) {
+    this.hud.setPadHints(on);
+  }
+
+  // Round-trip to the relay while online; null hides the meter
+  setPing(ms: number | null) {
+    this.hud.setPing(ms);
+  }
+
   // Match clock for the HUD; empty string hides it (endless kickabout)
   setClock(text: string) {
     this.hud.setClock(text);

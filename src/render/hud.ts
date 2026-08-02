@@ -29,6 +29,7 @@ export class Hud {
   private penHint: PixelText;
   private penState: { col: number; row: number } | null = null;
   private penPulse = 0;
+  private pingText: PixelText;
 
   constructor(assets: GameAssets) {
     this.sprintLabel = new PixelText(assets, 2, 0x9aa2b0);
@@ -47,7 +48,17 @@ export class Hud {
     this.banner.visible = false;
 
     this.scoreText = new PixelText(assets, 4);
-    this.root.addChild(this.scoreTabs, this.scoreText, this.clockText, this.sprintLabel, this.sprintBar, this.penAim, this.penHint, this.toast, this.banner);
+    this.pingText = new PixelText(assets, 2, 0x9aa2b0);
+    this.pingText.visible = false;
+    this.root.addChild(this.scoreTabs, this.scoreText, this.clockText, this.sprintLabel, this.sprintBar, this.penAim, this.penHint, this.pingText, this.toast, this.banner);
+  }
+
+  // The connection meter, online only: your own round trip to the room
+  setPing(ms: number | null) {
+    this.pingText.visible = ms !== null;
+    if (ms === null) return;
+    this.pingText.text = `PING ${Math.max(1, Math.round(ms))}MS`;
+    this.pingText.tint = ms < 80 ? 0x9ff0b8 : ms < 150 ? 0xffd95e : 0xff5340;
   }
 
   // The spot-kick sight: a pixel goal mouth split into six bins. The shooter
@@ -56,6 +67,11 @@ export class Hud {
     this.penState = state;
     this.penHint.visible = state !== null;
     if (!state) this.penAim.clear();
+  }
+
+  // Hints follow the hands: pad glyphs when a controller drives
+  setPadHints(on: boolean) {
+    this.penHint.text = on ? 'DPAD PICKS THE BIN - A SHOOTS' : 'WASD PICK A BIN - ENTER SHOOTS';
   }
 
   setClock(text: string) {
@@ -72,6 +88,7 @@ export class Hud {
     // The tank lives top-right where a fighting game keeps its meters
     this.meterX = w - METER_W - 18;
     this.sprintLabel.position.set(this.meterX, 16);
+    this.pingText.position.set(14, h - 28);
     this.toast.centerAt(w / 2, 54);
     this.banner.centerAt(w / 2, h / 2 - 70);
 

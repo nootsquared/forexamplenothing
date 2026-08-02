@@ -15,7 +15,7 @@ export interface Manifest {
     micro: { cellW: number; cellH: number; glyphs: string; widths: Record<string, number> };
   };
   title: { w: number; h: number };
-  stand: { h: number; frames: number };
+  stand: { h: number; frames: number; idleFrames: number };
   boards: { h: number };
   flag: { w: number; h: number; frames: number };
   cards: { w: number; h: number; figW: number; figH: number; rarities: string[]; coin: number };

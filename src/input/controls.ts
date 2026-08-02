@@ -1,36 +1,56 @@
 import { Vec2, vec, norm, len, clamp } from '../core/math';
 import { PlayerInput } from '../sim/player';
 import { Keyboard } from './keyboard';
-import { pollPad } from './gamepad';
+import { pads } from './gamepad';
 
 const CHARGE_TIME = 0.85;
 const AIM_RATE = 7.0;       // rad/s the J/L sweep steers the aim
 const AIM_MAX = 1.31;       // ~75° — you strike across your body, never backward
 const AIM_UNLOCK = AIM_MAX * 1.15; // running past this leaves the lock behind
+const FLICK_ARM = 0.3;      // right-stick throw that starts winding a pass
+const FLICK_KEEP = 0.2;     // falling back through this means you let go
+// Even the softest flick is a real ball; a full throw is a full-blooded hit
+const flickPower = (peak: number) => 0.45 + clamp((peak - FLICK_ARM) / (1 - FLICK_ARM), 0, 1) * 0.55;
 
 // Merges keyboard + pad into one player's intent, owns kick charge and aim.
 // J/L paint the aim on the FIELD: the angle locks in world space and stays
 // put while you run — until you steer it again, or turn so far the spot falls
 // behind your strikeable cone and the lock lets go.
+// The right stick is the pad's sling: pushing it winds a pass (angle aims,
+// depth is power), the spring-back fires. While A holds a charge instead,
+// the stick POINTS the shot and releasing A plays the charged ball.
 export class LocalControls {
   private chargeT = 0;
   private wasHeld = false;
   private aimWorld: number | null = null; // the locked field angle
+  private flickPeak = 0;
+  private flickScreenDir: Vec2 | null = null;
+  private flickReleased: { dir: Vec2; power: number } | null = null;
   charge = 0;          // exposed for the charge bar UI
   aimDir: Vec2 | null = null; // resolved world aim while charging — the arrow
+  flickAim: { dir: Vec2; power: number } | null = null; // live wind-up, field-space, for the arrow
+
+  // aimSquash: the iso y-squash, so stick angles mean what the eye sees
+  constructor(private aimSquash = 1) {}
+
+  // A hand direction on the screen, as the field direction it looks like
+  private toField(sx: number, sy: number): Vec2 {
+    return norm(vec(sx, sy / this.aimSquash));
+  }
 
   sample(dt: number, kb: Keyboard, facing: Vec2): PlayerInput {
-    const pad = pollPad();
+    const pad = pads.state;
     let x = (kb.has('KeyD') || kb.has('ArrowRight') ? 1 : 0) - (kb.has('KeyA') || kb.has('ArrowLeft') ? 1 : 0);
     let y = (kb.has('KeyS') || kb.has('ArrowDown') ? 1 : 0) - (kb.has('KeyW') || kb.has('ArrowUp') ? 1 : 0);
-    if (pad && (pad.moveX !== 0 || pad.moveY !== 0)) {
-      x = pad.moveX;
-      y = pad.moveY;
+    if (pad && (pad.move.x !== 0 || pad.move.y !== 0)) {
+      x = pad.move.x;
+      y = pad.move.y;
     }
     const move = len(vec(x, y)) > 1 ? norm(vec(x, y)) : vec(x, y);
 
     const held = kb.has('Space') || pad?.kick || false;
-    const bend = (kb.has('KeyL') ? 1 : 0) - (kb.has('KeyJ') ? 1 : 0) || pad?.bend || 0;
+    const bend = (kb.has('KeyL') ? 1 : 0) - (kb.has('KeyJ') ? 1 : 0);
+    const aim = pad?.aim ?? null;
     let kickReleased: { power: number; aimOffset: number } | null = null;
     if (held) {
       this.chargeT = Math.min(CHARGE_TIME, this.chargeT + dt);
@@ -41,14 +61,48 @@ export class LocalControls {
         }
         this.aimWorld += bend * AIM_RATE * dt;
       }
-    } else if (this.wasHeld) {
-      // The human floor sits at what used to be MEDIUM: even a tap is a real
-      // ball — the charge rides the upper half of the range
-      kickReleased = {
-        power: 0.45 + clamp(this.chargeT / CHARGE_TIME, 0, 1) * 0.55,
-        aimOffset: this.resolve(move, facing).offset,
-      };
-      this.chargeT = 0;
+      // The stick doesn't sweep — it points. Wherever you hold it, the shot
+      // goes, snapped inside the strikeable cone so a wild point still plays
+      // the nearest ball the body can hit instead of being ignored.
+      if (aim && aim.mag > 0.4) {
+        const d = this.toField(aim.x, aim.y);
+        const base = len(move) > 0.25 ? norm(move) : facing;
+        const baseAng = Math.atan2(base.y, base.x);
+        let rel = Math.atan2(d.y, d.x) - baseAng;
+        while (rel > Math.PI) rel -= 2 * Math.PI;
+        while (rel < -Math.PI) rel += 2 * Math.PI;
+        this.aimWorld = baseAng + clamp(rel, -AIM_MAX, AIM_MAX);
+      }
+      this.dropFlick();
+    } else {
+      if (this.wasHeld) {
+        // The human floor sits at what used to be MEDIUM: even a tap is a real
+        // ball — the charge rides the upper half of the range
+        kickReleased = {
+          power: 0.45 + clamp(this.chargeT / CHARGE_TIME, 0, 1) * 0.55,
+          aimOffset: this.resolve(move, facing).offset,
+        };
+        this.chargeT = 0;
+      }
+      const mag = aim?.mag ?? 0;
+      if (mag > (this.flickPeak > 0 ? FLICK_KEEP : FLICK_ARM)) {
+        // winding: power remembers the deepest throw, and the direction is
+        // only trusted near it — the spring-back never steers the ball
+        this.flickPeak = Math.max(this.flickPeak, mag);
+        if (aim && mag >= this.flickPeak * 0.7) this.flickScreenDir = vec(aim.x, aim.y);
+        this.flickAim = this.flickScreenDir
+          ? { dir: this.toField(this.flickScreenDir.x, this.flickScreenDir.y), power: flickPower(this.flickPeak) }
+          : null;
+      } else if (this.flickPeak > 0) {
+        // let go — the pass fires at the peak throw
+        if (this.flickScreenDir) {
+          this.flickReleased = {
+            dir: this.toField(this.flickScreenDir.x, this.flickScreenDir.y),
+            power: flickPower(this.flickPeak),
+          };
+        }
+        this.dropFlick();
+      }
     }
     this.wasHeld = held;
     this.charge = held ? this.chargeT / CHARGE_TIME : 0;
@@ -61,6 +115,19 @@ export class LocalControls {
       kickReleased,
       tackle: kb.has('KeyK') || pad?.tackle || false,
     };
+  }
+
+  // The pass the stick just fired, if any — consumed exactly once
+  takeFlick(): { dir: Vec2; power: number } | null {
+    const fired = this.flickReleased;
+    this.flickReleased = null;
+    return fired;
+  }
+
+  private dropFlick() {
+    this.flickPeak = 0;
+    this.flickScreenDir = null;
+    this.flickAim = null;
   }
 
   // The locked field angle as a strike the body can actually make: expressed

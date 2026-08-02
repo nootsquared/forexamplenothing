@@ -44,11 +44,13 @@ export class SnapPlayer {
   private renderTick = -1;
   pendingEvents: SimEvent[] = [];
   latest: MatchSnap | null = null;
+  lastAt = 0; // wall-clock arrival of the freshest snap — the stale-feed gauge
 
   push(snap: MatchSnap) {
     this.snaps.push(snap);
     if (this.snaps.length > MAX_SNAPS) this.snaps.shift();
     this.latest = snap;
+    this.lastAt = performance.now();
     if (this.renderTick < 0) this.renderTick = snap.tick - BUFFER_TICKS;
     this.pendingEvents.push(...(snap.events as SimEvent[]));
   }
