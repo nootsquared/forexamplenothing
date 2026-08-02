@@ -71,6 +71,8 @@ async function boot() {
   let passHints: number[] = [];
   let hintClock = 0;
   let keeperAiming = false;
+  let trainT = 0;   // the coach's next line, fused
+  let trainIdx = 0;
   let penAim: { col: number; row: number } | null = null; // the shooter's chosen bin
   let throwAim: { taker: number } | null = null; // your throw-in, aimed like a keeper's throw
   // ---- the online party ----
@@ -101,6 +103,18 @@ async function boot() {
   const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2, clicked: false, moved: false };
   const drag = { active: false, anchorX: 0, anchorY: 0 };
   const DRAG_FULL_PX = 260;
+  // The coach's lines, keyboard and pad wordings — rotated slowly on the
+  // training ground so a new player learns the sticks without reading a menu
+  const TRAINING_TIPS: [string, string][] = [
+    ['WASD RUNS - SHIFT SPRINTS', 'LEFT STICK RUNS - RT SPRINTS'],
+    ['DRAG BACK OFF YOUR MAN, RELEASE TO PASS', 'FLICK THE RIGHT STICK TO SLING A PASS'],
+    ['HOLD SPACE TO CHARGE, LET GO TO SHOOT', 'HOLD A TO CHARGE, LET GO TO SHOOT'],
+    ['E TAKES THE MAN UNDER THE CHEVRON', 'LB TAKES THE MAN UNDER THE CHEVRON'],
+    ['T HANDS YOU THE HUNTER - AUTO SWITCH', 'Y HANDS YOU THE HUNTER - AUTO SWITCH'],
+    ['PASS TO YOUR KEEPER - HIS HANDS OPEN THE SIGHT', 'PASS TO YOUR KEEPER - HIS HANDS OPEN THE SIGHT'],
+    ['KICK IT OUT ANYWHERE - EVERY RESTART IS YOURS', 'KICK IT OUT ANYWHERE - EVERY RESTART IS YOURS'],
+    ['STAND STILL - THE WHOLE FIELD WAITS WITH YOU', 'STAND STILL - THE WHOLE FIELD WAITS WITH YOU'],
+  ];
   let mouseKick: { power: number; aimAt: Vec2 } | null = null;
   let input: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
 
@@ -161,7 +175,17 @@ async function boot() {
   menu.onQuick = () => { setupScreen.begin('quick'); show(setupScreen); };
   menu.onDraft = () => { setupScreen.begin('draft'); show(setupScreen); };
   menu.onGamble = () => { setupScreen.begin('gamble'); show(setupScreen); };
+  menu.onTraining = () => startTraining();
   menu.onOnline = () => { onlineScreen.begin('name', ''); show(onlineScreen); };
+
+  // The training ground: your full XI on an open field, nobody pressing.
+  // Teammates still make real runs, every restart is yours, the clock never
+  // runs — the place a new player learns the sticks without losing for it.
+  function startTraining() {
+    const [stars] = quickSplit(11);
+    startMatch(toSquad(stars, FORMATIONS['4-3-3']), '4-3-3', [], '4-4-2',
+      { halfLength: 0, kickoffFirst: 0, practice: true });
+  }
 
   // ---- the party line ----------------------------------------------------
   function leaveOnline() {
@@ -765,7 +789,7 @@ async function boot() {
 
   function startMatch(
     homeSquad: SquadPlayer[], homeShape: string, awaySquad: SquadPlayer[], awayShape: string,
-    opts?: { kits?: [string, string]; halfLength?: number; kickoffFirst?: 0 | 1 },
+    opts?: { kits?: [string, string]; halfLength?: number; kickoffFirst?: 0 | 1; practice?: boolean },
   ) {
     killAttract();
     scene?.destroy();
@@ -774,6 +798,7 @@ async function boot() {
       homeSquad, homeShape, awaySquad, awayShape,
       halfLength: opts?.halfLength ?? setup.halfLength, kickoffFirst: toss,
       awayProfile: AI_PROFILES[setup.difficulty],
+      practice: opts?.practice,
     });
     scene = new Scene(app, assets, match.world, loop);
     if (import.meta.env.DEV) (window as unknown as { __match?: Match }).__match = match; // dev console handle
@@ -781,7 +806,9 @@ async function boot() {
     match.world.players.forEach((p, i) => scene!.addPlayer(p.id.team === 0 ? kits[0] : kits[1], match!.names[i], p.id.number));
     scene.setVariant(MOODS[menu.moodIdx]);
     scene.setPadHints(pads.connected);
-    scene.toast(toss === 0 ? 'RED WINS THE TOSS' : 'BLUE WINS THE TOSS');
+    scene.toast(opts?.practice ? 'TRAINING GROUND' : toss === 0 ? 'RED WINS THE TOSS' : 'BLUE WINS THE TOSS');
+    trainT = 4;
+    trainIdx = 0;
     cursor = new TeamCursor(0, match.world);
     cursor.autoMode = menu.autoSwitch;
     // the opening kickoff event fires before the first frame — hand the taker over now
@@ -1068,6 +1095,15 @@ async function boot() {
       } else remoteGk = null;
     } else if (netRole === 'host') remoteGk = null;
     if (keeperAiming) overrides[gkIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+    // Training: stand still ~3 seconds and the field thinks WITH you — every
+    // shirt holds his spot (a called pass still gets met) until you move again
+    if (match.practice && humanIdle >= 3) {
+      const receiver = match.teamBrains[0].calledReceiver;
+      world.players.forEach((_, i) => {
+        if (i === receiver || i in overrides) return;
+        overrides[i] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+      });
+    }
     // A team-0 ball rolling AT your keeper is a backpass in flight: he stands
     // ready for his hands — his brain may not panic-boot it while it arrives
     if (!keeperAiming && gkIdx >= 0 && cursor.idx !== gkIdx && world.restartLock <= 0 &&
@@ -1199,7 +1235,8 @@ async function boot() {
 
     if (keeperAiming) {
       const gk = world.players[gkIdx];
-      if (humanIdle >= 6 || world.restartLock <= 0) {
+      // on the training ground the sight WAITS while you think — no idle punt
+      if ((humanIdle >= 6 && !match.practice) || world.restartLock <= 0) {
         launchKeeper(vec(clamp(gk.pos.x + world.attackSign(0) * 38, 8, 97), world.ball.pos.y < 34 ? 22 : 46), 'punt', 5);
       } else {
         const sight = readKeeperSight(gk.pos, gk.stats);
@@ -1220,7 +1257,7 @@ async function boot() {
       } else {
         const throwR = 14 + 10 * taker.stats.power;
         const origin = world.ball.pos;
-        if (humanIdle >= 6) {
+        if (humanIdle >= 6 && !match.practice) {
           // walked away: sling it safe to the nearest shirt
           let best: Vec2 = vec(origin.x, origin.y < 37 ? origin.y + 10 : origin.y - 10);
           let bestD = Infinity;
@@ -1292,6 +1329,15 @@ async function boot() {
     // stoppage time wears a plus — the referee is letting the move breathe
     const et = match.halfLength > 0 && match.clock > match.halfLength ? '+' : '';
     scene.setClock(match.halfLength > 0 ? `${match.half === 1 ? '1ST' : '2ND'} ${fmtClock(match.clock)}${et}` : '');
+    // the coach speaks on the training ground — one line at a time, unhurried
+    if (match.practice) {
+      trainT -= dt;
+      if (trainT <= 0) {
+        scene.toast(TRAINING_TIPS[trainIdx % TRAINING_TIPS.length][pads.connected ? 1 : 0]);
+        trainIdx++;
+        trainT = 13;
+      }
+    }
     matchAudio.tick(match, cursor.idx, dt);
     // The whole truth ships LAST — this tick's launches and reassignments
     // included — ~30 times a second, and never onto a choking socket: a

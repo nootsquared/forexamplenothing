@@ -489,3 +489,66 @@ describe('the restart law and the rigging', () => {
     expect(dist(p, world.ball.pos)).toBeGreaterThan(10.5); // and outside the law's ring
   });
 });
+
+describe('the training ground', () => {
+  it('fields one team, keeps every restart yours, and plays 30s without a wobble', () => {
+    const match = createMatch({ practice: true, homeShape: '4-3-3' });
+    expect(match.world.players.length).toBe(11);
+    expect(match.world.players.every((p) => p.id.team === 0)).toBe(true);
+    const restartTeams: number[] = [];
+    for (let i = 0; i < 30 * 60; i++) {
+      advanceMatch(match, DT);
+      for (const e of match.world.events) {
+        if (e.kind === 'restart' || e.kind === 'kickoff') restartTeams.push(e.team);
+      }
+    }
+    for (const p of match.world.players) {
+      expect(Number.isFinite(p.pos.x)).toBe(true);
+      expect(Number.isFinite(p.pos.y)).toBe(true);
+    }
+    expect(Number.isFinite(match.world.ball.pos.x)).toBe(true);
+    expect(restartTeams.every((t) => t === 0)).toBe(true);
+  });
+
+  it('far-end outs come back as YOUR corner, own-end outs as YOUR goal kick', () => {
+    const isRestart = (e: { kind: string }): e is Extract<import('../src/sim/events').SimEvent, { kind: 'restart' }> => e.kind === 'restart';
+    const match = createMatch({ practice: true });
+    const world = match.world;
+    world.restartLock = 0;
+    world.lastTouch = { team: 0, idx: 5 };
+    world.ball.pos = vec(PITCH.length + 0.5, 12); // wide of the far goal
+    world.ball.vel = vec(6, 0);
+    advanceMatch(match, DT);
+    const corner = world.events.find(isRestart);
+    expect(corner?.restart).toBe('corner');
+    expect(corner?.team).toBe(0);
+    world.restartLock = 0;
+    world.restartExclusion = 0;
+    world.lastTouch = { team: 0, idx: 5 };
+    world.ball.pos = vec(-0.5, 12); // wide of your own goal
+    world.ball.vel = vec(-6, 0);
+    advanceMatch(match, DT);
+    const gk = world.events.find(isRestart);
+    expect(gk?.restart).toBe('goalkick');
+    expect(gk?.team).toBe(0);
+  });
+
+  it('a loose ball is the human\'s errand alone — no shirt ever swarms it', () => {
+    const match = createMatch({ practice: true });
+    const world = match.world;
+    world.restartLock = 0;
+    world.restartExclusion = 0;
+    const human = world.players.findIndex((p) => p.id.role === 'FW');
+    world.lastTouch = { team: 0, idx: human };
+    world.ball.pos = vec(100, 10); // far from every anchor, dead still
+    world.ball.vel = vec();
+    const humanIdle: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+    for (let i = 0; i < 5 * 60; i++) {
+      advanceMatch(match, DT, { [human]: humanIdle });
+      expect(match.teamBrains[0].chaserIdxs.length).toBe(0);
+    }
+    expect(world.ball.speed()).toBe(0); // untouched
+    const nearest = Math.min(...world.players.map((p) => dist(p.pos, world.ball.pos)));
+    expect(nearest).toBeGreaterThan(10);
+  });
+});

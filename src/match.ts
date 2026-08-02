@@ -18,6 +18,7 @@ export interface MatchConfig {
   halfLength?: number;       // seconds per half; 0 = endless kickabout
   kickoffFirst?: 0 | 1;      // the coin toss — deterministic 0 unless told
   awayProfile?: AiProfile;   // how sharp the CPU's brains are (difficulty)
+  practice?: boolean;        // training ground: no away team takes the field
 }
 
 export interface MatchStats {
@@ -42,6 +43,7 @@ export interface Match {
   half: 1 | 2;
   clock: number;
   halfLength: number;
+  practice: boolean;
   finished: boolean;
   stats: MatchStats;
   kickoffFirst: 0 | 1;
@@ -62,8 +64,9 @@ export function createMatch(config: MatchConfig = {}): Match {
   const awayShape = FORMATIONS[config.awayShape ?? '4-4-2'];
   const homeSquad = config.homeSquad ?? buildSquad(homeShape, 101);
   const awaySquad = config.awaySquad ?? buildSquad(awayShape, 202);
+  world.practice = !!config.practice;
   fieldTeam(world, 0, homeShape, homeSquad);
-  fieldTeam(world, 1, awayShape, awaySquad);
+  if (!config.practice) fieldTeam(world, 1, awayShape, awaySquad);
   const teamBrains: [TeamBrain, TeamBrain] = [new TeamBrain(0), new TeamBrain(1)];
   if (config.awayProfile) teamBrains[1].profile = config.awayProfile;
   const brains = world.players.map((p, i) => new Brain(i, teamBrains[p.id.team]));
@@ -74,10 +77,11 @@ export function createMatch(config: MatchConfig = {}): Match {
     world,
     teamBrains,
     brains,
-    names: [...homeSquad.map((s) => s.name), ...awaySquad.map((s) => s.name)],
+    names: [...homeSquad.map((s) => s.name), ...(config.practice ? [] : awaySquad.map((s) => s.name))],
     half: 1,
     clock: 0,
     halfLength: config.halfLength ?? 0,
+    practice: !!config.practice,
     kickoffFirst: config.kickoffFirst ?? 0,
     finished: false,
     stats: {

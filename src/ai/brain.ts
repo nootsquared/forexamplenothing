@@ -237,10 +237,11 @@ export class Brain {
       return;
     }
 
-    // Unclaimed moving ball headed my way: meet it (only when nobody's named)
+    // Unclaimed moving ball headed my way: meet it (only when nobody's named
+    // — and never on the training ground, where the ball is the human's alone)
     const toMe = sub(me.pos, world.ball.pos);
     const ballSpeed = world.ball.speed();
-    if (this.bb.calledReceiver < 0 && this.bb.phase !== 'defend' && ballSpeed > 4 && len(toMe) < 14 &&
+    if (!world.practice && this.bb.calledReceiver < 0 && this.bb.phase !== 'defend' && ballSpeed > 4 && len(toMe) < 14 &&
         (world.ball.vel.x * toMe.x + world.ball.vel.y * toMe.y) / (ballSpeed * len(toMe) + 1e-6) > 0.72) {
       this.intent = { kind: 'receive', sprint: true };
       return;

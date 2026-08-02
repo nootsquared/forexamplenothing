@@ -45,6 +45,7 @@ export class MenuScreen implements Screen {
   onQuick: () => void = () => {};
   onDraft: () => void = () => {};
   onGamble: () => void = () => {};
+  onTraining: () => void = () => {};
   onOnline: () => void = () => {};
   onMood: (moodIdx: number) => void = () => {};
   onFps: (cap: number | null) => void = () => {};
@@ -103,7 +104,7 @@ export class MenuScreen implements Screen {
     const cap = FPS_CHOICES[this.fpsIdx];
     const rows =
       this.page === 'root' ? [{ label: 'PLAY' }, { label: 'PLAY ONLINE' }, { label: 'SETTINGS' }] :
-      this.page === 'play' ? [{ label: 'QUICK MATCH' }, { label: 'DRAFT MODE' }, { label: 'GAMBLE MODE' }, { label: 'BACK', gapBefore: true }] :
+      this.page === 'play' ? [{ label: 'QUICK MATCH' }, { label: 'DRAFT MODE' }, { label: 'GAMBLE MODE' }, { label: 'TRAINING GROUND' }, { label: 'BACK', gapBefore: true }] :
       [
         { label: 'PITCH', value: MOODS[this.moodIdx].name.toUpperCase() },
         { label: 'AUTO SWITCH', value: this.autoSwitch ? 'ON' : 'OFF' },
@@ -144,6 +145,7 @@ export class MenuScreen implements Screen {
       if (i === 0) this.onQuick();
       else if (i === 1) this.onDraft();
       else if (i === 2) this.onGamble();
+      else if (i === 3) this.onTraining();
       else this.setPage('root');
     } else {
       if (i === 0) { this.moodIdx = (this.moodIdx + 1) % MOODS.length; this.onMood(this.moodIdx); }

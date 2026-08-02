@@ -170,7 +170,9 @@ export class TeamBrain {
         if (Math.abs(perp) < 7 && score < bestScore) { bestScore = score; best = i; }
       }
       this.calledReceiver = best;
-      this.calledFor = best >= 0 ? 1.6 : 0;
+      // the training ground has no fallback collector — a called man sees
+      // even the longest pass all the way through
+      this.calledFor = best >= 0 ? (world.practice ? 3.5 : 1.6) : 0;
     }
     // The call dies as soon as anyone actually takes a touch
     if (this.calledReceiver >= 0 && world.lastTouch && world.lastTouch.idx === this.calledReceiver) {
@@ -230,6 +232,14 @@ export class TeamBrain {
   // Press auction: nearest hunts the carrier, next covers behind. Sticky by
   // 20% so two defenders never flicker over the job.
   private updatePressAuction(world: World) {
+    // The training ground: the ball is the HUMAN's errand — nobody is
+    // elected to hunt it, so every shirt stays a passing option, not a swarm
+    if (world.practice) {
+      this.presserIdx = -1;
+      this.coverIdx = -1;
+      this.chaserIdxs = [];
+      return;
+    }
     if (this.phase === 'attack') {
       this.presserIdx = -1;
       this.coverIdx = -1;

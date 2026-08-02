@@ -43,6 +43,9 @@ export class World {
   // Halftime fairness: teams swap ends at the break. EVERY direction in the
   // sim asks attackSign() — nobody hardcodes "team 0 goes right" anymore.
   sidesSwapped = false;
+  // The training ground: one team on an open field — every restart and
+  // kickoff is theirs, so the session never waits on a side that isn't there
+  practice = false;
 
   attackSign(team: 0 | 1): 1 | -1 {
     return (team === 0) !== this.sidesSwapped ? 1 : -1;
@@ -725,6 +728,14 @@ export class World {
       const leftEnd = b.pos.x < 0;
       // the team DEFENDING the crossed end — honest across the halftime swap
       const defender: 0 | 1 = (this.attackSign(0) > 0) === leftEnd ? 0 : 1;
+      // Training: your own end restarts from the keeper's hands, the far end
+      // from the flag — goal kicks and corners both practicable, uncontested
+      if (this.practice) {
+        if (defender === 0) return this.awardRestart(vec(leftEnd ? 5.5 : PITCH.length - 5.5, PITCH.width / 2), 0, 'goalkick');
+        const cx = leftEnd ? 0.4 : PITCH.length - 0.4;
+        const cy = b.pos.y < PITCH.width / 2 ? 0.4 : PITCH.width - 0.4;
+        return this.awardRestart(vec(cx, cy), 0, 'corner');
+      }
       if (this.lastTouch && this.lastTouch.team === defender) {
         // Corner for the attackers, from the corner arc they earned
         const cx = leftEnd ? 0.4 : PITCH.length - 0.4;
@@ -737,6 +748,7 @@ export class World {
   }
 
   private throwInTeam(): 0 | 1 {
+    if (this.practice) return 0; // the training ground has one set of hands
     return this.lastTouch ? (this.lastTouch.team === 0 ? 1 : 0) : 0;
   }
 
@@ -787,6 +799,7 @@ export class World {
   // over the ball while the other side holds outside the circle. The game
   // starts when HE plays it, not with a scramble.
   kickoffReset() {
+    if (this.practice) this.kickoffTeam = 0; // scored or conceded, you resume
     this.ball.pos = vec(PITCH.length / 2, PITCH.width / 2);
     this.ball.vel = vec();
     this.ball.z = 0;
