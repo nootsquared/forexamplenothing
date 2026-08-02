@@ -26,6 +26,10 @@ export class GameLoop {
       this.acc -= this.fixedDt;
       steps++;
     }
+    // Debt the step cap couldn't repay is FORGIVEN, not hoarded: a machine
+    // that can't hold 60Hz runs slightly slow instead of drifting ever
+    // further behind real time (online, that drift reads as growing lag)
+    this.acc = Math.min(this.acc, this.fixedDt);
     return renderDt;
   }
 

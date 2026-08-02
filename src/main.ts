@@ -1,9 +1,9 @@
 import { Application, Container, TextureSource } from 'pixi.js';
 import { GameLoop } from './core/loop';
-import { Vec2, vec, dist, clamp } from './core/math';
+import { Vec2, vec, dist, clamp, norm, scale, expDecayVec } from './core/math';
 import { PlayerInput } from './sim/player';
 import { World } from './sim/world';
-import { Match, createMatch, advanceMatch } from './match';
+import { Match, createMatch, advanceMatch, pickDistribution } from './match';
 import { leadTarget, passMargin } from './ai/brain';
 import { AI_PROFILES } from './ai/blackboard';
 import { FORMATIONS, formationsOfSize } from './data/formations';
@@ -86,6 +86,17 @@ async function boot() {
   let guestStaleT = 0;                               // cadence for the waiting-for-host toast
   let guestSeatNames: Record<number, string> = {};
   let lastStartConfig: NetStartConfig | null = null; // late joiners get the stage too
+  // A holding keeper on a guest captain's team: HIS seat aims the distribution
+  let remoteGk: { seat: number; gkIdx: number; t: number } | null = null;
+  // ...and his validated call, waiting for the next tick to launch in-sim
+  let pendingGkLaunch: { gkIdx: number; seat: number; target: Vec2; kind: 'throw' | 'punt'; scatter: number } | null = null;
+  let guestGkIdx = -1;      // my team's keeper, as a guest tab knows him
+  let guestGkSentT = 0;     // sight down while my distribution call rides the wire
+  let guestLead = vec();    // my body's local head start — input answered this frame
+  let guestLeadIdx = -1;
+  let guestKickEchoT = 0;   // my kick already sounded locally — mute its snap echo
+  // The spot kick fires INSIDE the tick so its events reach every listener
+  let penaltyShot: { side: -1 | 0 | 1; high: boolean } | null = null;
   let myName = ''; // asked fresh every time — his call, no stored defaults
   const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2, clicked: false, moved: false };
   const drag = { active: false, anchorX: 0, anchorY: 0 };
@@ -192,6 +203,29 @@ async function boot() {
         party.onSeatLeft = (seat) => {
           if (screenName === 'draft') draftScreen.seatLeft(seat);
         };
+        // A guest captain clicked his keeper's sight: validate that the call
+        // is his to make, rebuild throw-or-punt from the KEEPER's own stats
+        // (the wire names only a field point), and launch inside the sim
+        party.onGuestGk = (seat, x, y) => {
+          if (!match || screenName !== 'match' || !remoteGk || remoteGk.seat !== seat) return;
+          const world = match.world;
+          const gkIdx2 = remoteGk.gkIdx;
+          if (world.holdingGk !== gkIdx2) return;
+          const gk = world.players[gkIdx2];
+          const throwR = 24 + 14 * gk.stats.power;
+          const puntR = clamp(60 + 34 * gk.stats.power, 60, 88);
+          const toT = vec(clamp(x, 1, 104) - gk.pos.x, clamp(y, 1, 73) - gk.pos.y);
+          const dRaw = Math.hypot(toT.x, toT.y);
+          const d = Math.min(Math.max(dRaw, 4), puntR);
+          const dir = dRaw > 1e-4 ? vec(toT.x / dRaw, toT.y / dRaw) : vec(world.attackSign(gk.id.team), 0);
+          const target = vec(gk.pos.x + dir.x * d, gk.pos.y + dir.y * d);
+          const kind: 'throw' | 'punt' = d <= throwR ? 'throw' : 'punt';
+          const scatter = kind === 'throw'
+            ? (0.8 + d * 0.045) * (1.35 - gk.stats.control * 0.7)
+            : (2.2 + d * 0.075) * (1.45 - gk.stats.control * 0.7);
+          remoteGk = null;
+          pendingGkLaunch = { gkIdx: gkIdx2, seat, target, kind, scatter };
+        };
         onlineScreen.setLobby(party.snap(), 0, true);
       }
     };
@@ -282,6 +316,8 @@ async function boot() {
     seatCursors.clear();
     lastStartConfig = null;
     guestEndT = 0;
+    remoteGk = null;
+    pendingGkLaunch = null;
     screenName = 'menu';
     paused = false;
     ensureAttract();
@@ -589,6 +625,8 @@ async function boot() {
         get myIdx() { return snapPlayer?.latest?.cursors[net?.seat ?? -1] ?? -1; },
         get suggest() { return snapPlayer?.latest?.suggest?.[net?.seat ?? -1] ?? -1; },
         get rtt() { return net?.rtt ?? 0; },
+        get gkAim() { return snapPlayer?.latest?.gkAim ?? -1; },
+        get seat() { return net?.seat ?? -1; },
       };
     }
     match.world.players.forEach((p, i) => scene!.addPlayer(p.id.team === 0 ? config.kits[0] : config.kits[1], match!.names[i], p.id.number));
@@ -599,7 +637,13 @@ async function boot() {
     guestSeatNames = config.seatNames;
     guestEndT = 0;
     controls = new LocalControls(squash());
-    cursor = new TeamCursor(config.seatTeams[net?.seat ?? -1] ?? 0, match.world);
+    const myTeam = config.seatTeams[net?.seat ?? -1] ?? 0;
+    cursor = new TeamCursor(myTeam, match.world);
+    guestGkIdx = match.world.players.findIndex((p) => p.id.team === myTeam && p.id.role === 'GK');
+    guestGkSentT = 0;
+    guestLead = vec();
+    guestLeadIdx = -1;
+    guestKickEchoT = 0;
     gkIdx = -1;
     keeperAiming = false;
     penAim = null;
@@ -630,9 +674,40 @@ async function boot() {
       mouseKick = null;
     }
     applyFlick(input, match.world);
-    net.send({ t: 'input', input: packInput(input, guestSwitch) });
-    guestSwitch = false;
+    // Your boot SOUNDS the moment you let go — the strike itself still rides
+    // the wire, but the thump answers your hands, not the round trip
+    guestKickEchoT = Math.max(0, guestKickEchoT - dt);
+    if (input.kickReleased && ballIsMine()) {
+      const p = input.kickReleased.power;
+      audio.play(p < 0.45 ? 'kick-soft' : p < 0.75 ? 'kick-mid' : 'kick-hard', { vol: 0.7 + p * 0.3, jitter: 0.05 });
+      guestKickEchoT = 0.7;
+    }
+    // A choking wire gets FRESH state, not a queue: plain movement packets
+    // drop when the socket is backed up — a kick or a switch always ships
+    const packet = packInput(input, guestSwitch);
+    if (net.backlog < 3_000 || packet.kp > 0 || packet.sw) {
+      net.send({ t: 'input', input: packet });
+      guestSwitch = false;
+    }
     snapPlayer.apply(match.world, dt);
+    // My body answers my stick THIS FRAME: a bounded lead in the pressed
+    // direction, sized by the wire's round trip, melted back onto the truth
+    // when I ease off. The ball and everyone else stay the host's word.
+    if (myIdx !== guestLeadIdx) { guestLead = vec(); guestLeadIdx = myIdx; }
+    if (myIdx >= 0) {
+      const me = match.world.players[myIdx];
+      const moveLen = Math.hypot(input.move.x, input.move.y);
+      const nearBall = dist(me.pos, match.world.ball.pos) < 2.4;
+      const leadT = clamp(((net.rtt || 90) / 1000) * 0.85 + 0.04, 0.07, 0.24) * (nearBall ? 0.35 : 1);
+      const spd = input.sprint && me.stamina > 0.05 ? me.stats.sprintSpeed : me.stats.topSpeed;
+      const want = moveLen > 0.2 && match.world.restartLock <= 0 && me.lungeTimer <= 0
+        ? scale(norm(input.move), spd * Math.min(1, moveLen) * leadT)
+        : vec();
+      guestLead = expDecayVec(guestLead, want, 12, dt);
+      me.pos.x += guestLead.x;
+      me.pos.y += guestLead.y;
+      if (moveLen > 0.2) me.facing = norm(input.move); // the turn is instant on my own screen
+    }
     const evs = snapPlayer.drainEvents();
     if (evs.length) scene.handleEvents(evs);
     for (const e of evs) if (e.kind === 'goal') pads.rumble(1, 350);
@@ -642,7 +717,9 @@ async function boot() {
       scene.toast('WAITING FOR HOST...');
       guestStaleT = 4;
     }
-    matchAudio.tick(match, Math.max(0, myIdx), dt, evs);
+    // my own kick already thumped locally — its snapshot echo stays visual
+    const audioEvs = guestKickEchoT > 0 ? evs.filter((e) => !(e.kind === 'kick' && e.idx === myIdx)) : evs;
+    matchAudio.tick(match, Math.max(0, myIdx), dt, audioEvs);
     const snap = snapPlayer.latest;
     if (snap) {
       if (myIdx >= 0) scene.setControlled(myIdx);
@@ -659,6 +736,22 @@ async function boot() {
       scene.setClock(`${snap.half === 1 ? '1ST' : '2ND'} ${fmtClock(snap.clock)}`);
     }
     scene.setPing(net.rtt > 0 ? net.rtt : null);
+    // MY goal kick, MY catch: the same distribution sight the host enjoys,
+    // driven from this tab — the host says whose sight is open (snap.gkAim),
+    // this tab aims it, and a click sends the field point up the wire
+    guestGkSentT = Math.max(0, guestGkSentT - dt);
+    if (snap && snap.gkAim === net.seat && guestGkIdx >= 0 && guestGkSentT <= 0) {
+      const gk = match.world.players[guestGkIdx];
+      const sight = readKeeperSight(gk.pos, gk.stats);
+      scene.setKeeperAim(sight);
+      if (mouse.clicked) {
+        net.send({ t: 'gk', x: sight.target.x, y: sight.target.y });
+        scene.setKeeperAim(null);
+        guestGkSentT = 1; // sight stays down while the wire answers
+      }
+    } else {
+      scene.setKeeperAim(null);
+    }
     // the sling arrow rides the same code the host uses
     if (drag.active && !ballIsMine()) drag.active = false;
     if (drag.active) {
@@ -699,7 +792,10 @@ async function boot() {
     humanIdle = Infinity;
     keeperAiming = false;
     penAim = null;
+    penaltyShot = null;
     throwAim = null;
+    remoteGk = null;
+    pendingGkLaunch = null;
     halfCountdown = 0;
     drag.active = false;
     mouseKick = null;
@@ -730,7 +826,9 @@ async function boot() {
       return true;
     }
     if (code === 'Enter') {
-      match.world.takePenalty((penAim.col - 1) as -1 | 0 | 1, penAim.row === 0);
+      // queued for the next tick — a between-frames strike would push its
+      // events into a buffer the sim wipes before anyone hears them
+      penaltyShot = { side: (penAim.col - 1) as -1 | 0 | 1, high: penAim.row === 0 };
       penAim = null;
       scene.setPenaltyAim(null);
       return true;
@@ -840,6 +938,26 @@ async function boot() {
     mouseKick = { power: pull.power, aimAt: vec(origin.x + pull.dir.x * 30, origin.y + pull.dir.y * 30) };
   });
 
+  // The distribution sight's numbers — one math for the host's keeper, a
+  // guest captain's keeper, and the referee desk validating a wire call
+  const readKeeperSight = (origin: Vec2, stats: { power: number; control: number }) => {
+    const throwR = 24 + 14 * stats.power;
+    const puntR = clamp(60 + 34 * stats.power, 60, 88);
+    const m = scene!.screenToWorld(mouse.x, mouse.y);
+    const toM = vec(m.x - origin.x, m.y - origin.y);
+    const dRaw = Math.hypot(toM.x, toM.y);
+    const d = Math.min(dRaw, puntR);
+    const target = dRaw > 1e-4
+      ? vec(origin.x + (toM.x / dRaw) * d, origin.y + (toM.y / dRaw) * d)
+      : vec(origin.x + 10, origin.y);
+    const kind: 'throw' | 'punt' = d <= throwR ? 'throw' : 'punt';
+    const scatter = kind === 'throw'
+      ? (0.8 + d * 0.045) * (1.35 - stats.control * 0.7)
+      : (2.2 + d * 0.075) * (1.45 - stats.control * 0.7);
+    const pCenter = Math.pow(0.5, 1 / (0.5 + 0.6 * stats.control));
+    return { gk: origin, target, throwR, puntR, scatter, kind, pCenter };
+  };
+
   // The keeper launches, and control moves to the man his ball was for
   const launchKeeper = (target: Vec2, kind: 'throw' | 'punt', scatter: number) => {
     if (!match || !cursor || !scene) return;
@@ -922,6 +1040,33 @@ async function boot() {
         overrides[sc.cursor.idx] = seatIn;
       }
     }
+    // Online: a holding keeper whose team's CAPTAIN sits on another tab waits
+    // for THAT captain's distribution call — his sight opens over there
+    // (snap.gkAim), the beat pins here, and a sleeping captain gets the
+    // CPU's distribution after a grace
+    if (netRole === 'host' && party && world.holdingGk >= 0 && !(keeperAiming && world.holdingGk === gkIdx)) {
+      const holdingIdx = world.holdingGk;
+      const gkTeam = world.players[holdingIdx].id.team;
+      let heldSeat = -1;
+      if (!(gkTeam === 0 && cursor.isCaptain)) {
+        for (const [seat, sc] of seatCursors) {
+          if (sc.team === gkTeam && sc.cursor.isCaptain) { heldSeat = seat; break; }
+        }
+      }
+      if (heldSeat >= 0) {
+        if (!remoteGk || remoteGk.seat !== heldSeat || remoteGk.gkIdx !== holdingIdx) {
+          remoteGk = { seat: heldSeat, gkIdx: holdingIdx, t: 0 };
+        }
+        remoteGk.t += dt;
+        world.holdLock = true;
+        overrides[holdingIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+        if (remoteGk.t > 7) { // the captain slept on it — the keeper plays it himself
+          const { target, kind, scatter } = pickDistribution(world, holdingIdx);
+          pendingGkLaunch = { gkIdx: holdingIdx, seat: heldSeat, target, kind, scatter };
+          remoteGk = null;
+        }
+      } else remoteGk = null;
+    } else if (netRole === 'host') remoteGk = null;
     if (keeperAiming) overrides[gkIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
     // A team-0 ball rolling AT your keeper is a backpass in flight: he stands
     // ready for his hands — his brain may not panic-boot it while it arrives
@@ -938,30 +1083,36 @@ async function boot() {
       }
     }
     advanceMatch(match, dt, overrides);
+    // Deferred actions fire INSIDE the tick, so their events survive to
+    // every end-of-tick listener: a wire keeper launch, the host's spot kick
+    if (pendingGkLaunch) {
+      const g = pendingGkLaunch;
+      pendingGkLaunch = null;
+      if (world.holdingGk === g.gkIdx) {
+        world.gkLaunch(g.gkIdx, g.target, g.kind, g.scatter);
+        const sc = seatCursors.get(g.seat);
+        if (sc) {
+          let best = -1;
+          let bestD = Infinity;
+          world.players.forEach((p, i) => {
+            if (p.id.team !== sc.team || i === g.gkIdx || p.id.role === 'GK') return;
+            const d = dist(p.pos, g.target);
+            if (d < bestD) { bestD = d; best = i; }
+          });
+          if (best >= 0) sc.cursor.assign(best);
+        }
+      }
+    }
+    if (penaltyShot) {
+      world.takePenalty(penaltyShot.side, penaltyShot.high);
+      penaltyShot = null;
+    }
     cursor.update(world, match.teamBrains[0], dt);
-    matchAudio.tick(match, cursor.idx, dt);
 
-    // online: friends' cursors follow the same football rules, then the
-    // whole truth ships out ~30 times a second
+    // online: friends' cursors follow the same football rules (the truth
+    // itself ships at the END of the tick, launches included)
     if (netRole === 'host' && party) {
       for (const sc of seatCursors.values()) sc.cursor.update(world, match.teamBrains[sc.team], dt);
-      pendingNetEvents.push(...world.events);
-      netTick++;
-      if (netTick % 2 === 0) {
-        const cursors: Record<number, number> = { 0: cursor.idx };
-        const suggest: Record<number, number> = { 0: cursor.suggested };
-        for (const [seat, sc] of seatCursors) {
-          cursors[seat] = sc.cursor.idx;
-          suggest[seat] = sc.cursor.suggested;
-        }
-        party.broadcast({ t: 'snap', snap: takeSnap(match, netTick, cursors, suggest, pendingNetEvents) });
-        pendingNetEvents = [];
-      }
-      const tags: Record<number, string> = {};
-      for (const [seat, sc] of seatCursors) {
-        if (sc.team === 0) tags[sc.cursor.idx] = party.seats.get(seat)?.name ?? '';
-      }
-      scene.setSeatTags(tags);
     }
 
     // A ball your own team plays back to the keeper is HIS — always. The
@@ -974,8 +1125,12 @@ async function boot() {
         dist(world.players[gkIdx].pos, world.ball.pos) < 1.6 &&
         ourBoxDeep && Math.abs(world.ball.pos.y - 37) < 21.5) {
       world.gkPickup(gkIdx);
-      keeperAiming = true;
-      world.holdLock = true;
+      // the sight is the CAPTAIN's — a non-captain host leaves it to the
+      // captain's tab (the remote-aim flow hands it over)
+      if (cursor.isCaptain) {
+        keeperAiming = true;
+        world.holdLock = true;
+      }
       audio.play('gk-catch', { vol: 0.7 });
     }
 
@@ -984,7 +1139,7 @@ async function boot() {
     for (const e of world.events) {
       const caught = e.kind === 'save' && world.lastTouch?.team === 0 && world.lastTouch.idx === gkIdx;
       const goalKick = e.kind === 'restart' && e.team === 0 && e.taker === gkIdx;
-      if ((caught || goalKick) && humanIdle < 8) {
+      if ((caught || goalKick) && humanIdle < 8 && cursor.isCaptain) {
         keeperAiming = true;
         world.holdLock = true;
       }
@@ -1027,7 +1182,7 @@ async function boot() {
     }
     // The sight is never a missed beat: as long as OUR keeper still holds his
     // ball (goal kick, catch, pickup), waking the hands reopens the menu
-    if (!keeperAiming && gkIdx >= 0 && world.holdingGk === gkIdx && humanIdle < 2.5) {
+    if (!keeperAiming && gkIdx >= 0 && world.holdingGk === gkIdx && humanIdle < 2.5 && cursor.isCaptain) {
       keeperAiming = true;
       world.holdLock = true;
     }
@@ -1047,22 +1202,9 @@ async function boot() {
       if (humanIdle >= 6 || world.restartLock <= 0) {
         launchKeeper(vec(clamp(gk.pos.x + world.attackSign(0) * 38, 8, 97), world.ball.pos.y < 34 ? 22 : 46), 'punt', 5);
       } else {
-        const throwR = 24 + 14 * gk.stats.power;
-        const puntR = clamp(60 + 34 * gk.stats.power, 60, 88);
-        const m = scene.screenToWorld(mouse.x, mouse.y);
-        const toM = vec(m.x - gk.pos.x, m.y - gk.pos.y);
-        const dRaw = Math.hypot(toM.x, toM.y);
-        const d = Math.min(dRaw, puntR);
-        const target = dRaw > 1e-4
-          ? vec(gk.pos.x + (toM.x / dRaw) * d, gk.pos.y + (toM.y / dRaw) * d)
-          : vec(gk.pos.x + 10, gk.pos.y);
-        const kind: 'throw' | 'punt' = d <= throwR ? 'throw' : 'punt';
-        const scatter = kind === 'throw'
-          ? (0.8 + d * 0.045) * (1.35 - gk.stats.control * 0.7)
-          : (2.2 + d * 0.075) * (1.45 - gk.stats.control * 0.7);
-        const pCenter = Math.pow(0.5, 1 / (0.5 + 0.6 * gk.stats.control));
-        scene.setKeeperAim({ gk: gk.pos, target, throwR, puntR, scatter, kind, pCenter });
-        if (mouse.clicked) launchKeeper(target, kind, scatter);
+        const sight = readKeeperSight(gk.pos, gk.stats);
+        scene.setKeeperAim(sight);
+        if (mouse.clicked) launchKeeper(sight.target, sight.kind, sight.scatter);
       }
     }
     // The throw-in sight: the keeper's throw ring, worn by the taker at the
@@ -1150,6 +1292,32 @@ async function boot() {
     // stoppage time wears a plus — the referee is letting the move breathe
     const et = match.halfLength > 0 && match.clock > match.halfLength ? '+' : '';
     scene.setClock(match.halfLength > 0 ? `${match.half === 1 ? '1ST' : '2ND'} ${fmtClock(match.clock)}${et}` : '');
+    matchAudio.tick(match, cursor.idx, dt);
+    // The whole truth ships LAST — this tick's launches and reassignments
+    // included — ~30 times a second, and never onto a choking socket: a
+    // queued snapshot is a stale snapshot, and a queue that only grows is
+    // the lag that "gets worse and worse". Events wait for the next send.
+    if (netRole === 'host' && party && net) {
+      pendingNetEvents.push(...world.events);
+      if (pendingNetEvents.length > 240) pendingNetEvents.splice(0, pendingNetEvents.length - 240);
+      netTick++;
+      if (netTick % 2 === 0 && net.backlog < 12_000) {
+        const cursors: Record<number, number> = { 0: cursor.idx };
+        const suggest: Record<number, number> = { 0: cursor.suggested };
+        for (const [seat, sc] of seatCursors) {
+          cursors[seat] = sc.cursor.idx;
+          suggest[seat] = sc.cursor.suggested;
+        }
+        const gkAim = remoteGk && world.holdingGk === remoteGk.gkIdx ? remoteGk.seat : -1;
+        party.broadcast({ t: 'snap', snap: takeSnap(match, netTick, cursors, suggest, pendingNetEvents, gkAim) });
+        pendingNetEvents = [];
+      }
+      const tags: Record<number, string> = {};
+      for (const [seat, sc] of seatCursors) {
+        if (sc.team === 0) tags[sc.cursor.idx] = party.seats.get(seat)?.name ?? '';
+      }
+      scene.setSeatTags(tags);
+    }
     scene.handleEvents(world.events);
 
     if (fulltimeDelay > 0 && match.finished) {
@@ -1197,6 +1365,8 @@ async function boot() {
       get passHints() { return passHints; },
       get keeperAiming() { return keeperAiming; },
       get cursor() { return cursor; },
+      get seatCursors() { return [...seatCursors.entries()].map(([s, sc]) => ({ seat: s, team: sc.team, captain: sc.cursor.isCaptain, idx: sc.cursor.idx })); },
+      get remoteGk() { return remoteGk; },
       menu, draftScreen,
     };
   }

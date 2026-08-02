@@ -1331,6 +1331,7 @@ export class SquadBuilderScreen implements Screen {
       this.wheelPrompt.centerAt(this.w / 2, this.reelY - 36);
     }
     if (this.mode === 'gamble' && this.roll) {
+      this.clockBar.visible = false; // the ride owns the stage
       const r = this.roll;
       r.t += dt;
       const k = Math.min(1, r.t / r.dur);
@@ -1348,6 +1349,7 @@ export class SquadBuilderScreen implements Screen {
 
     // boards full: hold the last close-up on every screen, then the whistle
     if (this.doneT > 0) {
+      this.clockBar.visible = false;
       this.doneT -= dt;
       if (this.doneT <= 0) this.finish();
       return;
@@ -1361,14 +1363,9 @@ export class SquadBuilderScreen implements Screen {
       if (c.kind === 'local') {
         if (this.mode === 'draft') {
           this.pickClock -= dt;
-          if (this.pickClock < 5.2 && Math.floor(this.pickClock * 2) !== Math.floor((this.pickClock + dt) * 2)) {
-            audio.play('ui-wheel-tick', { vol: 0.7 });
-          }
           if (this.pickClock <= 0) {
             this.pickClock = PICK_TIME;
             this.cpuAct(side); // the clock signs for you — best value on the shelf
-          } else {
-            this.drawClock(this.pickClock / PICK_TIME);
           }
         }
       } else if (!this.cpuReveal && !this.revealCard) {
@@ -1384,7 +1381,40 @@ export class SquadBuilderScreen implements Screen {
         }
       }
     }
+    // Mirrors run the SAME sand cosmetically — every op resets it, so every
+    // screen watches one clock whether it referees, picks, or just spectates
+    if (!this.authority && this.draft.turn < this.draft.order.length && !this.roll) {
+      const c = this.ctl[this.curSide];
+      if (c.kind === 'local' && this.mode === 'draft') this.pickClock = Math.max(0, this.pickClock - dt);
+      else if (c.kind === 'remote' && !this.cpuReveal && !this.revealCard) this.remoteClock = Math.max(0, this.remoteClock - dt);
+    }
+    this.updateTurnClock(dt);
     this.turnRefresh();
+  }
+
+  // The turn clock every screen shows: a captain on the host's tab burns
+  // PICK_TIME, a captain on the wire burns his REMOTE_TIME grace, and the
+  // CPU thinks unbarred. Null means no sand to show.
+  private turnClockFrac(): number | null {
+    if (this.draft.turn >= this.draft.order.length || this.doneT > 0 || this.roll) return null;
+    const c = this.ctl[this.curSide];
+    if (c.kind === 'local' && this.mode === 'draft') return Math.max(0, this.pickClock) / PICK_TIME;
+    if (c.kind === 'remote') return Math.max(0, this.remoteClock) / REMOTE_TIME;
+    return null;
+  }
+
+  private updateTurnClock(dt: number) {
+    const frac = this.turnClockFrac();
+    this.clockBar.visible = frac !== null;
+    if (frac === null) return;
+    this.drawClock(frac);
+    // the last grains rattle — but only in the hands they're falling for
+    if (this.myTurn) {
+      const t = this.ctl[this.mySide].kind === 'remote' ? this.remoteClock : this.pickClock;
+      if (t < 5.2 && t > 0 && Math.floor(t * 2) !== Math.floor((t + dt) * 2)) {
+        audio.play('ui-wheel-tick', { vol: 0.7 });
+      }
+    }
   }
 
   private turnRefresh() {
@@ -1431,8 +1461,8 @@ export class SquadBuilderScreen implements Screen {
     this.turnText.visible = this.phase !== 'toss';
     this.myPanel.visible = this.phase !== 'toss';
     this.cpuPanel.visible = this.phase === 'market' || this.phase === 'done';
-    this.clockBar.visible = this.phase === 'shape' ||
-      (this.phase === 'market' && this.mode === 'draft' && this.myTurn && this.authority);
+    // the market bar manages itself every frame (updateTurnClock)
+    this.clockBar.visible = this.phase === 'shape';
     this.backBtn.visible = this.authority && this.phase !== 'done';
     if (reelOn) {
       this.buildRoleButtons();

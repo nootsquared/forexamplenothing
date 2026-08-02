@@ -43,8 +43,10 @@ export class TeamCursor {
     for (const e of world.events) {
       // Our restart: the ceremony beat announces it, the taker becomes you —
       // unless a teammate seat is already wearing him, or you're not the
-      // captain (set pieces are the captain's ball)
-      if (e.kind === 'restart' && e.team === this.team && e.taker >= 0 && this.isCaptain) this.take(e.taker);
+      // captain (set pieces are the captain's ball). A goal kick stays with
+      // the KEEPER and his distribution sight — the cursor never wears him.
+      if (e.kind === 'restart' && e.team === this.team && e.taker >= 0 && this.isCaptain &&
+          e.restart !== 'goalkick') this.take(e.taker);
       if (e.kind === 'kickoff' && e.team === this.team && e.taker >= 0 && this.isCaptain) this.take(e.taker);
       // A ball leaving YOUR boot is yours to follow
       if (e.kind === 'kick' && e.idx === this.idx) this.myBallT = MY_BALL_WINDOW;

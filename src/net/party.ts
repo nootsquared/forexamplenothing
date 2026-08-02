@@ -33,6 +33,8 @@ export class Party {
   onSeatJoined: (seat: number) => void = () => {}; // a fresh face walked in
   onSeatLeft: (seat: number) => void = () => {};   // ...and one walked out
   onGuestDraft: (seat: number, action: DraftIntent) => void = () => {};
+  // a guest captain called his keeper's distribution — the sim decides if it's his to call
+  onGuestGk: (seat: number, x: number, y: number) => void = () => {};
   private claimSeq = 1; // ticket roll for claim order
 
   constructor(public net: NetSession, hostName: string, public nationIds: string[]) {
@@ -152,6 +154,9 @@ export class Party {
       case 'teamname': this.renameTeam(seat, msg.name); break;
       case 'ready': this.setReady(seat, msg.ready); break;
       case 'draft': this.onGuestDraft(seat, msg.action); break;
+      case 'gk':
+        if (Number.isFinite(msg.x) && Number.isFinite(msg.y)) this.onGuestGk(seat, msg.x, msg.y);
+        break;
       case 'input': {
         const s = this.seats.get(seat);
         if (s) {

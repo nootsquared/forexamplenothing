@@ -97,6 +97,17 @@ describe('wire inputs at the host desk', () => {
   });
 });
 
+describe('the keeper call at the host desk', () => {
+  it('routes a distribution point to the sim and drops garbage on the floor', () => {
+    join(1, 'ALICE');
+    const calls: [number, number, number][] = [];
+    party.onGuestGk = (seat, x, y) => calls.push([seat, x, y]);
+    guest(1, { t: 'gk', x: 38, y: 22 });
+    guest(1, { t: 'gk', x: Number.NaN, y: 22 });
+    expect(calls).toEqual([[1, 38, 22]]);
+  });
+});
+
 describe('the wire form of an input', () => {
   it('round-trips a full intent, aim point included', () => {
     const out = unpackInput(packInput({

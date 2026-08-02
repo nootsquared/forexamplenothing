@@ -164,7 +164,22 @@ export class World {
         const d = len(away);
         if (d < this.restartExclusion) {
           const out = d < 1e-6 ? vec(1, 0) : norm(away);
-          p.pos = add(p.pos, scale(out, Math.min(12 * dt, this.restartExclusion - d)));
+          const step = Math.min(12 * dt, this.restartExclusion - d);
+          let nx = p.pos.x + out.x * step;
+          let ny = p.pos.y + out.y * step;
+          // The law never parks a body off the pitch or inside the goal
+          // rigging: when the radial shove runs out of field, the body
+          // SLIDES along the line around the ring instead of pinning
+          if (nx < 0.4 || nx > PITCH.length - 0.4) {
+            nx = clamp(nx, 0.4, PITCH.length - 0.4);
+            ny += (ny >= this.ball.pos.y ? 1 : -1) * step;
+          }
+          if (ny < 0.4 || ny > PITCH.width - 0.4) {
+            ny = clamp(ny, 0.4, PITCH.width - 0.4);
+            nx += (nx >= this.ball.pos.x ? 1 : -1) * step;
+          }
+          p.pos.x = nx;
+          p.pos.y = ny;
         }
       }
     }

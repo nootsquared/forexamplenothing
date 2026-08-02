@@ -466,3 +466,26 @@ describe('the turnover', () => {
     expect(w.score.right).toBe(0);
   });
 });
+
+describe('the restart law and the rigging', () => {
+  it('slides an excluded body around the ring instead of pinning him in the net', () => {
+    const match = createMatch();
+    const world = match.world;
+    // an attacker parked INSIDE the goal mouth when the goal kick is placed
+    const intruder = world.players.findIndex((p) => p.id.team === 1);
+    world.players[intruder].pos = vec(-0.6, PITCH.width / 2);
+    const gk = world.players.findIndex((p) => p.id.team === 0 && p.id.role === 'GK');
+    world.ball.pos = vec(5.5, PITCH.width / 2);
+    world.ball.vel = vec();
+    world.lastTouch = { team: 0, idx: gk };
+    world.restartExclusion = 11;
+    const inputs = world.players.map(() => idle);
+    for (let i = 0; i < 180; i++) {
+      world.restartLock = 1; // the keeper is still reading the field
+      world.step(DT, inputs);
+    }
+    const p = world.players[intruder].pos;
+    expect(p.x).toBeGreaterThan(0.3); // out of the rigging, on the pitch
+    expect(dist(p, world.ball.pos)).toBeGreaterThan(10.5); // and outside the law's ring
+  });
+});

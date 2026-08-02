@@ -9,7 +9,7 @@ import { MatchSnap } from './net';
 
 const q = (v: number) => Math.round(v * 100) / 100;
 
-export function takeSnap(match: Match, tick: number, cursors: Record<number, number>, suggest: Record<number, number>, events: SimEvent[]): MatchSnap {
+export function takeSnap(match: Match, tick: number, cursors: Record<number, number>, suggest: Record<number, number>, events: SimEvent[], gkAim = -1): MatchSnap {
   const w = match.world;
   return {
     tick,
@@ -19,6 +19,8 @@ export function takeSnap(match: Match, tick: number, cursors: Record<number, num
       q(p.facing.x), q(p.facing.y),
       p.lungeTimer > 0 ? 1 : 0,
       p.isCharging ? 1 : 0,
+      p.isSprinting ? 1 : 0,
+      q(p.stamina),
     ]),
     score: [w.score.left, w.score.right],
     clock: q(match.clock),
@@ -29,6 +31,7 @@ export function takeSnap(match: Match, tick: number, cursors: Record<number, num
     suggest,
     events,
     sidesSwapped: w.sidesSwapped,
+    gkAim,
   };
 }
 
@@ -42,7 +45,9 @@ const MAX_SNAPS = 24;
 export class SnapPlayer {
   private snaps: MatchSnap[] = [];
   private renderTick = -1;
-  pendingEvents: SimEvent[] = [];
+  // Events wait for the RENDER clock to reach the tick they happened on, so
+  // the GOAL banner never beats the ball into the net on a guest's screen
+  pendingEvents: { tick: number; ev: SimEvent }[] = [];
   latest: MatchSnap | null = null;
   lastAt = 0; // wall-clock arrival of the freshest snap — the stale-feed gauge
 
@@ -52,7 +57,9 @@ export class SnapPlayer {
     this.latest = snap;
     this.lastAt = performance.now();
     if (this.renderTick < 0) this.renderTick = snap.tick - BUFFER_TICKS;
-    this.pendingEvents.push(...(snap.events as SimEvent[]));
+    // a snap carries the events of the ticks LEADING to it — one back keeps
+    // them reachable (the render clock rides at most tick - 1)
+    for (const ev of snap.events as SimEvent[]) this.pendingEvents.push({ tick: snap.tick - 1, ev });
   }
 
   // Advance the guest's clock and pose the world on the buffered timeline
@@ -100,6 +107,8 @@ export class SnapPlayer {
       p.facing.y = pb[5];
       p.lungeTimer = pb[6] > 0 ? 0.2 : 0;
       p.isCharging = pb[7] > 0;
+      p.isSprinting = pb[8] > 0;   // the dust trail reads this
+      p.stamina = pb[9] ?? 1;      // ...and the HUD meter reads this
     });
 
     world.score.left = newest.score[0];
@@ -108,10 +117,14 @@ export class SnapPlayer {
     world.sidesSwapped = newest.sidesSwapped;
   }
 
-  // Events surface exactly once, in arrival order
+  // Events surface exactly once, in order — each held until the buffered
+  // timeline actually SHOWS the moment it belongs to
   drainEvents(): SimEvent[] {
-    const out = this.pendingEvents;
-    this.pendingEvents = [];
+    const due = this.renderTick;
+    const out: SimEvent[] = [];
+    while (this.pendingEvents.length && this.pendingEvents[0].tick <= due) {
+      out.push(this.pendingEvents.shift()!.ev);
+    }
     return out;
   }
 }

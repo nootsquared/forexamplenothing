@@ -122,6 +122,25 @@ describe('the possession-first cursor', () => {
   });
 });
 
+describe('set pieces and the cursor', () => {
+  it('a goal kick keeps the cursor OFF the keeper — the distribution sight owns that ball', () => {
+    const match = createMatch();
+    const world = match.world;
+    const cursor = new TeamCursor(0, world);
+    world.restartLock = 0;
+    world.restartExclusion = 0;
+    const shooter = world.players.findIndex((p) => p.id.team === 1 && p.id.role === 'FW');
+    world.lastTouch = { team: 1, idx: shooter };
+    world.ball.pos = vec(-0.5, 12); // over team 0's byline, wide of the mouth
+    world.ball.vel = vec(-6, 0);
+    const before = cursor.idx;
+    tick(match, cursor);
+    expect(world.events.some((e) => e.kind === 'restart' && e.restart === 'goalkick' && e.team === 0)).toBe(true);
+    expect(cursor.idx).toBe(before);
+    expect(world.players[cursor.idx].id.role).not.toBe('GK');
+  });
+});
+
 describe('two seats, one team', () => {
   it('two human cursors never collide on the same body, and a worn carrier stays worn', () => {
     const match = createMatch();

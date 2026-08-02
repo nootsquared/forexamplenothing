@@ -47,7 +47,8 @@ export type GuestMsg =
   | { t: 'teamname'; name: string }
   | { t: 'ready'; ready: boolean }
   | { t: 'draft'; action: DraftIntent }
-  | { t: 'input'; input: NetInput };
+  | { t: 'input'; input: NetInput }
+  | { t: 'gk'; x: number; y: number }; // my keeper's distribution call — a field point
 
 // host → guests
 export type HostMsg =
@@ -108,6 +109,7 @@ export interface MatchSnap {
   suggest: Record<number, number>; // seat → the body E would take (the white chevron)
   events: unknown[];               // SimEvents raised since the last snap
   sidesSwapped: boolean;
+  gkAim: number;                   // the seat whose keeper sight is open (-1 = none)
 }
 
 type Handler = (msg: HostMsg | { t: 'peer-joined'; seat: number; name: string } | { t: 'peer-left'; seat: number } | { t: 'from'; seat: number; msg: GuestMsg } | { t: 'hosted'; code: string } | { t: 'joined'; seat: number } | { t: 'no-room' } | { t: 'room-closed' }) => void;
@@ -196,6 +198,13 @@ export class NetSession {
 
   private raw(obj: unknown) {
     if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(obj));
+  }
+
+  // Bytes written but not yet on the wire. A congested socket must be given
+  // AIR, not more snapshots — queued state is stale state, and a queue that
+  // only ever grows is exactly the "lag gets worse and worse" death march.
+  get backlog(): number {
+    return this.ws?.bufferedAmount ?? 0;
   }
 
   close() {
