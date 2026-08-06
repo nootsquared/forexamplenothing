@@ -3,7 +3,7 @@ import { GameAssets } from '../render/assets';
 import { PixelText } from '../render/pixelText';
 import { audio } from '../audio/engine';
 import { MOODS } from '../render/variants';
-import { PixelList, Reveal, centerShade, stepShade } from './kit';
+import { BeamMotes, Drop, GrassBed, PixelDust, PixelList, Reveal, centerShade, pillarBounds, pitchMark, stepShade } from './kit';
 import { Match } from '../match';
 
 // The shell's screens: menu, setup, pause, full-time. The squad builder
@@ -39,7 +39,9 @@ export interface MatchSetup {
 // ---------------------------------------------------------------- main menu
 // A live AI match plays behind this screen; the menu stands CENTERED in a
 // stepped spotlight pillar — wordmark up top, options stacked beneath, the
-// game's own ball rolling across the bottom of the frame.
+// game's own ball rolling across the bottom of the frame. The stack arrives
+// as STADIUM SIGNAGE: heavy plates drop onto the stage, slam through their
+// rests, kick up pixel dust — and the wordmark catches the light while idle.
 export class MenuScreen implements Screen {
   root = new Container();
   onQuick: () => void = () => {};
@@ -58,31 +60,46 @@ export class MenuScreen implements Screen {
   private page: 'root' | 'play' | 'settings' = 'root';
   private list: PixelList;
   private title: Sprite;
-  private ball: Sprite;
-  private ballPhase = 0;
-  private ballX = 0;
   private sub: PixelText;
   private crumb: PixelText;
-  private foot: PixelText;
   private shade = new Graphics();
+  private mark = new Graphics();     // the ghosted centre circle in the glass
+  private motes = new BeamMotes();   // light motes adrift in the pane
+  private grass = new GrassBed();    // the overgrown bed along the pane's foot
+  private restBall: Sprite;          // the pixel ball asleep in the blades
+  private backdrop = new Container();
   private box = new Graphics();
+  private plate = new Container(); // box + options: one piece of signage
   private reveal = new Reveal();
+  private drop = new Drop();       // the full entrance
+  private pageDrop = new Drop();   // the little hop between menu pages
+  private dust = new PixelDust();
+  private shine = new Graphics();  // the light band that sweeps the wordmark
+  private shineMask: Sprite;
+  private shineT = 0;
   private w = 1280;
   private h = 720;
 
   constructor(private assets: GameAssets) {
     this.title = new Sprite(assets.title);
     this.sub = new PixelText(assets, 3, 0x9ff0b8);
-    this.sub.text = 'ARCADE ELEVENS';
+    this.sub.text = 'A NOOT^2 GAME';
     this.crumb = new PixelText(assets, 2, 0x8a91a0);
-    this.foot = new PixelText(assets, 2, 0x69707f);
-    this.foot.text = 'W S PICK - ENTER GO - ESC BACK';
-    this.ball = new Sprite(assets.ballFrames[0][0]);
-    this.ball.anchor.set(0.5);
-    this.ball.scale.set(2);
     this.list = new PixelList(assets, 3, 34, 7, 13, true);
     this.list.onPick = (i) => this.act(i);
-    this.root.addChild(this.shade, this.title, this.sub, this.ball, this.crumb, this.box, this.list.root, this.foot);
+    this.plate.addChild(this.box, this.list.root);
+    this.list.root.position.set(0, 20); // the options sit inside their plate
+    // the shine renders only where the wordmark's own pixels are
+    this.shineMask = new Sprite(assets.title);
+    this.shine.mask = this.shineMask;
+    this.shine.blendMode = 'add';
+    // the resting ball sleeps INSIDE the bed: behind the front blades,
+    // ahead of the back ones — cradled, not placed
+    this.restBall = new Sprite(assets.ballFrames[0][0]);
+    this.restBall.anchor.set(0.5);
+    this.restBall.scale.set(6);
+    this.backdrop.addChild(this.shade, this.mark, this.grass.soil, this.grass.back, this.restBall, this.grass.front, this.motes.g);
+    this.root.addChild(this.backdrop, this.title, this.shine, this.shineMask, this.sub, this.crumb, this.plate, this.dust.g);
     this.setPage('root', false);
   }
 
@@ -97,10 +114,20 @@ export class MenuScreen implements Screen {
     this.list.sel = 0; // a fresh page starts at its top
     this.crumb.text = page === 'root' ? 'MAIN MENU' : page === 'play' ? 'PLAY' : 'SETTINGS';
     this.crumb.centerAt(this.w / 2, this.h * 0.42); // a new word, a new center
-    this.refresh(animate);
+    this.refresh(animate, 0.08);
+    // the plate HOPS to the new page — unless the big entrance still owns it
+    if (animate && !this.drop.active) {
+      this.reveal.clear();
+      this.reveal.add(this.crumb, 0);
+      this.reveal.play();
+      this.pageDrop.finish(); // a half-flown hop settles before the next one
+      this.pageDrop.clear();
+      this.pageDrop.add(this.plate, 0, { from: 14, dur: 0.24, onImpact: () => audio.ui('card', 0.4) });
+      this.pageDrop.play();
+    }
   }
 
-  private refresh(animate = false) {
+  private refresh(animate = false, stagger = 0) {
     const cap = FPS_CHOICES[this.fpsIdx];
     const rows =
       this.page === 'root' ? [{ label: 'PLAY' }, { label: 'PLAY ONLINE' }, { label: 'SETTINGS' }] :
@@ -113,27 +140,32 @@ export class MenuScreen implements Screen {
         { label: 'SFX VOL', value: String(this.sfxVol) },
         { label: 'BACK', gapBefore: true },
       ];
-    this.list.setRows(rows.map((r) => ({ ...r, enabled: true })), true, animate);
+    this.list.setRows(rows.map((r) => ({ ...r, enabled: true })), true, animate, stagger);
     this.drawBox();
   }
 
-  // The options live in a proper menu box — a framed panel under the crumb
+  // The options live in a proper menu box — a framed panel, drawn in the
+  // plate's own space so the whole piece of signage can move as one
   private drawBox() {
     const bw = Math.max(this.list.blockWidth + 110, 330);
     const bh = this.list.totalHeight + 34;
-    const bx = Math.round(this.w / 2 - bw / 2);
-    const by = Math.round(this.h * 0.47) - 20;
+    const bx = -Math.round(bw / 2);
     const g = this.box;
     g.clear();
-    g.rect(bx, by, bw, bh).fill({ color: 0x0d1119, alpha: 0.88 });
-    g.rect(bx, by, bw, 2).fill({ color: 0xffd95e, alpha: 0.5 });
-    g.rect(bx, by + bh - 2, bw, 2).fill({ color: 0x000000, alpha: 0.5 });
-    g.rect(bx, by + 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
-    g.rect(bx + bw - 1, by + 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    g.rect(bx, 0, bw, bh).fill({ color: 0x0d1119, alpha: 0.88 });
+    g.rect(bx, 0, bw, 2).fill({ color: 0xffd95e, alpha: 0.5 });
+    g.rect(bx, bh - 2, bw, 2).fill({ color: 0x000000, alpha: 0.5 });
+    g.rect(bx, 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    g.rect(bx + bw - 1, 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
     // corner studs tie it to the possession-frame language
-    for (const [cx, cy] of [[bx + 3, by + 5], [bx + bw - 6, by + 5], [bx + 3, by + bh - 8], [bx + bw - 6, by + bh - 8]]) {
+    for (const [cx, cy] of [[bx + 3, 5], [bx + bw - 6, 5], [bx + 3, bh - 8], [bx + bw - 6, bh - 8]]) {
       g.rect(cx, cy, 3, 3).fill({ color: 0xffd95e, alpha: 0.55 });
     }
+  }
+
+  // The plate's footprint in screen space — where its landing dust belongs
+  private plateBottom() {
+    return { x: this.plate.position.x, y: this.plate.position.y + this.list.totalHeight + 34, w: Math.max(this.list.blockWidth + 110, 330) };
   }
 
   private act(i: number) {
@@ -165,43 +197,78 @@ export class MenuScreen implements Screen {
     if (code === 'Escape' && this.page !== 'root') { audio.ui('back'); this.setPage('root'); }
   }
 
-  // Shown fresh: the whole stack materializes onto whichever page is open
+  // Shown fresh: the stage lights come up and the signage falls — title
+  // first, plate second, each landing in its own dust with its own thud,
+  // the words typing themselves out between the slams
+  // The backdrop arrives OPAQUE — a fade-in here reads as a bright flash
+  // when the previous screen was already dark (online → back)
   enter() {
     this.reveal.clear();
-    this.reveal.add(this.title, 0);
-    this.reveal.add(this.sub, 0.06);
-    this.reveal.add(this.crumb, 0.12);
-    this.reveal.add(this.foot, 0.34);
+    this.reveal.add(this.sub, 0.3);
+    this.reveal.add(this.crumb, 0.4);
     this.reveal.play();
-    this.refresh(true);
+    this.drop.clear();
+    this.drop.add(this.title, 0, { from: 46, dur: 0.4, onImpact: () => {
+      audio.ui('card');
+      this.dust.burst(this.w / 2, this.title.position.y + this.title.height + 2, this.title.width * 0.7, 14);
+    } });
+    this.drop.add(this.plate, 0.14, { from: 30, dur: 0.36, onImpact: () => {
+      audio.ui('card', 0.65);
+      const b = this.plateBottom();
+      this.dust.burst(b.x, b.y, b.w * 0.55, 12);
+    } });
+    this.drop.play();
+    this.shineT = SHINE_CYCLE - 0.5; // the wordmark glints right after it lands
+    this.refresh(true, 0.28);
   }
 
-  // The ball crosses the bottom of the screen, rolling for real
   update(dt: number) {
-    const phases = this.assets.manifest.ball.phases;
-    this.ballPhase += dt * 10;
-    this.ballX += dt * 42;
-    if (this.ballX > this.w + 60) this.ballX = -60;
-    this.ball.texture = this.assets.ballFrames[0][Math.floor(this.ballPhase) % phases];
-    this.ball.position.set(Math.round(this.ballX), this.h - 27);
+    this.grass.update(dt);
     this.list.update(dt);
     this.reveal.update(dt);
+    this.drop.update(dt);
+    this.pageDrop.update(dt);
+    this.dust.update(dt);
+    this.motes.update(dt);
+    // the idle glint: a slanted light band crosses the wordmark, then rests
+    this.shineT += dt;
+    const sweep = (this.shineT % SHINE_CYCLE) / 0.55;
+    this.shine.visible = sweep <= 1 && !this.drop.active;
+    if (this.shine.visible) {
+      const span = this.title.width + 120;
+      this.shine.position.x = this.title.position.x - 60 + span * sweep;
+    }
   }
 
   layout(w: number, h: number) {
     this.w = w;
     this.h = h;
     centerShade(this.shade, w, h);
+    const beam = pillarBounds(w);
+    pitchMark(this.mark, w, h, beam.x0, beam.x1);
+    this.motes.layout(beam.x0, beam.x1, h);
+    // the ball RESTS: its underside on the soil, the short grass lapping
+    // over its base, the bed parting around it
+    this.restBall.position.set(Math.round(beam.x0 + beam.coreW * 0.3), h - 50);
+    this.grass.layout(beam.x0, beam.coreW, h, { x: this.restBall.position.x, y: this.restBall.position.y, r: 42 });
     const scale = Math.max(6, Math.min(12, Math.floor((w * 0.34) / this.assets.manifest.title.w)));
     this.title.scale.set(scale);
     this.title.position.set(Math.round(w / 2 - this.title.width / 2), Math.round(h * 0.1));
+    this.shineMask.scale.set(scale);
+    this.shineMask.position.copyFrom(this.title.position);
+    // the band itself: a leaning stripe taller than the wordmark, drawn once per size
+    this.shine.clear();
+    const sh = this.title.height + 12;
+    this.shine.poly([{ x: 0, y: sh }, { x: 22, y: 0 }, { x: 52, y: 0 }, { x: 30, y: sh }]).fill({ color: 0xfff8e0, alpha: 0.32 });
+    this.shine.position.y = this.title.position.y - 6;
     this.sub.centerAt(w / 2, h * 0.1 + this.title.height + 12);
     this.crumb.centerAt(w / 2, h * 0.42);
-    this.list.root.position.set(Math.round(w / 2), Math.round(h * 0.47));
-    this.foot.centerAt(w / 2, h - 44);
+    this.plate.position.set(Math.round(w / 2), Math.round(h * 0.47) - 20);
     this.drawBox();
   }
 }
+
+const SHINE_CYCLE = 7; // seconds between wordmark glints
 
 // ------------------------------------------------------------- match setup
 // Every play mode passes through here: sides, half length, difficulty, go.
@@ -217,22 +284,27 @@ export class SetupScreen implements Screen {
   private list: PixelList;
   private crumb: PixelText;
   private title: PixelText;
-  private foot: PixelText;
   private shade = new Graphics();
+  private mark = new Graphics();
+  private motes = new BeamMotes();
+  private grass = new GrassBed();
+  private backdrop = new Container();
   private box = new Graphics();
+  private plate = new Container();
   private reveal = new Reveal();
-  private w = 1280;
-  private h = 720;
+  private drop = new Drop();
+  private dust = new PixelDust();
 
   constructor(assets: GameAssets) {
     this.title = new PixelText(assets, 5, 0xffd95e);
     this.crumb = new PixelText(assets, 2, 0x8a91a0);
     this.crumb.text = 'MATCH SETUP';
-    this.foot = new PixelText(assets, 2, 0x69707f);
-    this.foot.text = 'W S PICK - ENTER GO - ESC BACK';
     this.list = new PixelList(assets, 3, 34, 6, 13, true);
     this.list.onPick = (i) => this.act(i);
-    this.root.addChild(this.shade, this.title, this.crumb, this.box, this.list.root, this.foot);
+    this.plate.addChild(this.box, this.list.root);
+    this.list.root.position.set(0, 20);
+    this.backdrop.addChild(this.shade, this.mark, this.grass.soil, this.grass.back, this.grass.front, this.motes.g);
+    this.root.addChild(this.backdrop, this.title, this.crumb, this.plate, this.dust.g);
   }
 
   begin(mode: PlayMode) {
@@ -242,30 +314,29 @@ export class SetupScreen implements Screen {
     this.refresh();
   }
 
-  private refresh(animate = false) {
+  private refresh(animate = false, stagger = 0) {
     this.list.setRows([
       { label: 'SIDES', value: `${this.size} V ${this.size}`, enabled: true },
       { label: 'HALF LENGTH', value: fmtClock(this.halfLength), enabled: true },
       { label: 'DIFFICULTY', value: DIFF_NAMES[this.difficulty], enabled: true },
       { label: mode0(this.mode), enabled: true, gapBefore: true },
       { label: 'BACK', enabled: true },
-    ], true, animate);
+    ], true, animate, stagger);
     this.drawBox();
   }
 
   private drawBox() {
     const bw = Math.max(this.list.blockWidth + 110, 330);
     const bh = this.list.totalHeight + 34;
-    const bx = Math.round(this.w / 2 - bw / 2);
-    const by = Math.round(this.h * 0.36) - 20;
+    const bx = -Math.round(bw / 2);
     const g = this.box;
     g.clear();
-    g.rect(bx, by, bw, bh).fill({ color: 0x0d1119, alpha: 0.88 });
-    g.rect(bx, by, bw, 2).fill({ color: 0xffd95e, alpha: 0.5 });
-    g.rect(bx, by + bh - 2, bw, 2).fill({ color: 0x000000, alpha: 0.5 });
-    g.rect(bx, by + 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
-    g.rect(bx + bw - 1, by + 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
-    for (const [cx, cy] of [[bx + 3, by + 5], [bx + bw - 6, by + 5], [bx + 3, by + bh - 8], [bx + bw - 6, by + bh - 8]]) {
+    g.rect(bx, 0, bw, bh).fill({ color: 0x0d1119, alpha: 0.88 });
+    g.rect(bx, 0, bw, 2).fill({ color: 0xffd95e, alpha: 0.5 });
+    g.rect(bx, bh - 2, bw, 2).fill({ color: 0x000000, alpha: 0.5 });
+    g.rect(bx, 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    g.rect(bx + bw - 1, 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    for (const [cx, cy] of [[bx + 3, 5], [bx + bw - 6, 5], [bx + 3, bh - 8], [bx + bw - 6, bh - 8]]) {
       g.rect(cx, cy, 3, 3).fill({ color: 0xffd95e, alpha: 0.55 });
     }
   }
@@ -289,28 +360,41 @@ export class SetupScreen implements Screen {
     if (code === 'Escape') { audio.ui('back'); this.onBack(); }
   }
 
+  // The same signage language as the front door: words type, the plate
+  // drops — over a backdrop that arrives OPAQUE, so nothing ever flashes
   enter() {
     this.reveal.clear();
     this.reveal.add(this.title, 0);
-    this.reveal.add(this.crumb, 0.07);
-    this.reveal.add(this.foot, 0.3);
+    this.reveal.add(this.crumb, 0.08);
     this.reveal.play();
-    this.refresh(true);
+    this.drop.clear();
+    this.drop.add(this.plate, 0.08, { from: 28, dur: 0.34, onImpact: () => {
+      audio.ui('card', 0.65);
+      const bw = Math.max(this.list.blockWidth + 110, 330);
+      this.dust.burst(this.plate.position.x, this.plate.position.y + this.list.totalHeight + 34, bw * 0.55, 12);
+    } });
+    this.drop.play();
+    this.refresh(true, 0.2);
   }
 
   update(dt: number) {
     this.list.update(dt);
     this.reveal.update(dt);
+    this.drop.update(dt);
+    this.dust.update(dt);
+    this.motes.update(dt);
+    this.grass.update(dt);
   }
 
   layout(w: number, h: number) {
-    this.w = w;
-    this.h = h;
     centerShade(this.shade, w, h);
+    const beam = pillarBounds(w);
+    pitchMark(this.mark, w, h, beam.x0, beam.x1);
+    this.motes.layout(beam.x0, beam.x1, h);
+    this.grass.layout(beam.x0, beam.coreW, h);
     this.title.centerAt(w / 2, h * 0.16);
     this.crumb.centerAt(w / 2, h * 0.16 + 52);
-    this.list.root.position.set(Math.round(w / 2), Math.round(h * 0.36));
-    this.foot.centerAt(w / 2, h - 44);
+    this.plate.position.set(Math.round(w / 2), Math.round(h * 0.36) - 20);
     this.drawBox();
   }
 }
@@ -321,14 +405,13 @@ const mode0 = (mode: PlayMode) =>
 // ------------------------------------------------------------------- pause
 // The team talk: the frozen match stays visible on the right while the shade
 // column carries the scoreline, your options, and the story of the game so
-// far. It slides in off the touchline and slides back out on resume.
-const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
-
+// far. The board DROPS onto the touchline in a cascade — same signage
+// language as the front door — and lifts away again on resume.
 export class PauseScreen implements Screen {
   root = new Container();
   onResume: () => void = () => {};
   onQuit: () => void = () => {};
-  onClosed: () => void = () => {}; // fired when the slide-out finishes
+  onClosed: () => void = () => {}; // fired when the lift-out finishes
   private list: PixelList;
   private shade = new Graphics();
   private tabs = new Graphics();
@@ -338,8 +421,11 @@ export class PauseScreen implements Screen {
   private storyCrumb: PixelText;
   private statLines: { label: PixelText; value: PixelText }[] = [];
   private foot: PixelText;
-  private anim = 1;
+  private drop = new Drop();
+  private dust = new PixelDust();
+  private shadeIn = 1;
   private closing = false;
+  private closeT = 0;
 
   constructor(assets: GameAssets) {
     this.title = new PixelText(assets, 8, 0xffd95e);
@@ -360,7 +446,7 @@ export class PauseScreen implements Screen {
       this.statLines.push({ label: l, value: v });
       this.root.addChild(l, v);
     }
-    this.root.addChild(this.shade, this.tabs, this.title, this.score, this.clockLine, this.storyCrumb, this.list.root, this.foot);
+    this.root.addChild(this.shade, this.tabs, this.title, this.score, this.clockLine, this.storyCrumb, this.list.root, this.foot, this.dust.g);
     this.root.setChildIndex(this.shade, 0);
   }
 
@@ -388,25 +474,54 @@ export class PauseScreen implements Screen {
     this.list.sel = 0;
   }
 
-  // Slide in off the touchline / slide back out
+  // Arm the board; the drop itself plays in enter(), after layout has run
   open() {
-    this.anim = 0;
     this.closing = false;
+    this.closeT = 0;
+    this.root.alpha = 1;
+    this.root.position.y = 0;
   }
   close() {
     if (!this.closing) this.closing = true;
   }
 
+  // The whole board falls in a cascade, top to bottom — the title slams,
+  // the numbers follow, every stat line a beat behind the one above it
+  enter() {
+    this.shadeIn = 0;
+    this.drop.clear();
+    this.drop.add(this.title, 0, { from: 34, dur: 0.36, onImpact: () => {
+      audio.ui('card');
+      this.dust.burst(this.title.position.x + this.title.width / 2, this.title.position.y + this.title.height + 2, this.title.width * 0.8, 12);
+    } });
+    this.drop.add(this.score, 0.06, { from: 26, dur: 0.32 });
+    this.drop.add(this.tabs, 0.06, { from: 26, dur: 0.32 });
+    this.drop.add(this.clockLine, 0.09, { from: 24, dur: 0.3 });
+    this.drop.add(this.list.root, 0.13, { from: 26, dur: 0.32, onImpact: () => {
+      audio.ui('card', 0.55);
+      this.dust.burst(this.list.root.position.x + 90, this.list.root.position.y + this.list.totalHeight, 170, 9);
+    } });
+    this.drop.add(this.storyCrumb, 0.17, { from: 20, dur: 0.28 });
+    this.statLines.forEach((line, i) => {
+      this.drop.add(line.label, 0.19 + i * 0.014, { from: 18, dur: 0.26 });
+      this.drop.add(line.value, 0.19 + i * 0.014, { from: 18, dur: 0.26 });
+    });
+    this.drop.add(this.foot, 0.3, { from: 14, dur: 0.26 });
+    this.drop.play();
+  }
+
   update(dt: number) {
     this.list.update(dt);
-    const target = this.closing ? 0 : 1;
-    const dir = Math.sign(target - this.anim);
-    if (dir !== 0) {
-      this.anim = Math.max(0, Math.min(1, this.anim + dir * dt * 6.5));
-      const e = easeOutCubic(this.anim);
-      this.root.alpha = e;
-      this.root.position.x = -70 * (1 - e);
-      if (this.closing && this.anim <= 0) {
+    this.drop.update(dt);
+    this.dust.update(dt);
+    if (this.shadeIn < 1) this.shade.alpha = this.shadeIn = Math.min(1, this.shadeIn + dt / 0.1);
+    // resume: the whole board lifts away, quick and light
+    if (this.closing) {
+      this.closeT = Math.min(1, this.closeT + dt / 0.14);
+      const e = this.closeT * this.closeT;
+      this.root.alpha = 1 - e;
+      this.root.position.y = -14 * e;
+      if (this.closeT >= 1) {
         this.closing = false;
         this.onClosed();
       }

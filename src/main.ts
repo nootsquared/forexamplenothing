@@ -163,7 +163,10 @@ async function boot() {
     }
     uiRoot.addChild(leaveHint); // always the top card
   };
-  window.addEventListener('resize', () => activeScreen?.layout(app.renderer.width, app.renderer.height));
+  // the RENDERER's resize, not the window's — the window event fires before
+  // Pixi has taken the new size, and a screen laid out on stale dims paints
+  // its backdrop for a canvas that no longer exists
+  app.renderer.on('resize', () => activeScreen?.layout(app.renderer.width, app.renderer.height));
 
   // The CPU wears the difficulty mostly in its BRAIN (AI_PROFILES); the legs
   // shift only slightly so nobody ever looks drunk

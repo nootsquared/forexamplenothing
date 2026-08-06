@@ -4,7 +4,7 @@ import { makeCanvas, PixelGrid } from './lib.mjs';
 // with real sidebearings, tabular 4px digits so scoreboards line up, and a 5px
 // micro face for on-field names and card fine print. Readable first, pixel always.
 
-export const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!-.:%><';
+export const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!-.:%><^';
 export const CELL_W = 7; // widest glyph (5) + 1px outline each side
 export const CELL_H = 9;
 
@@ -52,6 +52,7 @@ export const ROWS = {
   '%': ['##..#', '##..#', '...#.', '..#..', '.#...', '#..##', '#..##'],
   '>': ['#...', '##..', '.##.', '..##', '.##.', '##..', '#...'],
   '<': ['...#', '..##', '.##.', '##..', '.##.', '..##', '...#'],
+  '^': ['.#.', '#.#', '...', '...', '...', '...', '...'],
 };
 
 export const WIDTHS = Object.fromEntries(
