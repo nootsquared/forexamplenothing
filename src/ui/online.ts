@@ -287,7 +287,9 @@ export class OnlineScreen implements Screen {
 
   private rebuild() {
     const { w, h } = this;
-    centerShade(this.shade, w, h, Math.min(1360, w - 60));
+    // the pane fits the stage: the party's two boards need the wide room,
+    // the little name/code forms stand in the same slim beam as the menu
+    centerShade(this.shade, w, h, this.stage === 'party' ? Math.min(1360, w - 60) : 620);
     this.panels.clear();
     this.carets.clear();
     this.caretSpots = [];
