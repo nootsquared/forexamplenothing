@@ -1,4 +1,4 @@
-import { Application, Container, TextureSource } from 'pixi.js';
+import { Application, Container, Graphics, TextureSource } from 'pixi.js';
 import { GameLoop } from './core/loop';
 import { Vec2, vec, dist, clamp, norm, scale, expDecayVec } from './core/math';
 import { PlayerInput } from './sim/player';
@@ -18,6 +18,7 @@ import { MatchAudio } from './audio/matchAudio';
 import { loadAssets } from './render/assets';
 import { setProjection, squash } from './render/projection';
 import { Scene } from './render/scene';
+import { PixelText } from './render/pixelText';
 import { MOODS } from './render/variants';
 import { Screen, MenuScreen, SetupScreen, PauseScreen, StatsScreen, MatchSetup, fmtClock } from './ui/screens';
 import { SquadBuilderScreen } from './ui/draft';
@@ -128,6 +129,26 @@ async function boot() {
   const onlineScreen = new OnlineScreen(assets);
   let activeScreen: Screen | null = null;
 
+  // The shell's one warning toast, riding above every screen: the double-press
+  // guard that keeps a pause-reflex ESC from throwing anyone out of a party
+  const leaveHint = new Container();
+  let leaveArm = 0; // seconds left on an armed online exit
+  const shellHint = (text: string | null) => {
+    leaveHint.removeChildren().forEach((c) => c.destroy({ children: true }));
+    if (!text) return;
+    const t = new PixelText(assets, 2, 0xffd95e);
+    t.text = text;
+    const w = app.renderer.width;
+    const y = app.renderer.height - 118;
+    const bh = assets.manifest.font.cellH * 2 + 20;
+    const plate = new Graphics();
+    plate.rect(w / 2 - t.textWidth / 2 - 14, y, t.textWidth + 28, bh).fill({ color: 0x0d1119, alpha: 0.92 });
+    plate.rect(w / 2 - t.textWidth / 2 - 14, y, t.textWidth + 28, 2).fill({ color: 0xffd95e, alpha: 0.55 });
+    leaveHint.addChild(plate);
+    t.centerAt(w / 2, y + 10);
+    leaveHint.addChild(t);
+  };
+
   const show = (s: Screen | null) => {
     uiRoot.removeChildren();
     activeScreen = s;
@@ -136,6 +157,7 @@ async function boot() {
       uiRoot.addChild(s.root);
       s.enter?.(); // entrances land on freshly laid-out rests
     }
+    uiRoot.addChild(leaveHint); // always the top card
   };
   window.addEventListener('resize', () => activeScreen?.layout(app.renderer.width, app.renderer.height));
 
@@ -189,6 +211,8 @@ async function boot() {
 
   // ---- the party line ----------------------------------------------------
   function leaveOnline() {
+    leaveArm = 0;
+    shellHint(null);
     net?.close();
     net = null;
     party = null;
@@ -201,6 +225,16 @@ async function boot() {
     if (screenName === 'match') return toMenu();
     menu.openPage('root');
     show(menu);
+  }
+
+  // A connect that dies before a seat is dealt (busy room, dead server) hands
+  // back the gate — never a freeze on CONNECTING, never a silent menu-dump
+  function backToGate() {
+    net?.close();
+    net = null;
+    netRole = null;
+    audio.ui('denied');
+    onlineScreen.begin('gate', myName);
   }
 
   onlineScreen.onNamed = (name) => {
@@ -253,7 +287,10 @@ async function boot() {
         onlineScreen.setLobby(party.snap(), 0, true);
       }
     };
-    net.onClosed = () => { if (netRole === 'host') leaveOnline(); };
+    net.onClosed = () => {
+      if (netRole === 'host') leaveOnline();
+      else if (net) backToGate(); // closed before 'hosted' ever landed
+    };
     net.host();
   };
   onlineScreen.onJoin = (code) => {
@@ -299,7 +336,11 @@ async function boot() {
       // full time: let the banner land before walking back to the lobby
       if (m.t === 'end') { if (screenName === 'match') guestEndT = 2.6; return; }
     };
-    net.onClosed = () => { if (netRole === 'guest') leaveOnline(); };
+    net.onClosed = () => {
+      if (netRole !== 'guest' || !net) return;
+      if (net.seat < 0) backToGate(); // never seated — the join itself died
+      else leaveOnline();
+    };
     net.join(code, myName || 'PLAYER');
   };
   onlineScreen.onClaim = (team) => { if (netRole === 'host') party?.claim(0, team); else net?.send({ t: 'claim', team }); };
@@ -332,6 +373,8 @@ async function boot() {
   // Full time online: the ROOM lives on — everyone returns to the lobby for
   // the rematch instead of the party dying with the whistle
   function backToLobby() {
+    leaveArm = 0; // an exit armed in the match must not fire in the lobby
+    shellHint(null);
     scene?.destroy();
     scene = null;
     match = null;
@@ -866,12 +909,34 @@ async function boot() {
   const uiKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyF', 'KeyX'];
   for (const code of uiKeys) kb.onPress(code, () => routeKey(code));
   kb.onPress('Space', () => activeScreen?.key('Space'));
+  // Online exits must be MEANT. ESC, START and B all land here, and every one
+  // of them is also a pause or cancel reflex — so the first press only ARMS
+  // the door, and a second inside the window actually walks through it.
+  const wantLeave = (): boolean => {
+    if (leaveArm > 0) { leaveArm = 0; shellHint(null); return true; }
+    leaveArm = 2.5;
+    shellHint(netRole === 'host' ? 'PRESS AGAIN TO CLOSE THE PARTY FOR EVERYONE' : 'PRESS AGAIN TO LEAVE THE PARTY');
+    audio.ui('card');
+    return false;
+  };
   const pressEscape = () => {
-    if (activeScreen === onlineScreen) return leaveOnline(); // walk out of the party
-    if (screenName === 'match' && netRole === 'guest') return leaveOnline(); // a guest can always leave
+    if (activeScreen === onlineScreen) {
+      // pre-party pages back out freely; a LIVE party only opens the door twice
+      const partyLive = onlineScreen.stage === 'party' && netRole !== null &&
+        (netRole === 'guest' || (party?.seats.size ?? 1) > 1);
+      if (partyLive && !wantLeave()) return;
+      return leaveOnline();
+    }
+    if (screenName === 'match' && netRole === 'guest') { // a guest can always leave — knowingly
+      if (wantLeave()) leaveOnline();
+      return;
+    }
     if (screenName === 'menu') return activeScreen?.key('Escape'); // menu pages or match setup
     if (screenName === 'draft') {
-      if (netRole === 'guest') return leaveOnline(); // a guest walks out of the party
+      if (netRole === 'guest') { // a guest walks out of the party — knowingly
+        if (wantLeave()) leaveOnline();
+        return;
+      }
       return draftScreen.onBack(); // host folds to the lobby; offline goes home
     }
     if (screenName !== 'match' || !match || match.finished) return;
@@ -1382,6 +1447,10 @@ async function boot() {
     1 / 60,
     (dt) => {
       tickPad(dt); // pads are read first so every consumer shares one poll
+      if (leaveArm > 0) {
+        leaveArm -= dt;
+        if (leaveArm <= 0) { leaveArm = 0; shellHint(null); } // the armed door swings shut
+      }
       if (screenName === 'match' && match && !paused) {
         if (netRole === 'guest') tickMatchGuest(dt);
         else if (!match.finished || fulltimeDelay > 0) tickMatch(dt);

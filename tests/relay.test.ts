@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, Server } from 'node:http';
-import { AddressInfo } from 'node:net';
+import { AddressInfo, Socket } from 'node:net';
 import WebSocket from 'ws';
 // @ts-expect-error plain-JS module shared with the dev server
 import { attachRelay } from '../server/relay.mjs';
@@ -57,6 +57,19 @@ class Wire {
 
   close() {
     this.ws.close();
+  }
+
+  // the raw TCP pipe under the websocket — for clients that misbehave on purpose
+  private get pipe(): Socket {
+    return (this.ws as unknown as { _socket: Socket })._socket;
+  }
+
+  abandon() {
+    this.pipe.destroy(); // torn down mid-sentence — the lid just shut
+  }
+
+  spewGarbage() {
+    this.pipe.write(Buffer.from([0x8f, 0xff, 0x13, 0x37])); // not a websocket frame
   }
 }
 
@@ -166,6 +179,33 @@ function relaySuite(name: string, base: () => string, enabled: () => boolean) {
       guest.send({ t: 'ready', ready: true });
       // the flood never lands; the next honest message does
       expect(await host.next()).toMatchObject({ t: 'from', seat: 1, msg: { t: 'ready', ready: true } });
+      host.close();
+    });
+
+    it('a client spewing garbage frames never takes the room down', async () => {
+      const { host, code } = await hostUp();
+      const { guest: evil } = await guestUp(code, 'EVIL');
+      await host.next(); // peer-joined
+      evil.spewGarbage();
+      // node hangs up on him, workerd shrugs — either way the room must keep
+      // dealing seats and carrying the mail (unhandled, this KILLED the relay)
+      const { guest } = await guestUp(code, 'HONEST');
+      let m = await host.next();
+      if (m.t === 'peer-left') m = await host.next(); // EVIL's exit, if the relay noticed
+      expect(m).toMatchObject({ t: 'peer-joined', name: 'HONEST' });
+      host.send({ t: 'broadcast', msg: { t: 'snap', snap: { tick: 1 } } });
+      expect(await guest.next()).toMatchObject({ t: 'msg', msg: { t: 'snap', snap: { tick: 1 } } });
+      host.close();
+    });
+
+    it('a guest dying without goodbye is reported, and the room lives on', async () => {
+      const { host, code } = await hostUp();
+      const { guest } = await guestUp(code, 'SLEEPY');
+      await host.next();
+      guest.abandon();
+      expect(await host.next()).toMatchObject({ t: 'peer-left', seat: 1 });
+      const late = await guestUp(code, 'LATE');
+      expect(late.seat).toBe(2);
       host.close();
     });
 

@@ -17,6 +17,14 @@ function makeCode() {
   return code;
 }
 
+// Best-effort delivery: a socket caught mid-death throws on send, and one
+// uncaught throw in a handler can abort a broadcast round — or the room
+function post(ws, wire) {
+  try {
+    ws?.send(wire);
+  } catch { /* already gone; close/error will bury him */ }
+}
+
 // Accept a socket just long enough to say why it's being turned away
 function refuse(reason) {
   const pair = new WebSocketPair();
@@ -68,7 +76,7 @@ export class GolazoRoom extends DurableObject {
     this.ctx.acceptWebSocket(pair[1], ['guest', `seat:${seat}`]);
     pair[1].serializeAttachment({ role: 'guest', seat });
     pair[1].send(JSON.stringify({ t: 'joined', seat }));
-    host.send(JSON.stringify({
+    post(host, JSON.stringify({
       t: 'peer-joined', seat,
       name: (url.searchParams.get('name') ?? 'PLAYER').slice(0, 12),
     }));
@@ -86,15 +94,15 @@ export class GolazoRoom extends DurableObject {
     const who = ws.deserializeAttachment() ?? {};
     if (who.role === 'guest') {
       // everything a guest says is for the host's ears
-      this.hostWs()?.send(JSON.stringify({ t: 'from', seat: who.seat, msg }));
+      post(this.hostWs(), JSON.stringify({ t: 'from', seat: who.seat, msg }));
       return;
     }
     if (who.role !== 'host') return;
     if (msg.t === 'to') {
-      this.ctx.getWebSockets(`seat:${msg.seat}`)[0]?.send(JSON.stringify({ t: 'msg', msg: msg.msg }));
+      post(this.ctx.getWebSockets(`seat:${msg.seat}`)[0], JSON.stringify({ t: 'msg', msg: msg.msg }));
     } else if (msg.t === 'broadcast') {
       const wire = JSON.stringify({ t: 'msg', msg: msg.msg });
-      for (const g of this.ctx.getWebSockets('guest')) g.send(wire);
+      for (const g of this.ctx.getWebSockets('guest')) post(g, wire);
     }
   }
 
@@ -111,14 +119,14 @@ export class GolazoRoom extends DurableObject {
     const who = ws.deserializeAttachment() ?? {};
     if (who.role === 'host') {
       for (const g of this.ctx.getWebSockets('guest')) {
+        post(g, JSON.stringify({ t: 'room-closed' }));
         try {
-          g.send(JSON.stringify({ t: 'room-closed' }));
           g.close(1000, 'room closed');
         } catch { /* already gone */ }
       }
       await this.ctx.storage.deleteAll(); // the room dies with its host
     } else if (who.role === 'guest') {
-      this.hostWs()?.send(JSON.stringify({ t: 'peer-left', seat: who.seat }));
+      post(this.hostWs(), JSON.stringify({ t: 'peer-left', seat: who.seat }));
     }
   }
 }

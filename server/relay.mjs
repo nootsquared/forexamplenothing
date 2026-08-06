@@ -22,6 +22,7 @@ function makeCode(taken) {
 
 export function attachRelay(httpServer, path = '/mp') {
   const wss = new WebSocketServer({ noServer: true });
+  wss.on('error', () => {}); // the relay outlives every bad line
   const rooms = new Map(); // code → { host: ws, guests: Map<seatId, ws>, nextSeat }
 
   httpServer.on('upgrade', (req, socket, head) => {
@@ -32,6 +33,7 @@ export function attachRelay(httpServer, path = '/mp') {
       return;
     }
     if (url.pathname !== path) return;
+    socket.on('error', () => socket.destroy()); // a mid-handshake RST is his exit, not ours
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, url));
   });
 
@@ -40,6 +42,10 @@ export function attachRelay(httpServer, path = '/mp') {
   };
 
   wss.on('connection', (ws, url) => {
+    // An unhandled 'error' is a process-killer in node: one guest's dying
+    // wifi or a garbage frame would take the SERVER down and boot the whole
+    // party. Swallow it — 'close' always follows and buries the socket right.
+    ws.on('error', () => {});
     let role = url.searchParams.get('role') === 'host' ? 'host' : 'guest';
     let room = null;
     let code = null;
