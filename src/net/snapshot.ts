@@ -62,11 +62,24 @@ export class SnapPlayer {
     for (const ev of snap.events as SimEvent[]) this.pendingEvents.push({ tick: snap.tick - 1, ev });
   }
 
+  // How far the render clock trails the freshest truth — the buffer's depth
+  get lagTicks(): number {
+    return this.latest ? this.latest.tick - this.renderTick : 0;
+  }
+
   // Advance the guest's clock and pose the world on the buffered timeline
   apply(world: World, dt: number) {
     const newest = this.latest;
     if (!newest || this.snaps.length === 0) return;
-    this.renderTick += dt * 60;
+    // The buffer HEALS instead of ratcheting: every stall used to leave the
+    // clock permanently further behind truth — extra latency for the rest of
+    // the match. Deep runs a touch fast, edge-riding runs a touch slow, and
+    // a settled line pays exactly one for one.
+    const gap = newest.tick - this.renderTick;
+    const pace = gap > BUFFER_TICKS + 1 ? Math.min(1.3, 1 + (gap - BUFFER_TICKS) * 0.05)
+      : gap < BUFFER_TICKS ? 0.92
+      : 1;
+    this.renderTick += dt * 60 * pace;
     // never run ahead of truth, never trail into stale history
     this.renderTick = Math.min(this.renderTick, newest.tick - 1);
     this.renderTick = Math.max(this.renderTick, newest.tick - BUFFER_TICKS * 3);

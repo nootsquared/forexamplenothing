@@ -85,6 +85,10 @@ async function boot() {
   let netTick = 0;
   let pendingNetEvents: SimEvent[] = [];
   let guestSwitch = false;                           // E queued for the next packet
+  let guestEchoIdx = -1;   // the body E takes on MY screen NOW — truth confirms in a snap
+  let guestEchoT = 0;
+  let guestFace = vec();   // my last steered facing, held briefly past release
+  let guestFaceT = 0;
   let guestEndT = 0;                                 // full-time beat before the lobby
   let guestStaleT = 0;                               // cadence for the waiting-for-host toast
   let guestSeatNames: Record<number, string> = {};
@@ -498,12 +502,18 @@ async function boot() {
   }
 
   // ---- match lifecycle ---------------------------------------------------
+  // The body that is MINE on this tab right now: the host's word — or, for
+  // the beat after E, the echoed switch target the wire hasn't confirmed yet
+  const guestMyIdx = () => {
+    const truth = snapPlayer?.latest?.cursors[net?.seat ?? -1] ?? -1;
+    return guestEchoT > 0 && guestEchoIdx >= 0 ? guestEchoIdx : truth;
+  };
   const ballIsMine = () => {
     if (!match || !cursor) return false;
     if (netRole === 'guest') {
       // a guest's world never thinks — proximity to the snapped ball decides,
       // with slack for the interpolation buffer's lag
-      const myIdx = snapPlayer?.latest?.cursors[net?.seat ?? -1] ?? -1;
+      const myIdx = guestMyIdx();
       return myIdx >= 0 && dist(match.world.players[myIdx].pos, match.world.ball.pos) < 5;
     }
     const poss = match.teamBrains[0].possessorIdx;
@@ -694,6 +704,8 @@ async function boot() {
         get rtt() { return net?.rtt ?? 0; },
         get gkAim() { return snapPlayer?.latest?.gkAim ?? -1; },
         get seat() { return net?.seat ?? -1; },
+        get lag() { return snapPlayer?.lagTicks ?? 0; },
+        get echo() { return guestEchoT > 0 ? guestEchoIdx : -1; },
       };
     }
     match.world.players.forEach((p, i) => scene!.addPlayer(p.id.team === 0 ? config.kits[0] : config.kits[1], match!.names[i], p.id.number));
@@ -710,6 +722,9 @@ async function boot() {
     guestGkSentT = 0;
     guestLead = vec();
     guestLeadIdx = -1;
+    guestEchoIdx = -1;
+    guestEchoT = 0;
+    guestFaceT = 0;
     guestKickEchoT = 0;
     gkIdx = -1;
     keeperAiming = false;
@@ -733,7 +748,13 @@ async function boot() {
       guestEndT -= dt;
       if (guestEndT <= 0) return backToLobby();
     }
-    const myIdx = snapPlayer.latest?.cursors[net.seat] ?? -1;
+    // the switch echo dies the moment truth confirms it (or the window lapses)
+    if (guestEchoT > 0) {
+      guestEchoT -= dt;
+      const truthIdx = snapPlayer.latest?.cursors[net.seat] ?? -1;
+      if (truthIdx === guestEchoIdx || guestEchoT <= 0) { guestEchoT = 0; guestEchoIdx = -1; }
+    }
+    const myIdx = guestMyIdx();
     const facing = myIdx >= 0 ? match.world.players[myIdx].facing : vec(1, 0);
     input = controls.sample(dt, kb, facing);
     if (mouseKick) {
@@ -764,16 +785,21 @@ async function boot() {
     if (myIdx >= 0) {
       const me = match.world.players[myIdx];
       const moveLen = Math.hypot(input.move.x, input.move.y);
+      // on the ball the lead eases only a little — dribbling is exactly where
+      // hands must feel answered, and the host's touch corrects any overlap
       const nearBall = dist(me.pos, match.world.ball.pos) < 2.4;
-      const leadT = clamp(((net.rtt || 90) / 1000) * 0.85 + 0.04, 0.07, 0.24) * (nearBall ? 0.35 : 1);
+      const leadT = clamp(((net.rtt || 90) / 1000) * 0.85 + 0.04, 0.07, 0.24) * (nearBall ? 0.6 : 1);
       const spd = input.sprint && me.stamina > 0.05 ? me.stats.sprintSpeed : me.stats.topSpeed;
       const want = moveLen > 0.2 && match.world.restartLock <= 0 && me.lungeTimer <= 0
         ? scale(norm(input.move), spd * Math.min(1, moveLen) * leadT)
         : vec();
-      guestLead = expDecayVec(guestLead, want, 12, dt);
+      guestLead = expDecayVec(guestLead, want, 16, dt);
       me.pos.x += guestLead.x;
       me.pos.y += guestLead.y;
-      if (moveLen > 0.2) me.facing = norm(input.move); // the turn is instant on my own screen
+      // the turn is instant on my own screen — and HELD briefly past release,
+      // so the host's delayed facing never flicks the sprite back around
+      if (moveLen > 0.2) { guestFace = norm(input.move); guestFaceT = 0.18; }
+      if (guestFaceT > 0) { guestFaceT -= dt; me.facing = guestFace; }
     }
     const evs = snapPlayer.drainEvents();
     if (evs.length) scene.handleEvents(evs);
@@ -954,7 +980,12 @@ async function boot() {
   kb.onPress('Escape', pressEscape);
   const pressSwitch = () => {
     if (screenName !== 'match' || paused) return;
-    if (netRole === 'guest') { guestSwitch = true; return; } // rides the next packet
+    if (netRole === 'guest') {
+      guestSwitch = true; // rides the next packet up to the host...
+      const sug = snapPlayer?.latest?.suggest?.[net?.seat ?? -1] ?? -1;
+      if (sug >= 0) { guestEchoIdx = sug; guestEchoT = 0.6; } // ...the ring moves NOW
+      return;
+    }
     cursor?.manualSwitch();
   };
   kb.onPress('KeyE', pressSwitch);
@@ -1106,7 +1137,10 @@ async function boot() {
         const s = party.seats.get(seat);
         if (!s) { seatCursors.delete(seat); continue; }
         if (s.switchPressed) { sc.cursor.manualSwitch(); s.switchPressed = false; }
-        const seatIn = s.lastInput
+        // a line gone quiet means HOLD, not "keep running the old way" — stale
+        // packets steering a body is the ghost movement guests can't explain
+        const fresh = performance.now() - s.heardAt < 250;
+        const seatIn = fresh && s.lastInput
           ? unpackInput(s.lastInput)
           : { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
         // the latched release fires exactly once, whatever the packet timing

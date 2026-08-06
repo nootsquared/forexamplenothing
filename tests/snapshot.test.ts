@@ -32,6 +32,23 @@ describe('the snapshot envelope', () => {
     expect(mirror.vel.x).toBeCloseTo(7.2, 1);
   });
 
+  it('heals back to the target buffer after a jitter stall, instead of ratcheting', () => {
+    const host = createMatch();
+    const guest = createMatch();
+    const player = new SnapPlayer();
+    let tick = 0;
+    const feed = () => player.push(wire(takeSnap(host, (tick += 2), {}, {}, [])));
+
+    // a settled line: snaps at 30Hz, the render clock two apply()s per snap
+    for (let i = 0; i < 20; i++) { feed(); player.apply(guest.world, DT); player.apply(guest.world, DT); }
+    // the network hiccups: six ticks of silence, then the burst lands at once
+    for (let i = 0; i < 6; i++) player.apply(guest.world, DT);
+    feed(); feed(); feed();
+    // steady feed resumes — the lag the burst left behind must MELT, not stick
+    for (let i = 0; i < 30; i++) { feed(); player.apply(guest.world, DT); player.apply(guest.world, DT); }
+    expect(player.lagTicks).toBeLessThanOrEqual(4.5);
+  });
+
   it('holds an event until the buffered timeline reaches its moment', () => {
     const host = createMatch();
     const player = new SnapPlayer();
