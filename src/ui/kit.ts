@@ -576,7 +576,7 @@ export class PixelList {
         if (!this.rows[i].enabled) return audio.ui('denied');
         this.sel = i;
         this.layout();
-        audio.ui('select');
+        audio.ui(this.backish(i) ? 'back' : 'select');
         this.onPick(i);
       });
       this.root.addChild(box);
@@ -605,8 +605,14 @@ export class PixelList {
 
   activate() {
     if (!this.rows[this.sel]?.enabled) return;
-    audio.ui('select');
+    audio.ui(this.backish(this.sel) ? 'back' : 'select');
     this.onPick(this.sel);
+  }
+
+  // Every retreat sounds the same everywhere: BACK rows speak the back pluck,
+  // the one the online screen's button taught us to like
+  private backish(i: number) {
+    return this.rows[i]?.label === 'BACK';
   }
 
   // The marker glides to its row in pixel steps; entrances play out

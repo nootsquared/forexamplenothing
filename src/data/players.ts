@@ -60,9 +60,12 @@ export function deriveStats(role: Role, ovr: number, pace: number, agility: numb
     return clamp(base + gain * n + nudge + jitter(name, key), 0.02, base + gain + 0.08);
   };
   const gk = role === 'GK';
+  // Legs wear the shirt too: defenders visibly heavier while forwards keep
+  // their authored ceilings — the role contrast reads at a glance on grass
+  const paceEff = clamp(pace - (role === 'DF' ? 0.08 : role === 'MF' ? 0.03 : gk ? 0.1 : 0), 0.02, 1);
   return {
-    topSpeed: 4.3 + pace * 1.5,
-    sprintSpeed: 5.9 + pace * 2.3,
+    topSpeed: 4.3 + paceEff * 1.5,
+    sprintSpeed: 5.9 + paceEff * 2.3,
     accel: 8.4 + agility * 2.2,
     agility,
     control,

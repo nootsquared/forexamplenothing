@@ -491,6 +491,14 @@ export class World {
     }
   }
 
+  // The training ground's authority: cancel a pending goal ceremony so a
+  // re-staged drill isn't teleported back to kickoff mid-lesson
+  abortGoalReset() {
+    this.goalScored = false;
+    this.goalResetT = 0;
+    this.celebration = null;
+  }
+
   // Loose or heavy: true when nobody's latch protects the ball — the moment
   // an honest lunge or arrival is allowed to just take it
   ballExposed(): boolean {

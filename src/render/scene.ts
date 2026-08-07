@@ -181,6 +181,19 @@ export class Scene {
     return vec(local.x / pxPerMeter(), local.y / (pxPerMeter() * squash()));
   }
 
+  // Pitch meters → screen pixels (speech bubbles that follow a body)
+  worldToScreen(x: number, y: number, z = 0): Vec2 {
+    const p = project(x, y, z);
+    const g = this.viewport.toGlobal({ x: p.sx, y: p.sy });
+    return vec(g.x, g.y);
+  }
+
+  // A steady directed shot (the tutorial's field tour); null hands the lens back
+  private camOverride: { center: Vec2; zoom: number } | null = null;
+  setCameraOverride(o: { center: Vec2; zoom: number } | null) {
+    this.camOverride = o;
+  }
+
   // The white chevron: who E switches you into
   setSwitchTarget(idx: number) {
     if (idx === this.switchTargetIdx) return;
@@ -242,7 +255,7 @@ export class Scene {
       // The broadcast finds the man of the moment and stays with him
       this.camera.override = { center: this.world.players[this.world.celebration.scorer].pos, zoom: 3.4 };
     } else {
-      this.camera.override = null;
+      this.camera.override = this.camOverride; // the tutorial's hand on the lens, or nothing
     }
     this.keeperAim.update(dt, this.keeperAimState);
 

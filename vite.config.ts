@@ -6,8 +6,8 @@ import { attachRelay } from './server/relay.mjs';
 // last large one>. MAJORS counts the feature rounds by hand; when you commit
 // a new large round, bump MAJORS and set LAST_MAJOR_TOTAL to the new commit
 // count — every fix commit after it raises the third number on its own.
-const MAJORS = 20;
-const LAST_MAJOR_TOTAL = 37; // rev-list count at the possession-war round
+const MAJORS = 21;
+const LAST_MAJOR_TOTAL = 41; // rev-list count at the tutorial round
 const commitCount = (() => {
   try { return parseInt(execSync('git rev-list --count HEAD').toString().trim(), 10); }
   catch { return LAST_MAJOR_TOTAL; }

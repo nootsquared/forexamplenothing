@@ -67,6 +67,12 @@ export class MenuScreen implements Screen {
   private socialBox = new Graphics();
   private socialHeader: PixelText;
   private socialRows: Container[];
+  onTutorial: () => void = () => {};
+  private tutorBtn = new Container();
+  private tutorGlow = new Graphics();
+  private tutorLabel: PixelText;
+  private tutorFresh = true; // never finished the tutorial: the plaque breathes
+  private tutorT = 0;
   private shade = new Graphics();
   private mark = new Graphics();     // the ghosted centre circle in the glass
   private motes = new BeamMotes();   // light motes adrift in the pane
@@ -126,6 +132,16 @@ export class MenuScreen implements Screen {
       socialRow('LINKEDIN:', 'PRANAV-MARINGANTI', 'https://www.linkedin.com/in/pranav-maringanti'),
     ];
     this.socials.addChild(this.socialHeader);
+    // The tutorial beacon: a mint plaque under the menu. It BREATHES until
+    // the tutorial has been finished once, then stands quiet forever —
+    // impossible to miss on day one, invisible-polite on day fifty.
+    this.tutorLabel = new PixelText(assets, 2, 0x9ff0b8);
+    this.tutorBtn.eventMode = 'static';
+    this.tutorBtn.cursor = 'pointer';
+    this.tutorBtn.on('pointerover', () => { this.tutorGlow.alpha = 1; audio.ui('move', 0.35); });
+    this.tutorBtn.on('pointerout', () => { this.tutorGlow.alpha = this.tutorFresh ? 0.7 : 0; });
+    this.tutorBtn.on('pointertap', () => { audio.ui('select'); this.onTutorial(); });
+    this.buildTutorPlaque();
     this.crumb = new PixelText(assets, 2, 0x8a91a0);
     this.list = new PixelList(assets, 3, 34, 7, 13, true);
     this.list.onPick = (i) => this.act(i);
@@ -141,7 +157,7 @@ export class MenuScreen implements Screen {
     this.restBall.anchor.set(0.5);
     this.restBall.scale.set(6);
     this.backdrop.addChild(this.shade, this.mark, this.grass.soil, this.grass.back, this.restBall, this.grass.front, this.motes.g);
-    this.root.addChild(this.backdrop, this.title, this.shine, this.shineMask, this.sub, this.ver, this.crumb, this.plate, this.socials, this.dust.g);
+    this.root.addChild(this.backdrop, this.title, this.shine, this.shineMask, this.sub, this.ver, this.crumb, this.plate, this.tutorBtn, this.socials, this.dust.g);
     this.setPage('root', false);
   }
 
@@ -154,6 +170,7 @@ export class MenuScreen implements Screen {
   private setPage(page: 'root' | 'play' | 'settings', animate = true) {
     this.page = page;
     this.socials.visible = page === 'root'; // the addresses live on the front door
+    this.tutorBtn.visible = page === 'root'; // and so does the coach's plaque
     this.list.sel = 0; // a fresh page starts at its top
     this.crumb.text = page === 'root' ? 'MAIN MENU' : page === 'play' ? 'PLAY' : 'SETTINGS';
     this.crumb.centerAt(this.w / 2, this.h * 0.42); // a new word, a new center
@@ -204,6 +221,32 @@ export class MenuScreen implements Screen {
     for (const [cx, cy] of [[bx + 3, 5], [bx + bw - 6, 5], [bx + 3, bh - 8], [bx + bw - 6, bh - 8]]) {
       g.rect(cx, cy, 3, 3).fill({ color: 0xffd95e, alpha: 0.55 });
     }
+  }
+
+  // The plaque redraws for its two lives: loud rookie beacon, quiet veteran row
+  private buildTutorPlaque() {
+    let seen = false;
+    try { seen = localStorage.getItem('t22.tutorialDone') === '1'; } catch { /* fine */ }
+    this.tutorFresh = !seen;
+    this.tutorLabel.text = seen ? 'TUTORIAL' : 'NEW HERE?  START WITH THE TUTORIAL';
+    this.tutorBtn.removeChildren();
+    const tw = this.tutorLabel.width;
+    const bw = tw + 56;
+    const bh = 34;
+    const g = new Graphics();
+    g.rect(-bw / 2, 0, bw, bh).fill({ color: 0x0d1119, alpha: 0.88 });
+    g.rect(-bw / 2, bh - 2, bw, 2).fill({ color: 0x000000, alpha: 0.5 });
+    const arm = 8;
+    const mint = { color: 0x9ff0b8, alpha: 0.7 };
+    g.rect(-bw / 2, 0, arm, 2).fill(mint).rect(-bw / 2, 0, 2, arm).fill(mint);
+    g.rect(bw / 2 - arm, 0, arm, 2).fill(mint).rect(bw / 2 - 2, 0, 2, arm).fill(mint);
+    g.rect(-bw / 2, bh - 2, arm, 2).fill(mint).rect(-bw / 2, bh - arm, 2, arm).fill(mint);
+    g.rect(bw / 2 - arm, bh - 2, arm, 2).fill(mint).rect(bw / 2 - 2, bh - arm, 2, arm).fill(mint);
+    this.tutorGlow.clear();
+    this.tutorGlow.rect(-bw / 2 + 1, 1, bw - 2, bh - 2).fill({ color: 0x9ff0b8, alpha: 0.09 });
+    this.tutorGlow.alpha = this.tutorFresh ? 0.7 : 0;
+    this.tutorLabel.position.set(Math.round(-tw / 2), 10);
+    this.tutorBtn.addChild(g, this.tutorGlow, this.tutorLabel);
   }
 
   // The socials plate wears the menu box's exact clothes, sized to its rows
@@ -268,6 +311,7 @@ export class MenuScreen implements Screen {
   // The backdrop arrives OPAQUE — a fade-in here reads as a bright flash
   // when the previous screen was already dark (online → back)
   enter() {
+    this.buildTutorPlaque(); // a finished tutorial quiets the beacon
     this.reveal.clear();
     this.reveal.add(this.sub, 0.3);
     this.reveal.add(this.crumb, 0.4);
@@ -288,6 +332,11 @@ export class MenuScreen implements Screen {
   }
 
   update(dt: number) {
+    // the rookie beacon breathes; a finished tutorial stands still
+    if (this.tutorFresh && this.tutorBtn.visible) {
+      this.tutorT += dt;
+      this.tutorGlow.alpha = 0.55 + 0.45 * Math.sin(this.tutorT * 2.4);
+    }
     this.grass.update(dt);
     this.list.update(dt);
     this.reveal.update(dt);
@@ -331,6 +380,8 @@ export class MenuScreen implements Screen {
     this.crumb.centerAt(w / 2, h * 0.42);
     // the socials plate: the menu box's little sibling — same header rhythm
     // (SOCIALS perched on the frame exactly like MAIN MENU), same box grammar
+    // the coach's plaque sits right under the menu, first thing below the box
+    this.tutorBtn.position.set(Math.round(w / 2), Math.round(h * 0.47) + this.list.totalHeight + 34 - 20 + 22);
     // sunk low on purpose: the addresses are a footer, never the menu's equal
     this.socials.position.set(Math.round(w / 2), Math.min(Math.round(h * 0.47) + 285, h - 132));
     const headGap = Math.max(1, Math.round(h * 0.05) - 38);
@@ -359,6 +410,8 @@ export class SetupScreen implements Screen {
   private difficulty: 0 | 1 | 2 = 1;
   private list: PixelList;
   private crumb: PixelText;
+  private desc: PixelText;
+  private backBtn = new Container();
   private title: PixelText;
   private shade = new Graphics();
   private mark = new Graphics();
@@ -375,17 +428,53 @@ export class SetupScreen implements Screen {
     this.title = new PixelText(assets, 5, 0xffd95e);
     this.crumb = new PixelText(assets, 2, 0x8a91a0);
     this.crumb.text = 'MATCH SETUP';
+    this.desc = new PixelText(assets, 2, 0x8a91a0);
     this.list = new PixelList(assets, 3, 34, 6, 13, true);
     this.list.onPick = (i) => this.act(i);
     this.plate.addChild(this.box, this.list.root);
     this.list.root.position.set(0, 20);
+    // BACK steps out of the list and becomes the online screen's kind of
+    // button — smaller than the choices, visibly a different sort of thing
+    const bw = 120;
+    const pad = 6;
+    const textH = assets.manifest.font.cellH * 2;
+    const bh = textH + pad * 2;
+    const bg = new Graphics();
+    bg.rect(-bw / 2, 0, bw, bh).fill({ color: 0x05070b, alpha: 0.95 });
+    bg.rect(-bw / 2 + 1, 1, bw - 2, bh - 2).fill({ color: 0x1b2231, alpha: 1 });
+    bg.rect(-bw / 2 + 1, 1, bw - 2, 2).fill({ color: 0xfff8e0, alpha: 0.2 });
+    bg.rect(-bw / 2 + 1, 1, 2, bh - 2).fill({ color: 0xfff8e0, alpha: 0.1 });
+    bg.rect(-bw / 2 + 1, bh - 3, bw - 2, 2).fill({ color: 0x000000, alpha: 0.5 });
+    bg.rect(bw / 2 - 3, 1, 2, bh - 2).fill({ color: 0x000000, alpha: 0.3 });
+    const glow = new Graphics();
+    glow.rect(-bw / 2 + 1, 1, bw - 2, bh - 2).fill({ color: 0xffd95e, alpha: 0.1 });
+    glow.visible = false;
+    const bt = new PixelText(assets, 2, 0xe8ecf4);
+    bt.text = 'BACK';
+    bt.centerAt(0, pad);
+    const chev = new PixelText(assets, 2, 0xffd95e);
+    chev.text = '>';
+    chev.position.set(-bw / 2 + 10, pad);
+    chev.visible = false;
+    this.backBtn.addChild(bg, glow, bt, chev);
+    this.backBtn.eventMode = 'static';
+    this.backBtn.cursor = 'pointer';
+    this.backBtn.on('pointerover', () => { glow.visible = true; chev.visible = true; audio.ui('move', 0.4); });
+    this.backBtn.on('pointerout', () => { glow.visible = false; chev.visible = false; });
+    this.backBtn.on('pointertap', () => { audio.ui('back'); this.onBack(); });
     this.backdrop.addChild(this.shade, this.mark, this.grass.soil, this.grass.back, this.grass.front, this.motes.g);
-    this.root.addChild(this.backdrop, this.title, this.crumb, this.plate, this.dust.g);
+    this.root.addChild(this.backdrop, this.title, this.crumb, this.desc, this.plate, this.backBtn, this.dust.g);
   }
 
   begin(mode: PlayMode) {
     this.mode = mode;
     this.title.text = mode === 'quick' ? 'QUICK MATCH' : mode === 'draft' ? 'DRAFT MODE' : 'GAMBLE MODE';
+    // one plain human line about what you are walking into
+    this.desc.text = mode === 'quick'
+      ? 'TWO READY MADE SQUADS AND A WHISTLE SO YOU CAN JUST PLAY'
+      : mode === 'draft'
+        ? 'TAKE TURNS SIGNING STARS ON A BUDGET AND BUILD YOUR OWN ELEVEN'
+        : 'SPIN THE WHEEL AND LET LUCK HAND YOU A TEAM';
     this.list.sel = 0;
     this.refresh();
   }
@@ -396,7 +485,6 @@ export class SetupScreen implements Screen {
       { label: 'HALF LENGTH', value: fmtClock(this.halfLength), enabled: true },
       { label: 'DIFFICULTY', value: DIFF_NAMES[this.difficulty], enabled: true },
       { label: mode0(this.mode), enabled: true, gapBefore: true },
-      { label: 'BACK', enabled: true },
     ], true, animate, stagger);
     this.drawBox();
   }
@@ -423,8 +511,6 @@ export class SetupScreen implements Screen {
     else if (i === 2) this.difficulty = ((this.difficulty + 1) % 3) as 0 | 1 | 2;
     else if (i === 3) {
       return this.onStart({ mode: this.mode, size: this.size, halfLength: this.halfLength, difficulty: this.difficulty });
-    } else {
-      return this.onBack();
     }
     this.refresh();
   }
@@ -442,6 +528,7 @@ export class SetupScreen implements Screen {
     this.reveal.clear();
     this.reveal.add(this.title, 0);
     this.reveal.add(this.crumb, 0.08);
+    this.reveal.add(this.desc, 0.14);
     this.reveal.play();
     this.drop.clear();
     this.drop.add(this.plate, 0.08, { from: 28, dur: 0.34, onImpact: () => {
@@ -470,7 +557,9 @@ export class SetupScreen implements Screen {
     this.grass.layout(beam.x0, beam.coreW, h);
     this.title.centerAt(w / 2, h * 0.16);
     this.crumb.centerAt(w / 2, h * 0.16 + 52);
+    this.desc.centerAt(w / 2, h * 0.16 + 76);
     this.plate.position.set(Math.round(w / 2), Math.round(h * 0.36) - 20);
+    this.backBtn.position.set(Math.round(w / 2), Math.round(h * 0.36) - 20 + this.list.totalHeight + 34 + 18);
     this.drawBox();
   }
 }

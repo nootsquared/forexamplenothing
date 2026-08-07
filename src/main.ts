@@ -22,6 +22,7 @@ import { Scene } from './render/scene';
 import { PixelText } from './render/pixelText';
 import { MOODS } from './render/variants';
 import { Screen, MenuScreen, SetupScreen, PauseScreen, StatsScreen, MatchSetup, fmtClock } from './ui/screens';
+import { Tutorial } from './ui/tutorial';
 import { SquadBuilderScreen } from './ui/draft';
 import { OnlineScreen } from './ui/online';
 import { NetSession, NetStartConfig, DraftCtl } from './net/net';
@@ -62,6 +63,7 @@ async function boot() {
   // ---- match-scoped state (rebuilt every kickoff) ------------------------
   let match: Match | null = null;
   let scene: Scene | null = null;
+  let tutorial: Tutorial | null = null;
   const matchAudio = new MatchAudio();
   // The menu's living backdrop: an endless AI-vs-AI kickabout
   let attract: { match: Match; scene: Scene } | null = null;
@@ -209,6 +211,7 @@ async function boot() {
   menu.onDraft = () => { setupScreen.begin('draft'); show(setupScreen); };
   menu.onGamble = () => { setupScreen.begin('gamble'); show(setupScreen); };
   menu.onTraining = () => startTraining();
+  menu.onTutorial = () => startTutorial();
   menu.onOnline = () => { onlineScreen.begin('name', ''); show(onlineScreen); };
 
   // The training ground: your full XI on an open field, nobody pressing.
@@ -218,6 +221,24 @@ async function boot() {
     const [stars] = quickSplit(11);
     startMatch(toSquad(stars, FORMATIONS['4-3-3']), '4-3-3', [], '4-4-2',
       { halfLength: 0, kickoffFirst: 0, practice: true });
+  }
+
+  // The tutorial: a full 11v11 stands frozen while the coach walks a new
+  // player through moving, kicking, the arc, switching, crossing, the clamp
+  // — hands-on every time, words only in between
+  function startTutorial() {
+    const [homeStars, awayStars] = quickSplit(11);
+    startMatch(toSquad(homeStars, FORMATIONS['4-3-3']), '4-3-3', toSquad(awayStars, FORMATIONS['4-3-3']), '4-3-3',
+      { halfLength: 0, kickoffFirst: 0, tutorial: true });
+  }
+
+  function exitTutorial(kind: 'menu' | 'training' | 'easy') {
+    const t = tutorial;
+    tutorial = null;
+    t?.destroy();
+    if (kind === 'training') return startTraining();
+    if (kind === 'easy') return setupScreen.onStart({ mode: 'quick', size: 11, halfLength: 150, difficulty: 0 });
+    toMenu();
   }
 
   // ---- the party line ----------------------------------------------------
@@ -486,6 +507,8 @@ async function boot() {
   }
 
   function toMenu() {
+    tutorial?.destroy();
+    tutorial = null;
     scene?.destroy();
     scene = null;
     match = null;
@@ -865,9 +888,11 @@ async function boot() {
 
   function startMatch(
     homeSquad: SquadPlayer[], homeShape: string, awaySquad: SquadPlayer[], awayShape: string,
-    opts?: { kits?: [string, string]; halfLength?: number; kickoffFirst?: 0 | 1; practice?: boolean },
+    opts?: { kits?: [string, string]; halfLength?: number; kickoffFirst?: 0 | 1; practice?: boolean; tutorial?: boolean },
   ) {
     killAttract();
+    tutorial?.destroy();
+    tutorial = null;
     scene?.destroy();
     const toss: 0 | 1 = opts?.kickoffFirst ?? (Math.random() < 0.5 ? 0 : 1);
     match = createMatch({
@@ -882,7 +907,7 @@ async function boot() {
     match.world.players.forEach((p, i) => scene!.addPlayer(p.id.team === 0 ? kits[0] : kits[1], match!.names[i], p.id.number));
     scene.setVariant(MOODS[menu.moodIdx]);
     scene.setPadHints(pads.connected);
-    scene.toast(opts?.practice ? 'TRAINING GROUND' : toss === 0 ? 'RED WINS THE TOSS' : 'BLUE WINS THE TOSS');
+    if (!opts?.tutorial) scene.toast(opts?.practice ? 'TRAINING GROUND' : toss === 0 ? 'RED WINS THE TOSS' : 'BLUE WINS THE TOSS');
     trainT = 4;
     trainIdx = 0;
     cursor = new TeamCursor(0, match.world);
@@ -909,6 +934,17 @@ async function boot() {
     paused = false;
     show(null);
     matchAudio.begin(MOODS[menu.moodIdx].id);
+    if (opts?.tutorial) {
+      // the coach takes the room: no HUD, no ceremony, his overlay on top
+      scene.setHudVisible(false);
+      tutorial = new Tutorial(assets, match, scene, {
+        assign: (i) => cursor?.assign(i),
+        cursorIdx: () => cursor?.idx ?? 0,
+        exit: exitTutorial,
+      });
+      app.stage.addChild(tutorial.root);
+      if (import.meta.env.DEV) (window as unknown as { __tut?: Tutorial }).__tut = tutorial;
+    }
   }
 
   // ---- input plumbing ----------------------------------------------------
@@ -938,7 +974,10 @@ async function boot() {
     }
     return false;
   };
-  const routeKey = (code: string) => { if (!penaltyKey(code)) activeScreen?.key(code); };
+  const routeKey = (code: string) => {
+    if (tutorial && screenName === 'match' && tutorial.key(code)) return;
+    if (!penaltyKey(code)) activeScreen?.key(code);
+  };
   const uiKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyF', 'KeyX'];
   for (const code of uiKeys) kb.onPress(code, () => routeKey(code));
   kb.onPress('Space', () => activeScreen?.key('Space'));
@@ -958,31 +997,41 @@ async function boot() {
       const partyLive = onlineScreen.stage === 'party' && netRole !== null &&
         (netRole === 'guest' || (party?.seats.size ?? 1) > 1);
       if (partyLive && !wantLeave()) return;
+      audio.ui('back');
       return leaveOnline();
     }
     if (screenName === 'match' && netRole === 'guest') { // a guest can always leave — knowingly
-      if (wantLeave()) leaveOnline();
+      if (wantLeave()) { audio.ui('back'); leaveOnline(); }
       return;
     }
     if (screenName === 'menu') return activeScreen?.key('Escape'); // menu pages or match setup
     if (screenName === 'draft') {
       if (netRole === 'guest') { // a guest walks out of the party — knowingly
-        if (wantLeave()) leaveOnline();
+        if (wantLeave()) { audio.ui('back'); leaveOnline(); }
         return;
       }
+      audio.ui('back');
       return draftScreen.onBack(); // host folds to the lobby; offline goes home
     }
+    if (tutorial && screenName === 'match') {
+      // one ESC walks out of school — the coach holds no one hostage
+      audio.ui('back');
+      return exitTutorial('menu');
+    }
     if (screenName !== 'match' || !match || match.finished) return;
+    // Every retreat wears the same voice: closing the pause is a BACK,
+    // opening it is drawing a card
     if (paused) {
       pauseScreen.close(); // slide out; onClosed releases the match
+      audio.ui('back');
     } else {
       paused = true;
       pauseScreen.begin(match);
       pauseScreen.open();
       scene?.setHudVisible(false); // the pause board carries the numbers itself
       show(pauseScreen);
+      audio.ui('card');
     }
-    audio.ui('card');
   };
   kb.onPress('Escape', pressEscape);
   const pressSwitch = () => {
@@ -1231,6 +1280,12 @@ async function boot() {
         overrides[gkIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
       }
     }
+    // The coach speaks last: freezes his statues, scripts his actors, gentles
+    // early kicks and ticks the objectives — right before the world moves
+    if (tutorial) {
+      tutorial.frame(dt, input, overrides);
+      tutorial.update(dt);
+    }
     advanceMatch(match, dt, overrides);
     // Deferred actions fire INSIDE the tick, so their events survive to
     // every end-of-tick listener: a wire keeper launch, the host's spot kick
@@ -1427,10 +1482,10 @@ async function boot() {
     if (drag.active && !ballIsMine()) drag.active = false;
     if (drag.active) {
       const pull = resolveDrag();
-      scene.setKickDrag(pull ? { from: world.players[cursor.idx].pos, dir: pull.dir, power: pull.power, theta: wedgeFor(world, cursor.idx, pull.dir, pull.power) } : null);
+      scene.setKickDrag(pull ? { from: world.players[cursor.idx].pos, dir: pull.dir, power: pull.power, theta: tutorial?.hideWedge ? 0 : wedgeFor(world, cursor.idx, pull.dir, pull.power) } : null);
     } else if (controls.flickAim && ballIsMine()) {
       // the pad's wind-up wears the same arrow the mouse sling does
-      scene.setKickDrag({ from: world.players[cursor.idx].pos, dir: controls.flickAim.dir, power: controls.flickAim.power, theta: wedgeFor(world, cursor.idx, controls.flickAim.dir, controls.flickAim.power) });
+      scene.setKickDrag({ from: world.players[cursor.idx].pos, dir: controls.flickAim.dir, power: controls.flickAim.power, theta: tutorial?.hideWedge ? 0 : wedgeFor(world, cursor.idx, controls.flickAim.dir, controls.flickAim.power) });
     } else {
       scene.setKickDrag(null);
     }
