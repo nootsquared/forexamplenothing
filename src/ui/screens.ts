@@ -64,8 +64,9 @@ export class MenuScreen implements Screen {
   private ver: PixelText;
   private crumb: PixelText;
   private socials = new Container();
+  private socialBox = new Graphics();
   private socialHeader: PixelText;
-  private socialRows: PixelText[];
+  private socialRows: Container[];
   private shade = new Graphics();
   private mark = new Graphics();     // the ghosted centre circle in the glass
   private motes = new BeamMotes();   // light motes adrift in the pane
@@ -91,25 +92,38 @@ export class MenuScreen implements Screen {
     // the build's git ledger, worn small beside the signage
     this.ver = new PixelText(assets, 2, 0x8a91a0, 'micro');
     this.ver.text = `V${__GAME_VERSION__}`;
-    // the socials footer: the studio's addresses in the menu's own voice —
-    // grey rows that light gold under the hand and open in a new tab
-    this.socialHeader = new PixelText(assets, 2, 0x5f6673, 'micro');
+    // the socials footer: uniform ledger rows — grey LABEL:, then the value.
+    // Linked values wear gold with a chalk underline, brighten under the
+    // hand, and open in a new tab; the credit line just stands there proud.
+    this.socialHeader = new PixelText(assets, 2, 0x8a91a0, 'micro'); // quieter than the crumb
     this.socialHeader.text = 'SOCIALS';
-    const socialRow = (label: string, url: string) => {
-      const row = new PixelText(assets, 2, 0x8a91a0);
-      row.text = label;
-      row.eventMode = 'static';
-      row.cursor = 'pointer';
-      row.on('pointerover', () => { row.tint = 0xffd95e; audio.ui('move', 0.3); });
-      row.on('pointerout', () => { row.tint = 0x8a91a0; });
-      row.on('pointertap', () => { audio.ui('card', 0.5); window.open(url, '_blank'); });
+    this.socials.addChild(this.socialBox);
+    const socialRow = (label: string, value: string, url?: string) => {
+      const row = new Container();
+      const l = new PixelText(assets, 2, 0x8a91a0);
+      l.text = label;
+      const v = new PixelText(assets, 2, url ? 0xffd95e : 0xdfe4ee);
+      v.text = value;
+      v.position.set(l.width + 8, 0);
+      row.addChild(l, v);
+      if (url) {
+        const bar = new Graphics().rect(0, 16, v.width, 2).fill({ color: 0xffd95e, alpha: 0.55 });
+        bar.position.set(l.width + 8, 0);
+        row.addChild(bar);
+        row.eventMode = 'static';
+        row.cursor = 'pointer';
+        row.on('pointerover', () => { v.tint = 0xfff3c4; bar.alpha = 1; audio.ui('move', 0.3); });
+        row.on('pointerout', () => { v.tint = 0xffd95e; bar.alpha = 0.55; });
+        row.on('pointertap', () => { audio.ui('card', 0.5); window.open(url, '_blank'); });
+      }
       this.socials.addChild(row);
       return row;
     };
     this.socialRows = [
-      socialRow('DEVELOPER PRANAV MARINGANTI', 'https://instagram.com/pranavmaringanti'),
-      socialRow('GITHUB - NOOT SQUARED', 'https://github.com/nootsquared'),
-      socialRow('LINKEDIN', 'https://www.linkedin.com/in/pranav-maringanti'),
+      socialRow('DEVELOPER:', 'PRANAV MARINGANTI'),
+      socialRow('GITHUB:', 'NOOT SQUARED', 'https://github.com/nootsquared'),
+      socialRow('INSTA:', 'PRANAVMARINGANTI', 'https://instagram.com/pranavmaringanti'),
+      socialRow('LINKEDIN:', 'PRANAV-MARINGANTI', 'https://www.linkedin.com/in/pranav-maringanti'),
     ];
     this.socials.addChild(this.socialHeader);
     this.crumb = new PixelText(assets, 2, 0x8a91a0);
@@ -190,6 +204,28 @@ export class MenuScreen implements Screen {
     for (const [cx, cy] of [[bx + 3, 5], [bx + bw - 6, 5], [bx + 3, bh - 8], [bx + bw - 6, bh - 8]]) {
       g.rect(cx, cy, 3, 3).fill({ color: 0xffd95e, alpha: 0.55 });
     }
+  }
+
+  // The socials plate wears the menu box's exact clothes, sized to its rows
+  private drawSocialsBox() {
+    const rowsW = Math.max(...this.socialRows.map((r) => r.width));
+    const bw = Math.max(rowsW + 70, 300);
+    const bh = 20 + this.socialRows.length * 24 + 8;
+    const bx = -Math.round(bw / 2);
+    const g = this.socialBox;
+    // the menu box's cloth without its crown — and a border that exists only
+    // at the corners: mint L-brackets, the card slots' own language
+    g.clear();
+    g.rect(bx, 0, bw, bh).fill({ color: 0x0d1119, alpha: 0.88 });
+    g.rect(bx, bh - 2, bw, 2).fill({ color: 0x000000, alpha: 0.5 });
+    g.rect(bx, 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    g.rect(bx + bw - 1, 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    const arm = 9;
+    const mint = { color: 0x9ff0b8, alpha: 0.65 };
+    g.rect(bx, 0, arm, 2).fill(mint).rect(bx, 0, 2, arm).fill(mint);
+    g.rect(bx + bw - arm, 0, arm, 2).fill(mint).rect(bx + bw - 2, 0, 2, arm).fill(mint);
+    g.rect(bx, bh - 2, arm, 2).fill(mint).rect(bx, bh - arm, 2, arm).fill(mint);
+    g.rect(bx + bw - arm, bh - 2, arm, 2).fill(mint).rect(bx + bw - 2, bh - arm, 2, arm).fill(mint);
   }
 
   // The plate's footprint in screen space — where its landing dust belongs
@@ -293,12 +329,16 @@ export class MenuScreen implements Screen {
     this.sub.centerAt(w / 2, h * 0.1 + this.title.height + 12);
     this.ver.centerAt(w / 2, h * 0.1 + this.title.height + 52); // the ledger, breathing under the studio line
     this.crumb.centerAt(w / 2, h * 0.42);
-    // the socials footer: quiet rows above the grass, front door only
-    const socialsBase = h - 178;
-    this.socialHeader.centerAt(w / 2, socialsBase);
+    // the socials plate: the menu box's little sibling — same header rhythm
+    // (SOCIALS perched on the frame exactly like MAIN MENU), same box grammar
+    // sunk low on purpose: the addresses are a footer, never the menu's equal
+    this.socials.position.set(Math.round(w / 2), Math.min(Math.round(h * 0.47) + 285, h - 132));
+    const headGap = Math.max(1, Math.round(h * 0.05) - 38);
+    this.socialHeader.centerAt(0, -(headGap + 10));
     this.socialRows.forEach((row, i) => {
-      row.position.set(Math.round(w / 2 - row.width / 2), Math.round(socialsBase + 20 + i * 22));
+      row.position.set(Math.round(-row.width / 2), 20 + i * 24);
     });
+    this.drawSocialsBox();
     this.plate.position.set(Math.round(w / 2), Math.round(h * 0.47) - 20);
     this.drawBox();
   }
