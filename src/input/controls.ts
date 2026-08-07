@@ -50,7 +50,9 @@ export class LocalControls {
     }
     const move = len(vec(x, y)) > 1 ? norm(vec(x, y)) : vec(x, y);
 
-    const held = kb.has('Space') || pad?.kick || false;
+    // The keyboard kicks with the MOUSE sling only — Space belongs to
+    // DEFENDING now (hold = clamp, tap = lunge). The pad's A-charge remains.
+    const held = pad?.kick || false;
     const bend = (kb.has('KeyL') ? 1 : 0) - (kb.has('KeyJ') ? 1 : 0);
     const aim = pad?.aim ?? null;
     let kickReleased: { power: number; aimOffset: number } | null = null;
@@ -111,8 +113,9 @@ export class LocalControls {
     this.aimDir = held ? this.resolve(move, facing).dir : null;
 
     // One button, two verbs: a TAP (quick release) fires the lunge-poke, a
-    // HOLD is the clamp — jaws squeezing a carrier's ball for the clean take
-    const tackleHeld = kb.has('KeyK') || pad?.tackle || false;
+    // HOLD is the clamp — jaws squeezing a carrier's ball for the clean take.
+    // SPACE is the defending hand now; K stays as the old habit's alias.
+    const tackleHeld = kb.has('Space') || kb.has('KeyK') || pad?.tackle || false;
     let tacklePulse = false;
     if (tackleHeld) {
       this.tackleHeldT += dt;

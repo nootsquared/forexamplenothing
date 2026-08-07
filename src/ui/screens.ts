@@ -63,6 +63,9 @@ export class MenuScreen implements Screen {
   private sub: PixelText;
   private ver: PixelText;
   private crumb: PixelText;
+  private socials = new Container();
+  private socialHeader: PixelText;
+  private socialRows: PixelText[];
   private shade = new Graphics();
   private mark = new Graphics();     // the ghosted centre circle in the glass
   private motes = new BeamMotes();   // light motes adrift in the pane
@@ -88,6 +91,27 @@ export class MenuScreen implements Screen {
     // the build's git ledger, worn small beside the signage
     this.ver = new PixelText(assets, 2, 0x8a91a0, 'micro');
     this.ver.text = `V${__GAME_VERSION__}`;
+    // the socials footer: the studio's addresses in the menu's own voice —
+    // grey rows that light gold under the hand and open in a new tab
+    this.socialHeader = new PixelText(assets, 2, 0x5f6673, 'micro');
+    this.socialHeader.text = 'SOCIALS';
+    const socialRow = (label: string, url: string) => {
+      const row = new PixelText(assets, 2, 0x8a91a0);
+      row.text = label;
+      row.eventMode = 'static';
+      row.cursor = 'pointer';
+      row.on('pointerover', () => { row.tint = 0xffd95e; audio.ui('move', 0.3); });
+      row.on('pointerout', () => { row.tint = 0x8a91a0; });
+      row.on('pointertap', () => { audio.ui('card', 0.5); window.open(url, '_blank'); });
+      this.socials.addChild(row);
+      return row;
+    };
+    this.socialRows = [
+      socialRow('DEVELOPER PRANAV MARINGANTI', 'https://instagram.com/pranavmaringanti'),
+      socialRow('GITHUB - NOOT SQUARED', 'https://github.com/nootsquared'),
+      socialRow('LINKEDIN', 'https://www.linkedin.com/in/pranav-maringanti'),
+    ];
+    this.socials.addChild(this.socialHeader);
     this.crumb = new PixelText(assets, 2, 0x8a91a0);
     this.list = new PixelList(assets, 3, 34, 7, 13, true);
     this.list.onPick = (i) => this.act(i);
@@ -103,7 +127,7 @@ export class MenuScreen implements Screen {
     this.restBall.anchor.set(0.5);
     this.restBall.scale.set(6);
     this.backdrop.addChild(this.shade, this.mark, this.grass.soil, this.grass.back, this.restBall, this.grass.front, this.motes.g);
-    this.root.addChild(this.backdrop, this.title, this.shine, this.shineMask, this.sub, this.ver, this.crumb, this.plate, this.dust.g);
+    this.root.addChild(this.backdrop, this.title, this.shine, this.shineMask, this.sub, this.ver, this.crumb, this.plate, this.socials, this.dust.g);
     this.setPage('root', false);
   }
 
@@ -115,6 +139,7 @@ export class MenuScreen implements Screen {
 
   private setPage(page: 'root' | 'play' | 'settings', animate = true) {
     this.page = page;
+    this.socials.visible = page === 'root'; // the addresses live on the front door
     this.list.sel = 0; // a fresh page starts at its top
     this.crumb.text = page === 'root' ? 'MAIN MENU' : page === 'play' ? 'PLAY' : 'SETTINGS';
     this.crumb.centerAt(this.w / 2, this.h * 0.42); // a new word, a new center
@@ -266,8 +291,14 @@ export class MenuScreen implements Screen {
     this.shine.poly([{ x: 0, y: sh }, { x: 22, y: 0 }, { x: 52, y: 0 }, { x: 30, y: sh }]).fill({ color: 0xfff8e0, alpha: 0.32 });
     this.shine.position.y = this.title.position.y - 6;
     this.sub.centerAt(w / 2, h * 0.1 + this.title.height + 12);
-    this.ver.centerAt(w / 2, h * 0.1 + this.title.height + 34); // the ledger, under the studio line
+    this.ver.centerAt(w / 2, h * 0.1 + this.title.height + 52); // the ledger, breathing under the studio line
     this.crumb.centerAt(w / 2, h * 0.42);
+    // the socials footer: quiet rows above the grass, front door only
+    const socialsBase = h - 178;
+    this.socialHeader.centerAt(w / 2, socialsBase);
+    this.socialRows.forEach((row, i) => {
+      row.position.set(Math.round(w / 2 - row.width / 2), Math.round(socialsBase + 20 + i * 22));
+    });
     this.plate.position.set(Math.round(w / 2), Math.round(h * 0.47) - 20);
     this.drawBox();
   }

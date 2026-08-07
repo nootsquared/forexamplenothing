@@ -141,3 +141,26 @@ describe('the right-stick sling', () => {
     expect(released.clamp).toBe(false);
   });
 });
+
+describe('the keyboard defends with SPACE', () => {
+  const kbWith = (codes: string[]) => ({ has: (c: string) => codes.includes(c) }) as unknown as Keyboard;
+
+  it('holding space clamps and never charges a kick', () => {
+    let out = controls.sample(1 / 60, kbWith(['Space']), facing);
+    for (let i = 0; i < 30; i++) out = controls.sample(1 / 60, kbWith(['Space']), facing);
+    expect(out.clamp).toBe(true);
+    expect(out.kickCharging).toBe(false); // the keyboard kicks with the mouse sling only
+    expect(out.tackle).toBe(false);
+    out = controls.sample(1 / 60, kbWith([]), facing);
+    expect(out.tackle).toBe(false); // a long hold releases into nothing — the clamp was the act
+  });
+
+  it('a quick space tap fires the lunge on release, and K still works', () => {
+    for (const key of ['Space', 'KeyK']) {
+      controls.sample(1 / 60, kbWith([key]), facing);
+      const out = controls.sample(1 / 60, kbWith([]), facing);
+      expect(out.tackle).toBe(true);
+      expect(out.clamp).toBe(false);
+    }
+  });
+});

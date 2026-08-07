@@ -114,7 +114,7 @@ async function boot() {
   const TRAINING_TIPS: [string, string][] = [
     ['WASD RUNS - SHIFT SPRINTS', 'LEFT STICK RUNS - RT SPRINTS'],
     ['DRAG BACK OFF YOUR MAN, RELEASE TO PASS', 'FLICK THE RIGHT STICK TO SLING A PASS'],
-    ['HOLD SPACE TO CHARGE, LET GO TO SHOOT', 'HOLD A TO CHARGE, LET GO TO SHOOT'],
+    ['HOLD SPACE NEAR A CARRIER TO CLAMP, TAP IT TO LUNGE', 'HOLD B NEAR A CARRIER TO CLAMP, TAP IT TO LUNGE'],
     ['E TAKES THE MAN UNDER THE CHEVRON', 'LB TAKES THE MAN UNDER THE CHEVRON'],
     ['T HANDS YOU THE HUNTER - AUTO SWITCH', 'Y HANDS YOU THE HUNTER - AUTO SWITCH'],
     ['PASS TO YOUR KEEPER - HIS HANDS OPEN THE SIGHT', 'PASS TO YOUR KEEPER - HIS HANDS OPEN THE SIGHT'],
@@ -1414,7 +1414,7 @@ async function boot() {
     // While you wind up a kick, the open men light up — the same
     // interception model the brains trust, working for your eyes
     hintClock += dt;
-    if (input.kickCharging && match.teamBrains[0].possessorIdx === cursor.idx) {
+    if ((input.kickCharging || drag.active) && match.teamBrains[0].possessorIdx === cursor.idx) {
       if (hintClock > 0.1) {
         hintClock = 0;
         passHints = openTeammates(world, cursor.idx);
