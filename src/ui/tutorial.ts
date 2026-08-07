@@ -73,6 +73,8 @@ export class Tutorial {
   private survived = 0;
   private startCursor = 0;
   private swapMoved = 0;
+  private t = 0;
+  visible = new Set<number>();
 
   constructor(
     private assets: GameAssets,
@@ -83,9 +85,10 @@ export class Tutorial {
     this.prompt = new PixelText(assets, 2, 0xffd95e);
     this.prompt.text = 'PRESS ENTER';
     this.tourCap = new PixelText(assets, 3, 0xd8e4d2);
-    this.bubbleText = new PixelText(assets, 2, 0x12161f);
+    this.bubbleText = new PixelText(assets, 2, 0xe8ecf4);
     this.bubble.addChild(this.bubbleBg, this.bubbleText);
     this.root.addChild(this.dim, this.objPanel, this.bubble, this.cardBox);
+    match.world.players.forEach((_, i) => this.visible.add(i));
     this.steps = this.script();
     this.next();
   }
@@ -150,10 +153,15 @@ export class Tutorial {
     let n0 = 0;
     let n1 = 0;
     w.players.forEach((p, i) => {
-      if (involved.includes(i)) return;
+      if (involved.includes(i)) { this.scene.setPlayerHidden(i, false); this.visible.add(i); return; }
       if (p.id.team === 0) this.put(i, 22 + n0++ * 7, 71.5);
       else this.put(i, 22 + n1++ * 7, 2.5);
+      this.scene.setPlayerHidden(i, true);
+      this.visible.delete(i);
     });
+  }
+  private showEveryone() {
+    this.world().players.forEach((_, i) => { this.scene.setPlayerHidden(i, false); this.visible.add(i); });
   }
   // The coach fetches: a rocketed ball respots at your feet instead of
   // demanding a hike across the county
@@ -178,7 +186,8 @@ export class Tutorial {
     if (d < radius && d > 0.7 && ballComing && w.carrier?.idx !== idx) {
       this.actors.set(idx, { ...IDLE(), move: vec(to.x / d, to.y / d) });
     } else {
-      this.actors.set(idx, IDLE());
+      // alive at his post: a light shuffle so he never reads as a statue
+      this.actors.set(idx, { ...IDLE(), move: vec(Math.sin(this.t * 1.6 + idx) * 0.3, Math.cos(this.t * 1.1 + idx * 2) * 0.22) });
     }
   }
 
@@ -191,18 +200,18 @@ export class Tutorial {
           ['IT ASSUMES YOU KNOW SOCCER ITSELF'],
         ], link: { label: 'NEW TO SOCCER? THE BASICS LIVE ON WIKIPEDIA', url: 'https://en.wikipedia.org/wiki/Association_football' } },
       { kind: 'card', lines: [
-          ['A QUICK RECAP OF THE HOUSE RULES'],
+          ['A QUICK RECAP OF THE RULES HERE'],
           ['ELEVEN A SIDE INCLUDING A GOALIE'],
           ['TWO HALVES AND THE MOST GOALS WINS'],
           ['WHEN THE CLOCK ENDS THE HALF ENDS'],
-          ['NO EXTRA TIME AND NO REFEREE DRAMA'],
+          ['NO EXTRA TIME AND NO REFEREE STOPPAGES'],
         ] },
       { kind: 'tour' },
       { kind: 'card', lines: [
-          ['EVERY SHIRT HAS A TRADE'],
-          ['DEFENDERS WIN BALLS ALL DAY BUT ARE HEAVY AND FINISH BADLY'],
-          ['MIDFIELDERS PASS AND CARRY THE GAME'],
-          ['FORWARDS FLY AND FINISH BUT CAN BARELY TACKLE ANYONE'],
+          ['EVERY POSITION PLAYS VERY DIFFERENTLY'],
+          ['DEFENDERS ARE STRONG TACKLERS BUT SLOW AND POOR AT SHOOTING'],
+          ['MIDFIELDERS ARE THE BEST PASSERS AND BALL CARRIERS'],
+          ['FORWARDS ARE FAST AND SCORE WELL BUT DEFEND POORLY'],
         ] },
       { kind: 'card', lines: [
           ['YOU CONTROL EXACTLY ONE PLAYER AT A TIME'],
@@ -226,7 +235,7 @@ export class Tutorial {
         ],
       },
       {
-        kind: 'stage', bubble: 'A BALL! WALK INTO IT AND KEEP MOVING TO KEEP IT',
+        kind: 'stage', bubble: 'A BALL! WALK INTO IT AND KEEP MOVING TO DRIBBLE',
         arrange: () => {
           this.ballAt(this.hero().pos.x + 5, this.hero().pos.y, 7);
           this.carried = 0;
@@ -254,26 +263,26 @@ export class Tutorial {
         cleanup: () => { this.hideWedge = false; this.capPower = 0; },
       },
       { kind: 'card', lines: [
-          ['NOW THE HONEST PART'],
-          ['HARDER KICKS ARE STRONGER BUT WILDER'],
-          ['THE ARC ON THE GRASS IS EVERYWHERE YOUR BALL MIGHT GO'],
-          ['BETTER PLAYERS KEEP THAT ARC NARROW'],
+          ['POWER COSTS ACCURACY'],
+          ['THE HARDER YOU KICK THE LESS ACCURATE IT GETS'],
+          ['THE ARC ON THE GRASS SHOWS EVERYWHERE YOUR BALL CAN GO'],
+          ['BETTER PLAYERS HAVE A NARROWER ARC'],
         ] },
       {
-        kind: 'stage', bubble: 'FEEL THE DIFFERENCE. ONE CALM KICK AND ONE FULL SEND',
+        kind: 'stage', bubble: 'TRY ONE SOFT KICK AND ONE AT FULL POWER',
         arrange: () => {
           this.dress(this.heroIdx, COACH_PICK);
           this.ballAt(this.hero().pos.x + 1.2, this.hero().pos.y);
           this.kicks = [];
         },
         objectives: [
-          { label: 'A CALM KICK', done: () => this.kicks.some((p) => p <= 0.6) },
-          { label: 'A FULL SEND', done: () => this.kicks.some((p) => p >= 0.8) },
+          { label: 'A SOFT KICK', done: () => this.kicks.some((p) => p <= 0.6) },
+          { label: 'A FULL POWER KICK', done: () => this.kicks.some((p) => p >= 0.8) },
         ],
         tick: () => this.refetch(),
       },
       {
-        kind: 'stage', bubble: 'THIS ONE HAS BRICKS FOR BOOTS. LOOK AT THAT ARC. JUST HIT IT',
+        kind: 'stage', bubble: 'THIS PLAYER IS VERY INACCURATE. LOOK HOW WIDE HIS ARC IS. KICK IT ANYWAY',
         arrange: () => {
           this.restoreStats();
           this.dress(this.heroIdx, GRAY_BOOTS);
@@ -332,29 +341,29 @@ export class Tutorial {
         cleanup: () => this.restoreStats(),
       },
       { kind: 'card', lines: [
-          ['TIME TO SCORE ONE'],
-          ['THIS KEEPER NEVER LEAVES HIS NEAR POST'],
-          ['SO MAKE HIM MOVE FIRST'],
-          ['CARRY UP THE RIGHT WING CROSS TO THE FAR POST AND FINISH'],
+          ['TIME TO SCORE A GOAL'],
+          ['THIS KEEPER ONLY GUARDS THE NEAR SIDE OF HIS GOAL'],
+          ['SO MOVE THE BALL TO THE OTHER SIDE BEFORE YOU SHOOT'],
+          ['DRIBBLE UP THE RIGHT WING PASS ACROSS TO YOUR TEAMMATE AND SHOOT'],
         ] },
       {
-        kind: 'stage', bubble: 'UP THE RIGHT WING. CROSS HIM. FINISH IT', allowSwitch: true,
+        kind: 'stage', bubble: 'DRIBBLE UP THE RIGHT WING THEN PASS ACROSS TO YOUR TEAMMATE', allowSwitch: true,
         arrange: () => this.arrangeCross(),
         objectives: [
           { label: 'REACH THE RIGHT WING', done: () => this.hero().pos.x > 94 && this.hero().pos.y > 48 && this.world().carrier?.idx === this.hooks.cursorIdx() },
-          { label: 'CROSS TO THE FAR POST', done: () => this.crossed },
+          { label: 'PASS ACROSS THE GOAL', done: () => this.crossed },
           { label: 'SCORE', done: () => this.events().some((e) => e.kind === 'goal') },
         ],
         tick: () => this.tickCross(),
       },
       { kind: 'card', lines: [
-          ['DEFENDING IS ON PURPOSE HERE'],
-          ['GET CLOSE TO THE CARRIER AND HOLD ', K('SPACE')],
-          ['CHALK JAWS CLOSE AROUND THE BALL AND THEN IT IS YOURS'],
-          ['A QUICK TAP OF ', K('SPACE'), ' IS A RISKY LUNGE INSTEAD'],
+          ['DEFENDING IS DELIBERATE HERE'],
+          ['GET CLOSE TO THE BALL CARRIER AND HOLD ', K('SPACE')],
+          ['A MARK CLOSES AROUND THE BALL AND WHEN IT CLOSES THE BALL IS YOURS'],
+          ['A QUICK TAP OF ', K('SPACE'), ' IS A RISKY TACKLE INSTEAD'],
         ] },
       {
-        kind: 'stage', bubble: 'HOLD SPACE ON HIM UNTIL THE JAWS CLOSE. THEN GO SCORE',
+        kind: 'stage', bubble: 'HOLD SPACE NEXT TO HIM UNTIL THE MARK CLOSES. THEN GO SCORE',
         arrange: () => this.arrangeSteal(),
         objectives: [
           { label: 'CLAMP THE BALL AWAY', done: () => this.world().carrier?.idx === this.heroIdx },
@@ -371,12 +380,12 @@ export class Tutorial {
         },
       },
       { kind: 'card', lines: [
-          ['LAST DRILL. ONE OF YOU TWO OF THEM'],
-          ['A REAL DEFENDER WILL HUNT YOU NOW'],
-          ['DRIBBLE AWAY FROM HIM FEED YOUR TEAMMATE AND SCORE'],
+          ['LAST DRILL. ONE OF YOU AGAINST TWO OF THEM'],
+          ['A REAL DEFENDER WILL CHASE YOU NOW'],
+          ['DRIBBLE AWAY FROM HIM PASS TO YOUR TEAMMATE AND SCORE'],
         ] },
       {
-        kind: 'stage', bubble: 'HE IS COMING. KEEP IT MOVE IT SCORE IT', allowSwitch: true,
+        kind: 'stage', bubble: 'HE WILL CHASE YOU. KEEP THE BALL PASS AND SCORE', allowSwitch: true,
         arrange: () => this.arrangeDuel(),
         objectives: [
           { label: 'SURVIVE THE PRESS', done: () => this.survived > 3.5 },
@@ -386,11 +395,11 @@ export class Tutorial {
         tick: (dt) => this.tickDuel(dt),
       },
       { kind: 'card', lines: [
-          ['HOUSEKEEPING SO NOTHING SURPRISES YOU'],
-          ['BALL OFF THE SIDE LINES IS A THROW IN'],
-          ['OFF THEIR END LINE OFF THEM IS YOUR CORNER'],
-          ['WHEN YOUR KEEPER CATCHES IT HE LAUNCHES BY HAND'],
-          ['AND WHEN YOU ARE NEAR A LOOSE BALL YOUR MAN TACKLES ON HIS OWN'],
+          ['A FEW LAST RULES'],
+          ['BALL OVER A SIDE LINE IS A THROW IN'],
+          ['BALL OVER THEIR END LINE OFF THEM IS YOUR CORNER'],
+          ['WHEN YOUR KEEPER CATCHES THE BALL HE THROWS OR PUNTS IT BY HAND'],
+          ['AND NEAR A LOOSE BALL YOUR PLAYER TACKLES ON HIS OWN'],
         ] },
       { kind: 'choice' },
     ];
@@ -427,7 +436,7 @@ export class Tutorial {
     // dead ball or keeper smother: stage resets, checked boxes stay
     if (this.events().some((e) => e.kind === 'restart' || e.kind === 'save') ||
         (w.lastTouch?.team === 1 && w.ball.speed() < 1)) {
-      this.scene.toast('AGAIN. MAKE THE KEEPER MOVE FIRST');
+      this.scene.toast('TRY AGAIN. PASS ACROSS BEFORE YOU SHOOT');
       this.arrangeCross();
     }
   }
@@ -485,13 +494,21 @@ export class Tutorial {
     this.actors.set(gk, { ...IDLE(), move: vec(0, clamp((targetY - g.pos.y) * 2, -0.55, 0.55)) });
     // they stole it or it died out there: back to marks, keep your ticks
     if (w.lastTouch?.team === 1 && w.ball.speed() < 1 && !ours) {
-      this.scene.toast('HE ATE IT. AGAIN');
+      this.scene.toast('HE TOOK IT. TRY AGAIN');
       this.arrangeDuel();
     }
     if (this.events().some((e) => e.kind === 'restart')) this.arrangeDuel();
   }
 
   // ------------------------------------------------------------ the engine
+  // Which body may wear the white chevron: drills without switching wear
+  // none, and a benched body never earns one
+  switchTargetFor(suggested: number): number {
+    const step = this.steps[this.stepIdx];
+    if (step?.kind !== 'stage' || !step.allowSwitch) return -1;
+    return this.visible.has(suggested) ? suggested : -1;
+  }
+
   key(code: string): boolean {
     if (this.mode === 'card') {
       if (code !== 'Enter') return false;
@@ -517,8 +534,13 @@ export class Tutorial {
   }
 
   frame(dt: number, input: PlayerInput, overrides: Record<number, PlayerInput>) {
+    this.t += dt;
     const w = this.world();
     const step = this.steps[this.stepIdx];
+    // the lens stays on YOUR man — never dragged to a corner by a parked ball
+    if (this.mode !== 'tour') {
+      this.scene.setCameraOverride({ center: w.players[this.hooks.cursorIdx()].pos, zoom: 1.15 });
+    }
     // everyone stands where the coach put them — only the hero and the
     // scripted actors are alive, in every mode
     for (let i = 0; i < w.players.length; i++) {
@@ -598,7 +620,7 @@ export class Tutorial {
     this.dim.clear();
     this.scene.setCameraOverride(null);
     if (step.kind === 'card') { this.mode = 'card'; this.buildCard(step); }
-    else if (step.kind === 'tour') { this.mode = 'tour'; this.tourT = 0; this.buildTour(); }
+    else if (step.kind === 'tour') { this.mode = 'tour'; this.tourT = 0; this.showEveryone(); this.buildTour(); }
     else if (step.kind === 'choice') { this.mode = 'choice'; this.buildChoice(); }
     else { this.mode = 'stage'; this.clearLocks(); step.arrange(); this.buildStage(step); }
   }
@@ -615,15 +637,17 @@ export class Tutorial {
   private sh() { return this.app().screen.height; }
 
   private keycap(label: string): Container {
+    // a dark cap with light lettering — the same cloth as every plate here,
+    // and the only thing this 7px face stays crisp on
     const c = new Container();
-    const t = new PixelText(this.assets, 2, 0x12161f);
+    const t = new PixelText(this.assets, 2, 0xe8ecf4);
     t.text = label;
-    const w = Math.max(22, t.width + 12);
+    const w = Math.max(24, t.width + 14);
     const g = new Graphics();
-    g.rect(0, -2, w, 20).fill({ color: 0x05070b, alpha: 0.9 });
-    g.rect(1, -1, w - 2, 18).fill({ color: 0xd8dee9, alpha: 1 });
-    g.rect(1, -1, w - 2, 2).fill({ color: 0xffffff, alpha: 0.8 });
-    g.rect(1, 14, w - 2, 3).fill({ color: 0x8891a2, alpha: 1 });
+    g.rect(0, -3, w, 22).fill({ color: 0x05070b, alpha: 0.95 });
+    g.rect(1, -2, w - 2, 20).fill({ color: 0x232b3d, alpha: 1 });
+    g.rect(1, -2, w - 2, 2).fill({ color: 0xfff8e0, alpha: 0.25 });
+    g.rect(1, 16, w - 2, 2).fill({ color: 0x000000, alpha: 0.55 });
     c.addChild(g, t);
     t.position.set(Math.round((w - t.width) / 2), 1);
     return c;
@@ -780,10 +804,10 @@ export class Tutorial {
     this.bubbleText.text = stage.bubble;
     const tw = this.bubbleText.width;
     this.bubbleBg.clear();
-    this.bubbleBg.rect(-8, -6, tw + 16, 26).fill({ color: 0xf2efe4, alpha: 0.96 });
-    this.bubbleBg.rect(-8, -6, tw + 16, 2).fill({ color: 0xffffff, alpha: 0.9 });
-    this.bubbleBg.rect(-8, 18, tw + 16, 2).fill({ color: 0x9b937d, alpha: 0.9 });
-    this.bubbleBg.rect(Math.round(tw / 2) - 3, 20, 6, 5).fill({ color: 0xf2efe4, alpha: 0.96 });
+    this.bubbleBg.rect(-10, -8, tw + 20, 30).fill({ color: 0x0d1119, alpha: 0.92 });
+    this.bubbleBg.rect(-10, -8, tw + 20, 2).fill({ color: 0xffd95e, alpha: 0.5 });
+    this.bubbleBg.rect(-10, 20, tw + 20, 2).fill({ color: 0x000000, alpha: 0.5 });
+    this.bubbleBg.rect(Math.round(tw / 2) - 3, 22, 6, 5).fill({ color: 0x0d1119, alpha: 0.92 });
     this.bubbleText.position.set(0, 0);
     this.bubble.visible = true;
   }

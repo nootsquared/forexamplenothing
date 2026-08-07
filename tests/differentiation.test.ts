@@ -67,9 +67,12 @@ describe('the aim cone', () => {
 
   it('decays toward the long-ball stat as the delivery stretches', () => {
     const df = mk({ pass: 0.6, longBall: 0.2 });
-    expect(kickAccuracy(df, false, 10)).toBeCloseTo(0.6, 1);
-    expect(kickAccuracy(df, false, 42)).toBeCloseTo(0.2, 1);
-    expect(kickAccuracy(df, true, 10)).toBe(df.shoot); // the mouth reads finishing
+    expect(kickAccuracy(df, 0, 10)).toBeCloseTo(0.6, 1);
+    expect(kickAccuracy(df, 0, 42)).toBeCloseTo(0.2, 1);
+    expect(kickAccuracy(df, 1, 10)).toBe(df.shoot);      // square at the mouth reads finishing
+    const half = kickAccuracy(df, 0.5, 10);              // and the blend has no cliffs
+    expect(half).toBeGreaterThan(Math.min(df.shoot, 0.6) - 0.01);
+    expect(half).toBeLessThan(Math.max(df.shoot, 0.6) + 0.01);
   });
 
   it('the sim samples inside it: bad feet spray, good feet group', () => {

@@ -7,7 +7,7 @@ import { attachRelay } from './server/relay.mjs';
 // a new large round, bump MAJORS and set LAST_MAJOR_TOTAL to the new commit
 // count — every fix commit after it raises the third number on its own.
 const MAJORS = 21;
-const LAST_MAJOR_TOTAL = 41; // rev-list count at the tutorial round
+const LAST_MAJOR_TOTAL = 40; // rev-list count at the tutorial round
 const commitCount = (() => {
   try { return parseInt(execSync('git rev-list --count HEAD').toString().trim(), 10); }
   catch { return LAST_MAJOR_TOTAL; }

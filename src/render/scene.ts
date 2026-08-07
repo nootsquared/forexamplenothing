@@ -194,6 +194,12 @@ export class Scene {
     this.camOverride = o;
   }
 
+  // The tutorial benches bodies entirely — off the stage until they're needed
+  setPlayerHidden(idx: number, hidden: boolean) {
+    const v = this.playerViews[idx];
+    if (v) v.root.visible = !hidden;
+  }
+
   // The white chevron: who E switches you into
   setSwitchTarget(idx: number) {
     if (idx === this.switchTargetIdx) return;

@@ -4,7 +4,7 @@ import { GRAVITY, PITCH, SURFACES, Surface } from './constants';
 import { Ball } from './ball';
 import { PlayerBody, PlayerInput } from './player';
 import { SimEvent } from './events';
-import { CLAMP, aimsAtGoal, clampCloseRate, coneHalfAngle, duelScores, kickAccuracy } from './tuning';
+import { CLAMP, clampCloseRate, coneHalfAngle, duelScores, goalness, kickAccuracy } from './tuning';
 
 const KICK_RANGE = 2.0;
 const KICK_BUFFER = 0.28;    // released kick fires as soon as the ball is in reach
@@ -665,8 +665,8 @@ export class World {
     // chalks — finishing governs balls driven at the mouth, passing governs
     // deliveries and decays toward the long-ball stat with intended distance,
     // and the pull blooms it all. Weak feet also misweight the pass.
-    const isShot = aimsAtGoal(this.ball.pos, aim, this.goalXOf(p.id.team), this.attackSign(p.id.team));
-    const acc = kickAccuracy(p.stats, isShot, 8 + inputPower * 34);
+    const shotness = goalness(this.ball.pos, aim, this.goalXOf(p.id.team), this.attackSign(p.id.team));
+    const acc = kickAccuracy(p.stats, shotness, 8 + inputPower * 34);
     const theta = coneHalfAngle(acc, inputPower);
     // COMPLETELY random inside the wedge — any angle on the arc, equally
     // likely. No center bias: the cone you see is exactly the lottery you play.

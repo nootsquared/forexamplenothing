@@ -16,31 +16,37 @@ export function coneHalfAngle(acc: number, inputPower: number): number {
   return CONE.min + CONE.span * INTENSITY * Math.pow(1 - clamp(acc, 0.02, 0.99), 1.15) * Math.pow(p, CONE.gamma);
 }
 
-// A ball driven at the mouth within shooting range is a SHOT — judged on the
-// INTENDED line, before the cone rolls, so the wedge can tell you beforehand
-export function aimsAtGoal(ballPos: Vec2, aimDir: Vec2, goalX: number, sign: 1 | -1): boolean {
-  if (aimDir.x * sign < 0.25) return false;
+// How much of a SHOT this kick is: 1 aimed square at the mouth in range,
+// easing to 0 as the line drifts wide or the range stretches. SMOOTH on
+// purpose — the arc must never snap size while an aim sweeps past the goal.
+export function goalness(ballPos: Vec2, aimDir: Vec2, goalX: number, sign: 1 | -1): number {
+  const fwd = aimDir.x * sign;
+  if (fwd <= 0.05) return 0;
   const distX = Math.abs(goalX - ballPos.x);
-  if (distX > 40) return false;
-  const yAtLine = ballPos.y + (aimDir.y / Math.abs(aimDir.x)) * distX;
-  return Math.abs(yAtLine - PITCH.width / 2) < PITCH.goalWidth / 2 + 3;
+  if (distX > 42) return 0;
+  const yAtLine = ballPos.y + (aimDir.y / Math.max(0.2, Math.abs(aimDir.x))) * distX;
+  const off = Math.abs(yAtLine - PITCH.width / 2) - PITCH.goalWidth / 2;
+  const aimK = clamp(1 - off / 8, 0, 1);
+  const distK = clamp((42 - distX) / 6, 0, 1);
+  const fwdK = clamp((fwd - 0.05) / 0.2, 0, 1);
+  return aimK * distK * fwdK;
 }
 
-// Which accuracy governs a kick: finishing at the mouth, short-passing close,
-// and decaying toward the LONG-BALL stat as the intended delivery stretches —
-// a defender's ten-meter ball is crisp while his fifty-meter rake is a prayer
-export function kickAccuracy(stats: PlayerStats, isShot: boolean, intendDist: number): number {
-  if (isShot) return stats.shoot;
+// Which accuracy governs a kick: passing that decays toward the LONG-BALL
+// stat with intended distance, blended toward FINISHING by how squarely the
+// mouth is the target — one continuous number, no cliffs
+export function kickAccuracy(stats: PlayerStats, shotness: number, intendDist: number): number {
   const longness = clamp((intendDist - 14) / 26, 0, 1);
   const t = longness * longness * (3 - 2 * longness);
-  return stats.pass * (1 - t) + Math.min(stats.pass, stats.longBall) * t;
+  const passAcc = stats.pass * (1 - t) + Math.min(stats.pass, stats.longBall) * t;
+  return passAcc + (stats.shoot - passAcc) * clamp(shotness, 0, 1);
 }
 
 // Everything the sight needs to chalk an honest wedge for one armed kick
 export function kickSight(stats: PlayerStats, ballPos: Vec2, aimDir: Vec2, inputPower: number, goalX: number, sign: 1 | -1) {
-  const isShot = aimsAtGoal(ballPos, aimDir, goalX, sign);
-  const acc = kickAccuracy(stats, isShot, 8 + inputPower * 34);
-  return { theta: coneHalfAngle(acc, inputPower), acc, isShot };
+  const shotness = goalness(ballPos, aimDir, goalX, sign);
+  const acc = kickAccuracy(stats, shotness, 8 + inputPower * 34);
+  return { theta: coneHalfAngle(acc, inputPower), acc, shotness };
 }
 
 // The clamp: hold-to-take. Chalk jaws close around a latched carrier's ball;

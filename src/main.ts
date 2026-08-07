@@ -1475,7 +1475,7 @@ async function boot() {
         passHints = openTeammates(world, cursor.idx);
       }
     } else passHints = [];
-    scene.setPassHints(passHints);
+    scene.setPassHints(tutorial ? passHints.filter((i) => tutorial!.visible.has(i)) : passHints);
 
     // The drag sight: an arrow off your boot, growing longer and thicker
     // as you pull back — the meter IS the arrow. Lose the ball, lose the sling.
@@ -1491,7 +1491,7 @@ async function boot() {
     }
 
     scene.setControlled(cursor.idx);
-    scene.setSwitchTarget(cursor.suggested);
+    scene.setSwitchTarget(tutorial ? tutorial.switchTargetFor(cursor.suggested) : cursor.suggested);
     scene.setBallGlow(ballIsMine());
     scene.setPing(netRole && net && net.rtt > 0 ? net.rtt : null);
     // stoppage time wears a plus — the referee is letting the move breathe
