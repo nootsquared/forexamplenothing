@@ -103,6 +103,20 @@ export class Effects {
           this.spawn(this.assets.ringFrames, e.x, e.y, { life: 0.18, fade: 0 });
           this.kickShake(1.6);
           break;
+        case 'feint':
+          // The escape cut: dust kicked off the plant, thrown against the cut
+          for (let i = 0; i < 2; i++) {
+            this.spawn(this.assets.dustFrames, e.x + this.rng.range(-0.3, 0.3), e.y + this.rng.range(-0.2, 0.2), {
+              life: 0.3, vx: -e.dx * 16 + this.rng.range(-4, 4), vy: -e.dy * 9,
+            });
+          }
+          break;
+        case 'shrug':
+          // Bounced off the shield — the ground takes the hit, not the ball
+          this.spawn(this.assets.dustFrames, e.x, e.y, { life: 0.34, vx: this.rng.range(-12, 12), vy: -4 });
+          this.kickShake(2.2);
+          this.loop.hitstop(30, 0.35);
+          break;
         case 'bounce':
           this.spawn(this.assets.dustFrames, e.x, e.y, { life: 0.28, vx: this.rng.range(-8, 8) });
           this.spawn(this.assets.grassFrames, e.x, e.y, { life: 0.3, vx: this.rng.range(-4, 4) });

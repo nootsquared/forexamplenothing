@@ -6,7 +6,8 @@ import { Ball } from '../src/sim/ball';
 import { PITCH, SURFACES } from '../src/sim/constants';
 
 const idle: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
-const stats = { topSpeed: 5.7, sprintSpeed: 7.7, accel: 6.5, agility: 0.8, control: 0.8, power: 0.75 };
+const stats = { topSpeed: 5.7, sprintSpeed: 7.7, accel: 6.5, agility: 0.8, control: 0.8, power: 0.75,
+ shoot: 0.72, pass: 0.8, longBall: 0.72, defend: 0.55, phys: 0.55, reflex: 0.55, dive: 0.55, handling: 0.55 };
 
 const runSteps = (world: World, inputs: PlayerInput[], steps: number) => {
   for (let i = 0; i < steps; i++) world.step(1 / 60, inputs);

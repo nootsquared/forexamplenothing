@@ -130,9 +130,11 @@ export function pickDistribution(world: World, gkIdx: number): { target: Vec2; k
   );
   const d = dist(gk.pos, target);
   const kind: 'throw' | 'punt' = d <= throwR ? 'throw' : 'punt';
+  // Hands are the ACCURATE option — a throw is near-laser, a punt drops close.
+  // (Formula lives in three places: here, readKeeperSight, and the throw-in — keep in sync.)
   const scatter = kind === 'throw'
-    ? (0.8 + d * 0.045) * (1.35 - gk.stats.control * 0.7)
-    : (2.2 + d * 0.075) * (1.45 - gk.stats.control * 0.7);
+    ? (0.15 + d * 0.012) * (1.2 - gk.stats.control * 0.55)
+    : (0.7 + d * 0.028) * (1.3 - gk.stats.control * 0.55);
   return { target, kind, scatter };
 }
 

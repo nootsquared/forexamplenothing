@@ -1,7 +1,9 @@
 import { Vec2, vec, len, norm, scale, add, expDecayVec, angleBetween, clamp } from '../core/math';
 import { SimEvent } from './events';
 
-// Stats are the ONLY thing that differs between players — no personality sliders
+// Stats are the ONLY thing that differs between players — no personality sliders.
+// Positions are exclusive by construction: a role's off-stats are authored so
+// far below another role's floor that no gold defender ever subs for a striker.
 export interface PlayerStats {
   topSpeed: number;    // m/s jogging cap
   sprintSpeed: number; // m/s sprint cap
@@ -9,6 +11,14 @@ export interface PlayerStats {
   agility: number;     // 0..1, sharpness of direction changes
   control: number;     // 0..1, dribble touch tightness
   power: number;       // 0..1, kick strength ceiling
+  shoot: number;       // 0..1, the cone when the mouth is the target
+  pass: number;        // 0..1, short-delivery accuracy
+  longBall: number;    // 0..1, how far accuracy survives the raking ball
+  defend: number;      // 0..1, the steal trade (the clamp reads this)
+  phys: number;        // 0..1, strength in the shoulder duel
+  reflex: number;      // GK 0..1, reaction beat before the dive
+  dive: number;        // GK 0..1, reach of the leap
+  handling: number;    // GK 0..1, catch versus spill
 }
 
 export interface PlayerInput {
@@ -19,6 +29,7 @@ export interface PlayerInput {
   // aimAt: a field POINT to strike toward (mouse passing) — overrides the stick line.
   kickReleased: { power: number; aimOffset?: number; aimAt?: Vec2 } | null;
   tackle?: boolean;    // lunge-poke at the ball — win it clean or eat the recovery
+  clamp?: boolean;     // held: engage the clamp on a nearby carrier's ball
 }
 
 // Which side a body plays for and where it lives in the team's shape
@@ -36,6 +47,9 @@ export class PlayerBody {
   stamina = 1;
   touchCooldown = 0;
   kickCooldown = 0;
+  // Just received a ball from someone else: for this beat the first touches
+  // obey the CURRENT stick, not the arrival momentum — tap-and-turn is a play
+  freshTouch = 0;
   // Just kicked or just dispossessed: the body is solid but can't STEER the
   // ball — no bulldozing your own shot, no instantly re-tapping a lost duel
   playLock = 0;
@@ -49,6 +63,8 @@ export class PlayerBody {
   lungeTimer = 0;
   tackleCooldown = 0;
   recoverTimer = 0;
+  // The escape cut can't chain — one feint, then the carrier is honest again
+  feintCooldown = 0;
   isSprinting = false;
   isCharging = false;
   prev = { x: 0, y: 0 };
@@ -80,6 +96,7 @@ export class PlayerBody {
     this.lungeTimer = Math.max(0, this.lungeTimer - dt);
     this.tackleCooldown = Math.max(0, this.tackleCooldown - dt);
     this.recoverTimer = Math.max(0, this.recoverTimer - dt);
+    this.feintCooldown = Math.max(0, this.feintCooldown - dt);
     // The lunge: a committed burst toward the point of attack. Miss and the
     // recovery leaves you beaten — tackling is a bet, not a spam button.
     if (input.tackle && this.tackleCooldown <= 0 && this.lungeTimer <= 0 && this.recoverTimer <= 0) {
@@ -93,6 +110,7 @@ export class PlayerBody {
     const staminaFactor = 0.8 + 0.2 * this.stamina;
     let maxSpeed = (this.isSprinting ? this.stats.sprintSpeed : this.stats.topSpeed) * staminaFactor;
     if (this.isCharging) maxSpeed *= 0.92; // you can dribble into a shot; barely a tax
+    if (input.clamp) maxSpeed *= 0.85;     // squeezing costs a step — attach with your legs first
     if (this.recoverTimer > 0) maxSpeed *= 0.45; // beaten after a whiffed lunge
 
     // A hard cut plants the foot: brief speed cost, big visual payoff
@@ -130,6 +148,7 @@ export class PlayerBody {
     this.touchCooldown = Math.max(0, this.touchCooldown - dt);
     this.kickCooldown = Math.max(0, this.kickCooldown - dt);
     this.playLock = Math.max(0, this.playLock - dt);
+    this.freshTouch = Math.max(0, this.freshTouch - dt);
 
     this.pos.x += this.vel.x * dt;
     this.pos.y += this.vel.y * dt;

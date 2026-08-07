@@ -231,7 +231,7 @@ function drawFan(ctx, oy, fan, step, hype) {
 }
 
 const BOARD_ADS = [
-  { text: 'GOLAZO', bg: '#c44a3f', fg: '#f2e8de' },
+  { text: 'TOTAL22', bg: '#c44a3f', fg: '#f2e8de' },
   { text: 'PIXEL FC', bg: '#ddd6c6', fg: '#263450' },
   { text: 'TURBO', bg: '#2f56b0', fg: '#dde5f4' },
   { text: 'ARCADE', bg: '#d8b13a', fg: '#3a2c12' },

@@ -125,7 +125,7 @@ describe('the right-stick sling', () => {
     expect(controls.takeFlick()).toBeNull();
   });
 
-  it('pad movement and buttons flow into the intent', () => {
+  it('pad movement and buttons flow into the intent: hold clamps, a tap lunges on release', () => {
     pads.state!.move = vec(0.6, -0.3);
     pads.state!.sprint = true;
     pads.state!.tackle = true;
@@ -133,6 +133,11 @@ describe('the right-stick sling', () => {
     expect(out.move.x).toBeCloseTo(0.6, 5);
     expect(out.move.y).toBeCloseTo(-0.3, 5);
     expect(out.sprint).toBe(true);
-    expect(out.tackle).toBe(true);
+    expect(out.clamp).toBe(true);   // held = the squeeze
+    expect(out.tackle).toBe(false); // the lunge waits for the release
+    pads.state!.tackle = false;
+    const released = step();
+    expect(released.tackle).toBe(true);  // a quick tap fires the poke
+    expect(released.clamp).toBe(false);
   });
 });

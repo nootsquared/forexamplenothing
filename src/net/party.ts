@@ -190,6 +190,7 @@ export function packInput(input: PlayerInput, sw: boolean): NetInput {
     kx: input.kickReleased?.aimAt?.x ?? 0,
     ky: input.kickReleased?.aimAt?.y ?? 0,
     tk: !!input.tackle,
+    cl: !!input.clamp,
     sw,
   };
 }
@@ -201,5 +202,6 @@ export function unpackInput(n: NetInput): PlayerInput {
     kickCharging: n.ch,
     kickReleased: n.kp > 0 ? { power: n.kp, aimOffset: 0, aimAt: n.kx || n.ky ? vec(n.kx, n.ky) : undefined } : null,
     tackle: n.tk,
+    clamp: n.cl,
   };
 }

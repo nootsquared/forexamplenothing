@@ -24,7 +24,7 @@ const VISION_NEAR = 12;   // meters: sensed all around, no cone needed
 const VISION_FAR = 40;    // meters: seen only inside the facing cone
 const VISION_HALF_ANGLE = 1.92; // ~110° each side
 const BELIEF_MAX_AGE = 2.5;
-const OPP_EST_SPEED = 6.8; // how fast everyone assumes an opponent can run
+const OPP_EST_SPEED = 7.1; // how fast everyone assumes an opponent can run — mean of the widened pace band
 const OPP_REACTION = 0.25; // seconds before that opponent gets moving
 
 type Intent =
@@ -616,9 +616,16 @@ export class Brain {
           target = add(target, scale(norm(sub(this.bb.goalWeDefend(), world.ball.pos)), hold));
         }
         sprint = this.intent.sprint;
-        // The press bites: lunge when the carrier's ball is in reach
-        if (this.bb.phase === 'defend' && dist(me.pos, world.ball.pos) < 1.35 && me.tackleCooldown <= 0) {
-          input.tackle = true;
+        // The press bites INTENTIONALLY: a latched carrier gets the CLAMP —
+        // jaws, not dives — and the lunge is saved for honest prey (a heavy
+        // touch, a loose ball) where arriving first still wins it clean
+        if (this.bb.phase === 'defend' && me.tackleCooldown <= 0) {
+          const d = dist(me.pos, world.ball.pos);
+          if (!world.ballExposed()) {
+            if (d < 2.4) input.clamp = true;
+          } else if (d < 1.35) {
+            input.tackle = true;
+          }
         }
         break;
       }

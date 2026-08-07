@@ -41,7 +41,7 @@ export interface GameAssets {
   flagFrames: Texture[];
   glyphs: Record<string, Texture>;
   microGlyphs: Record<string, Texture>;
-  title: Texture; // the baked GOLAZO wordmark
+  title: Texture; // the baked TOTAL22 wordmark
   shadow: Texture;
   skid: Texture;
   goalBar: Texture;

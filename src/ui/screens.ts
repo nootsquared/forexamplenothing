@@ -61,6 +61,7 @@ export class MenuScreen implements Screen {
   private list: PixelList;
   private title: Sprite;
   private sub: PixelText;
+  private ver: PixelText;
   private crumb: PixelText;
   private shade = new Graphics();
   private mark = new Graphics();     // the ghosted centre circle in the glass
@@ -84,6 +85,9 @@ export class MenuScreen implements Screen {
     this.title = new Sprite(assets.title);
     this.sub = new PixelText(assets, 3, 0x9ff0b8);
     this.sub.text = 'A NOOT^2 GAME';
+    // the build's git ledger, worn small beside the signage
+    this.ver = new PixelText(assets, 2, 0x8a91a0, 'micro');
+    this.ver.text = `V${__GAME_VERSION__}`;
     this.crumb = new PixelText(assets, 2, 0x8a91a0);
     this.list = new PixelList(assets, 3, 34, 7, 13, true);
     this.list.onPick = (i) => this.act(i);
@@ -99,7 +103,7 @@ export class MenuScreen implements Screen {
     this.restBall.anchor.set(0.5);
     this.restBall.scale.set(6);
     this.backdrop.addChild(this.shade, this.mark, this.grass.soil, this.grass.back, this.restBall, this.grass.front, this.motes.g);
-    this.root.addChild(this.backdrop, this.title, this.shine, this.shineMask, this.sub, this.crumb, this.plate, this.dust.g);
+    this.root.addChild(this.backdrop, this.title, this.shine, this.shineMask, this.sub, this.ver, this.crumb, this.plate, this.dust.g);
     this.setPage('root', false);
   }
 
@@ -262,6 +266,7 @@ export class MenuScreen implements Screen {
     this.shine.poly([{ x: 0, y: sh }, { x: 22, y: 0 }, { x: 52, y: 0 }, { x: 30, y: sh }]).fill({ color: 0xfff8e0, alpha: 0.32 });
     this.shine.position.y = this.title.position.y - 6;
     this.sub.centerAt(w / 2, h * 0.1 + this.title.height + 12);
+    this.ver.centerAt(w / 2, h * 0.1 + this.title.height + 34); // the ledger, under the studio line
     this.crumb.centerAt(w / 2, h * 0.42);
     this.plate.position.set(Math.round(w / 2), Math.round(h * 0.47) - 20);
     this.drawBox();

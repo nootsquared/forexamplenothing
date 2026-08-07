@@ -4,6 +4,7 @@ import { GRAVITY, PITCH, SURFACES, Surface } from './constants';
 import { Ball } from './ball';
 import { PlayerBody, PlayerInput } from './player';
 import { SimEvent } from './events';
+import { CLAMP, aimsAtGoal, clampCloseRate, coneHalfAngle, duelScores, kickAccuracy } from './tuning';
 
 const KICK_RANGE = 2.0;
 const KICK_BUFFER = 0.28;    // released kick fires as soon as the ball is in reach
@@ -35,6 +36,13 @@ export class World {
   score = { left: 0, right: 0 };
   // Who last played the ball — feeds restarts and pass-follow control
   lastTouch: { team: 0 | 1; idx: number } | null = null;
+  // The possession war: who OWNS the ball right now. Latched by controlled
+  // touches, dropped when the ball is played away or drifts out of his bubble.
+  // An opponent inside the protect ring cannot osmose it — only clamp or lunge.
+  carrier: { idx: number; t: number } | null = null;
+  // One defender's jaws squeezing the carrier's ball — the hold-to-take duel
+  clamp: { idx: number; close: number; graceT: number; feintRolled: boolean } | null = null;
+  private looseClaimIdx: number | null = null; // loose balls go to whoever is genuinely FIRST
   restartLock = 0; // dead-ball beat after a restart is placed
   // The restart law: the other team gives the dead ball this much space
   restartExclusion = 0;
@@ -96,6 +104,24 @@ export class World {
     }
 
     const ballLive = this.restartLock <= 0;
+    // The latch breathes: standing over your ball keeps it YOURS indefinitely;
+    // knock it past the protect ring and the latch only survives the chase
+    if (this.carrier) {
+      const cb = this.players[this.carrier.idx];
+      const dBall = dist(this.ball.pos, cb.pos);
+      if (dBall <= CLAMP.protect && this.ball.z <= 1.2) this.carrier.t = 0.8;
+      else this.carrier.t -= dt;
+      if (this.carrier.t <= 0 || this.ball.z > 1.2 || dBall > 1.9) this.carrier = null;
+    }
+    this.looseClaimIdx = null;
+    if (!this.carrier && ballLive) {
+      let bestD = 1.7;
+      this.players.forEach((p, i) => {
+        if (p.touchCooldown > 0 || p.playLock > 0) return;
+        const d = dist(p.pos, this.ball.pos);
+        if (d < bestD) { bestD = d; this.looseClaimIdx = i; }
+      });
+    }
     this.players.forEach((p, i) => {
       const input = inputs[i] ?? { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
       p.update(dt, input, this.events);
@@ -106,6 +132,7 @@ export class World {
       this.handleDribble(p, input, i);
       this.collideBall(p, i);
     });
+    if (ballLive) this.updateClamp(dt, inputs);
     this.separateBodies();
 
     // Nobody plays in the stands: bodies live on the pitch plus a whisker of
@@ -260,10 +287,38 @@ export class World {
   // shins: a dispossession changes the play's direction, it doesn't ping-pong.
   private resolveLunge(p: PlayerBody, idx: number) {
     if (p.lungeTimer <= 0 || this.ball.z > (p.id.role === 'GK' ? 1.6 : 0.8)) return;
-    // A keeper's dive REACH is his stats: agile hands get to more ball
-    const reach = p.id.role === 'GK' ? 0.9 + p.stats.agility * 0.5 : 0.8;
+    // Reach is the trade: agile hands for keepers, real DEFENDING for the rest
+    const reach = p.id.role === 'GK' ? 0.9 + p.stats.agility * 0.5 : 0.8 + p.stats.defend * 0.45;
     const handsD = dist(p.pos, this.ball.pos);
     if (handsD > reach) {
+      // Reaching the MAN but not his shielded ball IS the shoulder duel: the
+      // shield swallows the lunge — or raw strength muscles clean through it
+      const latch = this.carrier;
+      const shieldMan = latch && latch.idx !== idx && p.id.role !== 'GK' ? this.players[latch.idx] : null;
+      if (shieldMan && shieldMan.id.team !== p.id.team && dist(p.pos, shieldMan.pos) < 0.8 &&
+          dist(this.ball.pos, shieldMan.pos) <= CLAMP.protect) {
+        const { atk, hold } = duelScores(p.stats, shieldMan.stats, true);
+        const margin = atk - hold + (this.rng.next() - 0.5) * 0.3;
+        this.maybeFoul(p, idx); // going through the man in the box still risks the spot
+        if (margin < 0.1) {
+          p.lungeTimer = 0;
+          p.recoverTimer = 0.5;
+          this.events.push({ kind: 'shrug', x: p.pos.x, y: p.pos.y });
+          return;
+        }
+        // Through the shield: the ball breaks loose into a scramble
+        const axis = norm(sub(shieldMan.pos, p.pos));
+        const toBall = sub(this.ball.pos, p.pos);
+        const side = axis.x * toBall.y - axis.y * toBall.x >= 0 ? 1 : -1;
+        this.ball.vel = add(scale(norm(add(scale(axis, 0.3), scale(perpRight(axis), side))), 5), scale(p.vel, 0.2));
+        this.ball.spin = 0;
+        p.lungeTimer = 0;
+        p.touchCooldown = 0.3;
+        shieldMan.touchCooldown = Math.max(shieldMan.touchCooldown, 0.3);
+        this.carrier = null;
+        this.lastTouch = { team: p.id.team, idx };
+        return;
+      }
       this.maybeFoul(p, idx); // flew past the ball — did he catch the man?
       return;
     }
@@ -286,6 +341,7 @@ export class World {
         this.restartLock = 0.85;
         this.restartExclusion = 6.5;
         this.holdingGk = idx;
+        this.carrier = null; // gloves end the war — nobody owns a held ball
         this.events.push({ kind: 'save', x: this.ball.pos.x, y: this.ball.pos.y });
       } else {
         const failFactor = (roll - pCatch) / Math.max(0.05, 1 - pCatch);
@@ -298,6 +354,42 @@ export class World {
         this.events.push({ kind: 'parry', x: this.ball.pos.x, y: this.ball.pos.y });
       }
       return;
+    }
+    // Against a LATCHED carrier the lunge is a shoulder duel, not a coin
+    // pickup: physicality decides whether you strip it, poke it loose into a
+    // scramble, or bounce clean off the shield and eat the recovery
+    const latch = this.carrier;
+    const heldBy = latch && latch.idx !== idx ? this.players[latch.idx] : null;
+    const latched = !!heldBy && heldBy.id.team !== p.id.team &&
+      dist(this.ball.pos, heldBy.pos) <= CLAMP.protect;
+    if (latched) {
+      const cb = heldBy!;
+      const shielded = (this.ball.pos.x - cb.pos.x) * (cb.pos.x - p.pos.x) +
+        (this.ball.pos.y - cb.pos.y) * (cb.pos.y - p.pos.y) > 0;
+      const { atk, hold } = duelScores(p.stats, cb.stats, shielded);
+      const margin = atk - hold + (this.rng.next() - 0.5) * 0.3;
+      if (margin < -0.12) {
+        // Bounced off — the Van Dijk moment. The ball stays glued to its owner.
+        p.lungeTimer = 0;
+        p.recoverTimer = 0.5;
+        this.ball.vel = add(scale(cb.vel, 0.8), scale(norm(sub(this.ball.pos, p.pos)), 0.6));
+        this.events.push({ kind: 'shrug', x: p.pos.x, y: p.pos.y });
+        return;
+      }
+      if (margin < 0.1) {
+        // Poked loose — nobody's prize, everybody's scramble
+        const axis = norm(sub(cb.pos, p.pos));
+        const toBall = sub(this.ball.pos, p.pos);
+        const side = axis.x * toBall.y - axis.y * toBall.x >= 0 ? 1 : -1;
+        this.ball.vel = add(scale(norm(add(scale(axis, 0.3), scale(perpRight(axis), side))), 5), scale(p.vel, 0.2));
+        this.ball.spin = 0;
+        p.lungeTimer = 0;
+        p.touchCooldown = 0.3;
+        cb.touchCooldown = Math.max(cb.touchCooldown, 0.3);
+        this.carrier = null;
+        this.lastTouch = { team: p.id.team, idx };
+        return;
+      }
     }
     let dir = p.speed() > 0.5 ? norm(p.vel) : p.facing;
     const carrierIdx = this.possessor();
@@ -312,6 +404,7 @@ export class World {
     this.ball.spin = 0;
     p.lungeTimer = 0;       // won it — no recovery penalty
     p.touchCooldown = 0.15; // and the ball is instantly yours to run onto
+    this.carrier = null;    // stripped clean off the latch
     if (carrierIdx !== null && this.players[carrierIdx].id.team !== p.id.team) {
       // Beaten: the old carrier can't just re-tap it back — the win means something
       const carrier = this.players[carrierIdx];
@@ -320,6 +413,89 @@ export class World {
     }
     this.lastTouch = { team: p.id.team, idx };
     this.events.push({ kind: 'steal', x: this.ball.pos.x, y: this.ball.pos.y });
+  }
+
+  // THE CLAMP: hold the tackle button near a latched carrier and chalk jaws
+  // close around his ball — DEF+PHY squeezing against DRI+PHY+shielding. When
+  // they meet, the take is clean; break the engagement and they fall open; a
+  // skilled carrier FEINTS as they near closing and knocks them back. This is
+  // defending as an intention: you are never stealing by accident.
+  private updateClamp(dt: number, inputs: PlayerInput[]) {
+    const latch = this.carrier;
+    const cb = latch ? this.players[latch.idx] : null;
+    const eligible = !!cb && dist(this.ball.pos, cb.pos) <= CLAMP.protect + 0.35 && this.ball.z <= 0.8;
+    const engagedBy = (i: number) => {
+      const p = this.players[i];
+      return !!inputs[i]?.clamp && p.lungeTimer <= 0 && p.recoverTimer <= 0 &&
+        dist(p.pos, this.ball.pos) <= CLAMP.engage + (this.clamp?.idx === i ? 0.4 : 0);
+    };
+    if (!this.clamp) {
+      if (!eligible) return;
+      let best = -1;
+      let bestD = Infinity;
+      this.players.forEach((p, i) => {
+        if (p.id.team === cb!.id.team || !engagedBy(i)) return;
+        const d = dist(p.pos, this.ball.pos);
+        if (d < bestD) { bestD = d; best = i; }
+      });
+      if (best < 0) return;
+      this.clamp = { idx: best, close: 0, graceT: CLAMP.grace, feintRolled: false };
+    }
+    const cl = this.clamp;
+    const def = this.players[cl.idx];
+    const holding = eligible && def.id.team !== cb!.id.team && engagedBy(cl.idx);
+    if (!holding) {
+      cl.graceT -= dt;
+      if (cl.graceT <= 0) {
+        cl.close -= CLAMP.decay * dt;
+        if (cl.close <= 0) this.clamp = null;
+      }
+      return;
+    }
+    cl.graceT = CLAMP.grace;
+    const shielded = (this.ball.pos.x - cb!.pos.x) * (cb!.pos.x - def.pos.x) +
+      (this.ball.pos.y - cb!.pos.y) * (cb!.pos.y - def.pos.y) > 0;
+    cl.close += clampCloseRate(def.stats, cb!.stats, shielded) * dt;
+    if (cl.close >= CLAMP.feintAt && !cl.feintRolled && cb!.feintCooldown <= 0) {
+      cl.feintRolled = true;
+      if (this.rng.next() < cb!.stats.control * 0.78) {
+        // The escape: a subtle cut AWAY from the jaws — momentum kept, ball along
+        cl.close = 0.22;
+        cb!.feintCooldown = 1.6;
+        const lane = cb!.speed() > 0.6 ? norm(cb!.vel) : cb!.facing;
+        const away = sub(cb!.pos, def.pos);
+        let cut = perpRight(lane);
+        if (cut.x * away.x + cut.y * away.y < 0) cut = scale(cut, -1);
+        cb!.vel = add(cb!.vel, scale(cut, 3.4));
+        // the ball RIDES the cut with him — an escape, never a giveaway
+        this.ball.vel = add(scale(cb!.vel, 1.02), scale(cut, 0.8));
+        this.events.push({ kind: 'feint', x: cb!.pos.x, y: cb!.pos.y, dx: cut.x, dy: cut.y });
+      }
+    }
+    if (cl.close < CLAMP.feintReset) cl.feintRolled = false;
+    if (cl.close >= 1) {
+      // The jaws meet: a clean, earned take — the ball pops to the winner's feet
+      const front = add(def.pos, scale(def.facing, 0.55));
+      this.ball.pos = vec(front.x, front.y);
+      this.ball.vel = scale(def.vel, 0.6);
+      this.ball.z = 0;
+      this.ball.vz = 0;
+      this.ball.spin = 0;
+      def.touchCooldown = 0.12;
+      cb!.touchCooldown = Math.max(cb!.touchCooldown, 0.6);
+      cb!.playLock = Math.max(cb!.playLock, 0.6);
+      this.carrier = { idx: cl.idx, t: 0.8 };
+      this.lastTouch = { team: def.id.team, idx: cl.idx };
+      this.events.push({ kind: 'steal', x: this.ball.pos.x, y: this.ball.pos.y });
+      this.clamp = null;
+    }
+  }
+
+  // Loose or heavy: true when nobody's latch protects the ball — the moment
+  // an honest lunge or arrival is allowed to just take it
+  ballExposed(): boolean {
+    if (!this.carrier) return true;
+    return dist(this.ball.pos, this.players[this.carrier.idx].pos) > CLAMP.protect;
   }
 
   // A lunge that misses the ball but arrives through the carrier is a foul —
@@ -464,7 +640,8 @@ export class World {
     if (p.kickCooldown > 0) return;
     if (dist(p.pos, this.ball.pos) > KICK_RANGE || this.ball.z > 1.2) return;
 
-    const power = clamp(p.pendingKick.power, 0.1, 1) * (0.75 + 0.25 * p.stats.power);
+    const inputPower = clamp(p.pendingKick.power, 0.1, 1);
+    const power = inputPower * (0.75 + 0.25 * p.stats.power);
     const bend = clamp(p.pendingKick.bend, -AIM_BEND_MAX, AIM_BEND_MAX);
     const at = p.pendingKick.aimAt;
     p.pendingKick = null;
@@ -476,12 +653,19 @@ export class World {
     const aim = toAt && len(toAt) > 0.5
       ? norm(toAt)
       : rotate(len(input.move) > 0.25 ? norm(input.move) : p.facing, bend);
-    // The honesty mechanic: harder shots wobble more — no guaranteed lasers
-    const error = this.rng.gauss() * (0.015 + 0.05 * power);
-    const dir = rotate(aim, error);
+    // The cone made law: the ball samples inside the same wedge the sight
+    // chalks — finishing governs balls driven at the mouth, passing governs
+    // deliveries and decays toward the long-ball stat with intended distance,
+    // and the pull blooms it all. Weak feet also misweight the pass.
+    const isShot = aimsAtGoal(this.ball.pos, aim, this.goalXOf(p.id.team), this.attackSign(p.id.team));
+    const acc = kickAccuracy(p.stats, isShot, 8 + inputPower * 34);
+    const theta = coneHalfAngle(acc, inputPower);
+    // COMPLETELY random inside the wedge — any angle on the arc, equally
+    // likely. No center bias: the cone you see is exactly the lottery you play.
+    const dir = rotate(aim, (this.rng.next() * 2 - 1) * theta);
 
     // Driven, not ballooned: capped pace and a low arc that stays playable
-    const speed = 10 + 14 * power;
+    const speed = (10 + 14 * power) * (1 + this.rng.gauss() * 0.02 * (1 - acc));
     this.ball.deadenOnLand = false; // a fresh strike overrides any punt drop
     this.ball.vel = scale(dir, speed);
     this.ball.spin = bend * (0.5 + 0.5 * power) * 0.62;
@@ -492,6 +676,7 @@ export class World {
     // the knock-past-and-go is a play, not a coin flip
     p.touchCooldown = 0.32;
     p.playLock = 0.45;
+    this.carrier = null; // the ball is PLAYED — nobody owns a flying pass
     this.lastTouch = { team: p.id.team, idx };
     this.events.push({ kind: 'kick', x: this.ball.pos.x, y: this.ball.pos.y, power, idx });
   }
@@ -505,10 +690,18 @@ export class World {
     p.justCut = false;
     if (this.ball.z > 0.6) return;
     const d = dist(p.pos, this.ball.pos);
+    // The possession war's ground rules: a latched opponent's ball inside his
+    // protect ring is NOT yours to osmose — win a clamp or a lunge. A heavy
+    // touch is honest prey, and a loose ball belongs to whoever is truly first.
+    const held = this.carrier ? this.players[this.carrier.idx] : null;
+    if (held && this.carrier!.idx !== idx && held.id.team !== p.id.team &&
+        dist(this.ball.pos, held.pos) <= CLAMP.protect) return;
+    if (!held && this.looseClaimIdx !== null && this.looseClaimIdx !== idx) return;
     const touch = (cooldown: number, sprint = false) => {
       p.touchCooldown = cooldown;
       this.ball.spin = 0; // any touch kills the curl
       this.lastTouch = { team: p.id.team, idx };
+      this.carrier = { idx, t: 0.8 }; // a controlled touch is the latch
       this.events.push({ kind: 'touch', x: this.ball.pos.x, y: this.ball.pos.y, sprint });
     };
 
@@ -525,7 +718,7 @@ export class World {
     // A fast body earns a longer engage window — at full tilt you cover the
     // ball's neighborhood in a couple of frames, and the boot must still get
     // there. Walking and sprinting collect with the SAME ease.
-    const engage = CUSHION_RANGE + Math.max(0, p.speed() - 4) * 0.1;
+    const engage = CUSHION_RANGE + Math.max(0, p.speed() - 4) * 0.1 + (p.freshTouch > 0 ? 0.3 : 0);
     if (p.touchCooldown > 0 || d > engage) return;
 
     const rel = sub(this.ball.vel, p.vel);
@@ -541,6 +734,9 @@ export class World {
     // Steering AGAINST your own stride (the 180 receive) also kills the drift
     // the ball would inherit from your body: it plants at the turn, with you.
     if (closing > 5) {
+      // A ball from SOMEONE ELSE opens the fresh-touch beat: the next knocks
+      // obey the stick almost completely, so receive-and-turn actually turns
+      if (!this.lastTouch || this.lastTouch.idx !== idx) p.freshTouch = 0.28;
       const keep = 0.11 - 0.06 * p.stats.control;
       const pv = p.speed();
       const align = pv > 0.5 ? clamp((p.vel.x * steer.x + p.vel.y * steer.y) / pv, -1, 1) : 1;
@@ -581,8 +777,10 @@ export class World {
       // new direction mid-dribble and the next touch plays it that way, with a
       // stretched toe-poke reach while the ball is drifting off your new line.
       const veering = this.ball.speed() > 0.6 && angleBetween(this.ball.vel, steer) > 0.3;
-      // A sprinting boot stretches for the ball — full pace never means losing reach
-      if (d > (veering ? STEER_RANGE : p.isSprinting ? SPRINT_REACH : CONTACT_RANGE)) return;
+      // A sprinting boot stretches for the ball — full pace never means losing
+      // reach — and the fresh-touch beat stretches it further so the redirect
+      // touch actually lands before the reception drifts away
+      if (d > (veering ? STEER_RANGE : p.isSprinting ? SPRINT_REACH : CONTACT_RANGE) + (p.freshTouch > 0 ? 0.35 : 0)) return;
       const soft = p.isCharging || p.pendingKick;
       // Touches stay close: the ball works ahead of the boot, never away from it.
       // Sprint knocks ride barely past stride pace — glued, not booted ahead.
@@ -595,13 +793,17 @@ export class World {
       // The cone cap keeps it a touch, not a tether: turn too hard, still lose it.
       const lane = add(add(p.pos, scale(steer, soft ? 0.8 : p.isSprinting ? 1.15 : 1.1)), scale(perpRight(steer), FOOT_LANE));
       const toLane = sub(lane, this.ball.pos);
+      // Inside the fresh-touch beat the knock forgets the arrival: wider cone,
+      // barely any inherited momentum — the ball goes where you're pressing
+      const knockCone = p.freshTouch > 0 ? 1.35 : KNOCK_CONE;
+      const kept = p.freshTouch > 0 ? 0.06 : MOMENTUM_KEPT;
       const knock = len(toLane) > 0.05
-        ? rotate(steer, clamp(signedAngle(steer, toLane), -KNOCK_CONE, KNOCK_CONE))
+        ? rotate(steer, clamp(signedAngle(steer, toLane), -knockCone, knockCone))
         : steer;
       const wobble = this.rng.gauss() * (0.09 - 0.05 * p.stats.control);
       this.ball.vel = add(
-        scale(this.ball.vel, MOMENTUM_KEPT),
-        scale(rotate(knock, wobble), target * (1 - MOMENTUM_KEPT)),
+        scale(this.ball.vel, kept),
+        scale(rotate(knock, wobble), target * (1 - kept)),
       );
       touch(0.1, p.isSprinting);
     } else if (d < CONTACT_RANGE && this.ball.speed() > 1.0) {
@@ -617,6 +819,17 @@ export class World {
     const away = sub(this.ball.pos, p.pos);
     const d = len(away);
     if (d > BALL_KEEPOUT || this.ball.z > 1.5) return;
+    // Brushing a latched opponent's ball claims nothing: no ownership flip,
+    // no steering, no bulldozing it off his boot with your body ring. The
+    // BALL owns its ground — the intruding BODY gives way instead.
+    const held = this.carrier ? this.players[this.carrier.idx] : null;
+    const protectedBall = !!held && this.carrier!.idx !== idx && held.id.team !== p.id.team &&
+      dist(this.ball.pos, held.pos) <= CLAMP.protect;
+    if (protectedBall) {
+      const back = d < 1e-6 ? (p.speed() > 0.1 ? scale(norm(p.vel), -1) : vec(-1, 0)) : scale(norm(away), -1);
+      p.pos = add(this.ball.pos, scale(back, BALL_KEEPOUT));
+      return;
+    }
     this.lastTouch = { team: p.id.team, idx };
     // Dead-centered overlap still resolves — shove it out along the run
     let push = d < 1e-6 ? (p.speed() > 0.1 ? norm(p.vel) : vec(1, 0)) : norm(away);

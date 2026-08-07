@@ -79,12 +79,16 @@ describe('the possession-first cursor', () => {
     let manualDefendSwitches = 0;
     let last = manualCursor.idx;
     let sinceKick = Infinity;
+    let sinceRestart = Infinity; // restart/kickoff takers are a DESIGNED cause, not a hunter yank
     for (let t = 0; t < 30 * 60; t++) {
       const before = manualCursor.idx;
       tick(manual, manualCursor);
       sinceKick = manual.world.events.some((e) => e.kind === 'kick' && e.idx === before) ? 0 : sinceKick + DT;
+      sinceRestart = manual.world.events.some((e) => (e.kind === 'restart' || e.kind === 'kickoff') && e.team === 0)
+        ? 0 : sinceRestart + DT;
       if (manual.teamBrains[0].phase === 'defend' && manualCursor.idx !== last &&
-          manual.teamBrains[0].possessorIdx !== manualCursor.idx && sinceKick > 1.9) {
+          manual.teamBrains[0].possessorIdx !== manualCursor.idx && sinceKick > 1.9 && sinceRestart > 1.9 &&
+          manual.world.lastTouch?.idx !== manualCursor.idx) { // possession-first carrier-take is designed
         manualDefendSwitches++;
       }
       last = manualCursor.idx;

@@ -150,7 +150,7 @@ export function generateMicroFontSheet() {
 // The title wordmark: GOLAZO cut from the game font at pixel level, wearing
 // a gold gradient with a white shine row, a chunky outline and a hard
 // south-east drop shadow — a logo, not a line of text.
-const TITLE_WORD = 'GOLAZO';
+const TITLE_WORD = 'TOTAL22';
 const TITLE_SPACING = 2; // the logo breathes wider than body text
 export const TITLE_W = textWidth(TITLE_WORD, 1, TITLE_SPACING) + 8;
 export const TITLE_H = 7 + 8;

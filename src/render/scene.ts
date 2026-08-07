@@ -1,6 +1,6 @@
 import { Application, Container, Graphics, Sprite } from 'pixi.js';
 import { GameLoop } from '../core/loop';
-import { Vec2, vec, clamp } from '../core/math';
+import { Vec2, vec, clamp, rotate } from '../core/math';
 import { PITCH } from '../sim/constants';
 import { World } from '../sim/world';
 import { SimEvent } from '../sim/events';
@@ -36,8 +36,10 @@ export class Scene {
   private keeperAimState: KeeperAimState | null = null;
   private lawRing = new Graphics(); // the restart exclusion, painted on the turf
   private dragG = new Graphics();   // the slingshot pass sight (chalk dots)
+  private wedgeG = new Graphics();  // the honesty wedge, painted INTO the turf under the bodies
+  private clampG = new Graphics();  // the clamp's jaws closing around a contested ball
   private dragHead: Sprite;         // baked chalk arrowhead, tinted by power
-  private kickDrag: { from: Vec2; dir: Vec2; power: number } | null = null;
+  private kickDrag: { from: Vec2; dir: Vec2; power: number; theta?: number } | null = null;
   // "The ball is YOURS": a gold pixel frame breathing at the screen edge
   private possessionGlow = new Graphics();
   private glowOn = false;
@@ -56,7 +58,7 @@ export class Scene {
     this.dragHead = new Sprite(assets.aimFrames[0]);
     this.dragHead.anchor.set(0.5, 0.5);
     this.dragHead.visible = false;
-    this.viewport.addChild(this.pitchLayer.ground, this.lawRing, this.keeperAim.rings, this.worldSorted, this.keeperAim.top, this.dragG, this.dragHead);
+    this.viewport.addChild(this.pitchLayer.ground, this.lawRing, this.wedgeG, this.clampG, this.keeperAim.rings, this.worldSorted, this.keeperAim.top, this.dragG, this.dragHead);
 
     this.ballView = new BallView(assets, this.worldSorted);
     this.worldSorted.addChild(this.ballView.root);
@@ -117,8 +119,9 @@ export class Scene {
     }
   }
 
-  // The slingshot sight — non-null while a drag-back is charging a strike
-  setKickDrag(d: { from: Vec2; dir: Vec2; power: number } | null) {
+  // The slingshot sight — non-null while a drag-back is charging a strike.
+  // theta is the cone's half-angle: the honest wedge this ball may leave through.
+  setKickDrag(d: { from: Vec2; dir: Vec2; power: number; theta?: number } | null) {
     this.kickDrag = d;
   }
 
@@ -247,6 +250,7 @@ export class Scene {
     // that grows longer AND chunkier with the pull, capped by the baked
     // chalk arrowhead. Small pull, small arrow — the arrow IS the meter.
     this.dragG.clear();
+    this.wedgeG.clear();
     this.dragHead.visible = !!this.kickDrag;
     if (this.kickDrag) {
       const kd = this.kickDrag;
@@ -258,6 +262,39 @@ export class Scene {
         this.dragG.rect(Math.round(p.sx - q / 2), Math.round(p.sy - q / 2), q, q)
           .fill({ color, alpha: 0.85 });
       }
+      // The wedge: the whole lottery, painted INTO the field like an offside
+      // line — a filled sector lying on the grass, bodies walking OVER it.
+      // Great feet barely open it; a defender's max-pull rake is a barn door.
+      const th = kd.theta ?? 0;
+      if (th > 0.012) {
+        const wedgeLen = 4 + kd.power * 10;
+        const wq = Math.max(2, q - 1);
+        const pts: number[] = [];
+        const o = project(kd.from.x, kd.from.y, 0);
+        pts.push(o.sx, o.sy);
+        const steps = Math.max(6, Math.ceil((th * 2) / 0.06));
+        for (let i = 0; i <= steps; i++) {
+          const edge = rotate(kd.dir, -th + (2 * th * i) / steps);
+          const p = project(kd.from.x + edge.x * wedgeLen, kd.from.y + edge.y * wedgeLen, 0);
+          pts.push(p.sx, p.sy);
+        }
+        this.wedgeG.poly(pts).fill({ color, alpha: 0.14 });
+        for (const side of [-1, 1]) {
+          const edge = rotate(kd.dir, side * th);
+          for (let t = 1.4; t < wedgeLen; t += 0.62) {
+            const p = project(kd.from.x + edge.x * t, kd.from.y + edge.y * t, 0);
+            this.wedgeG.rect(Math.round(p.sx - wq / 2), Math.round(p.sy - wq / 2), wq, wq)
+              .fill({ color, alpha: 0.5 });
+          }
+        }
+        for (let a = -th; a <= th + 0.001; a += Math.max(th / 3, 0.02)) {
+          const edge = rotate(kd.dir, a);
+          const p = project(kd.from.x + edge.x * wedgeLen, kd.from.y + edge.y * wedgeLen, 0);
+          this.wedgeG.rect(Math.round(p.sx - wq / 2), Math.round(p.sy - wq / 2), wq, wq)
+            .fill({ color, alpha: 0.5 });
+        }
+      }
+
       const dirs = this.assets.manifest.fx.aim.frames;
       const bin = Math.round(Math.atan2(kd.dir.y, kd.dir.x) / ((Math.PI * 2) / dirs));
       this.dragHead.texture = this.assets.aimFrames[((bin % dirs) + dirs) % dirs];
@@ -265,6 +302,27 @@ export class Scene {
       this.dragHead.scale.set(0.75 + kd.power * 0.65);
       const tip = project(kd.from.x + kd.dir.x * reach, kd.from.y + kd.dir.y * reach, 0);
       this.dragHead.position.set(Math.round(tip.sx), Math.round(tip.sy));
+    }
+
+    // The clamp, visible: jaws of chalk dots biting around a contested ball
+    // from the defender's side — mint to gold to red as they close. Painted
+    // into the turf like every other law of this game.
+    this.clampG.clear();
+    const cl = this.world.clamp;
+    if (cl && cl.close > 0.03 && this.world.players[cl.idx]) {
+      const defP = this.world.players[cl.idx].pos;
+      const b = this.world.ball.pos;
+      const jawColor = cl.close > 0.8 ? 0xff5340 : cl.close > 0.45 ? 0xffd95e : 0x9ff0b8;
+      const start = Math.atan2(b.y - defP.y, b.x - defP.x) + Math.PI;
+      const sweep = Math.min(1, cl.close) * Math.PI;
+      for (const side of [1, -1]) {
+        for (let a = 0.1; a < sweep; a += 0.24) {
+          const pp = project(b.x + Math.cos(start + side * a) * 0.95, b.y + Math.sin(start + side * a) * 0.95, 0);
+          const dq = a > sweep - 0.3 ? 4 : 3;
+          this.clampG.rect(Math.round(pp.sx - dq / 2), Math.round(pp.sy - dq / 2), dq, dq)
+            .fill({ color: jawColor, alpha: 0.9 });
+        }
+      }
     }
 
     // The law, visible: a restart's mandated space is chalked around the ball

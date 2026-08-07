@@ -27,6 +27,7 @@ export function takeSnap(match: Match, tick: number, cursors: Record<number, num
     half: match.half,
     restartLock: q(w.restartLock),
     celebration: !!w.celebration,
+    clamp: w.clamp ? [w.clamp.idx, q(w.clamp.close)] : null,
     cursors,
     suggest,
     events,
@@ -128,6 +129,12 @@ export class SnapPlayer {
     world.score.right = newest.score[1];
     world.restartLock = newest.restartLock;
     world.sidesSwapped = newest.sidesSwapped;
+    // the jaws a guest sees are the host's truth, closure lerped for smoothness
+    world.clamp = a.clamp && b.clamp && a.clamp[0] === b.clamp[0]
+      ? { idx: b.clamp[0], close: lerp(a.clamp[1], b.clamp[1]), graceT: 0, feintRolled: false }
+      : newest.clamp
+        ? { idx: newest.clamp[0], close: newest.clamp[1], graceT: 0, feintRolled: false }
+        : null;
   }
 
   // Events surface exactly once, in order — each held until the buffered

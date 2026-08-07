@@ -9,7 +9,8 @@ import { passMargin, leadTarget } from '../src/ai/brain';
 
 const DT = 1 / 60;
 const idle: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
-const stats = { topSpeed: 6, sprintSpeed: 8.4, accel: 10, agility: 0.8, control: 0.75, power: 0.7 };
+const stats = { topSpeed: 6, sprintSpeed: 8.4, accel: 10, agility: 0.8, control: 0.75, power: 0.7,
+ shoot: 0.72, pass: 0.8, longBall: 0.72, defend: 0.55, phys: 0.55, reflex: 0.55, dive: 0.55, handling: 0.55 };
 
 describe('the 22-brain match', () => {
   it('plays real football on its own: passes, possession swings, sane positions', () => {
@@ -194,10 +195,12 @@ describe('restarts', () => {
 });
 
 describe('tackling', () => {
-  it('a lunge in range wins the ball clean', () => {
+  it("a real defender's lunge dispossesses the carrier", () => {
     const world = new World();
+    // The duel is stats now: an even matchup pokes it loose, a DEFENDER strips it
+    const defStats = { ...stats, defend: 0.85, phys: 0.8 };
     const carrier = new PlayerBody(vec(50, 34), stats, { team: 0, role: 'MF', anchor: vec(0.5, 0.5), number: 10 });
-    const defender = new PlayerBody(vec(54.5, 34), stats, { team: 1, role: 'DF', anchor: vec(0.3, 0.5), number: 5 });
+    const defender = new PlayerBody(vec(54.5, 34), defStats, { team: 1, role: 'DF', anchor: vec(0.3, 0.5), number: 5 });
     world.players.push(carrier, defender);
     world.ball.pos = vec(50.6, 34);
     let stole = false;

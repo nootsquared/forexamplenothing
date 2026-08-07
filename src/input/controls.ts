@@ -22,6 +22,8 @@ const flickPower = (peak: number) => 0.45 + clamp((peak - FLICK_ARM) / (1 - FLIC
 export class LocalControls {
   private chargeT = 0;
   private wasHeld = false;
+  private tackleHeldT = 0;
+  private wasTackle = false;
   private aimWorld: number | null = null; // the locked field angle
   private flickPeak = 0;
   private flickScreenDir: Vec2 | null = null;
@@ -108,12 +110,25 @@ export class LocalControls {
     this.charge = held ? this.chargeT / CHARGE_TIME : 0;
     this.aimDir = held ? this.resolve(move, facing).dir : null;
 
+    // One button, two verbs: a TAP (quick release) fires the lunge-poke, a
+    // HOLD is the clamp — jaws squeezing a carrier's ball for the clean take
+    const tackleHeld = kb.has('KeyK') || pad?.tackle || false;
+    let tacklePulse = false;
+    if (tackleHeld) {
+      this.tackleHeldT += dt;
+    } else {
+      if (this.wasTackle && this.tackleHeldT < 0.18) tacklePulse = true;
+      this.tackleHeldT = 0;
+    }
+    this.wasTackle = tackleHeld;
+
     return {
       move,
       sprint: kb.has('ShiftLeft') || kb.has('ShiftRight') || pad?.sprint || false,
       kickCharging: held,
       kickReleased,
-      tackle: kb.has('KeyK') || pad?.tackle || false,
+      tackle: tacklePulse,
+      clamp: tackleHeld,
     };
   }
 

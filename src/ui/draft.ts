@@ -70,26 +70,27 @@ class CardView extends Container {
     price.centerAt(29 * s, 69 * s);
     this.addChild(price);
     if (detail) {
-      const rows: [string, number][] = [
-        ['PAC', (p.stats.sprintSpeed - 6.3) / 1.6],
-        ['SHO', p.stats.power],
-        ['DRI', p.stats.control],
-        ['AGI', p.stats.agility],
-      ];
+      // The six felt stats — the card tells you what this man is FOR.
+      // Keepers read in their own trade: hands and springs, not finishing.
+      const st = p.stats;
+      const pac = (st.sprintSpeed - 5.9) / 2.3;
+      const rows: [string, number][] = p.role === 'GK'
+        ? [['REF', st.reflex], ['DIV', st.dive], ['HAN', st.handling], ['PAC', pac], ['KIC', st.power], ['PAS', st.pass]]
+        : [['PAC', pac], ['SHO', st.shoot], ['PAS', st.pass], ['DRI', st.control], ['DEF', st.defend], ['PHY', st.phys]];
       rows.forEach(([label, v], i) => {
         const col = i % 2;
         const row = Math.floor(i / 2);
         const l = new PixelText(assets, s, 0x8f97a8, 'micro');
         l.text = label;
-        l.position.set((8 + col * 26) * s, (43 + row * 9) * s);
+        l.position.set((8 + col * 26) * s, (42 + row * 8) * s);
         const val = new PixelText(assets, s, 0xdfe4ee, 'micro');
         val.text = stat99(v);
-        val.position.set((21 + col * 26) * s, (43 + row * 9) * s);
+        val.position.set((21 + col * 26) * s, (42 + row * 8) * s);
         this.addChild(l, val);
       });
       const nation = new PixelText(assets, s, 0x8f97a8, 'micro');
       nation.text = p.nation;
-      nation.centerAt(29 * s, 61 * s);
+      nation.position.set(6 * s, 26 * s);
       this.addChild(nation);
     }
   }

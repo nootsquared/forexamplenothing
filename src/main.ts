@@ -3,6 +3,7 @@ import { GameLoop } from './core/loop';
 import { Vec2, vec, dist, clamp, norm, scale, expDecayVec } from './core/math';
 import { PlayerInput } from './sim/player';
 import { World } from './sim/world';
+import { kickSight } from './sim/tuning';
 import { Match, createMatch, advanceMatch, pickDistribution } from './match';
 import { leadTarget, passMargin } from './ai/brain';
 import { AI_PROFILES } from './ai/blackboard';
@@ -172,17 +173,20 @@ async function boot() {
   // shift only slightly so nobody ever looks drunk
   const DIFF_SCALE = [0.92, 1, 1.06];
   const scaleSquad = (squad: SquadPlayer[], f: number): SquadPlayer[] =>
-    f === 1 ? squad : squad.map((p) => ({
-      ...p,
-      stats: {
-        topSpeed: p.stats.topSpeed * f,
-        sprintSpeed: p.stats.sprintSpeed * f,
-        accel: p.stats.accel * f,
-        agility: Math.min(1, p.stats.agility * f),
-        control: Math.min(1, p.stats.control * f),
-        power: Math.min(1, p.stats.power * f),
-      },
-    }));
+    f === 1 ? squad : squad.map((p) => {
+      const s = p.stats;
+      const c = (v: number) => Math.min(1, v * f);
+      return {
+        ...p,
+        stats: {
+          topSpeed: s.topSpeed * f, sprintSpeed: s.sprintSpeed * f, accel: s.accel * f,
+          agility: c(s.agility), control: c(s.control), power: c(s.power),
+          shoot: c(s.shoot), pass: c(s.pass), longBall: c(s.longBall),
+          defend: c(s.defend), phys: c(s.phys),
+          reflex: c(s.reflex), dive: c(s.dive), handling: c(s.handling),
+        },
+      };
+    });
 
   // The soundtrack follows the room: anthem over the menus, the war-room
   // groove over squad building, and only the stadium during play
@@ -852,9 +856,9 @@ async function boot() {
     if (drag.active && !ballIsMine()) drag.active = false;
     if (drag.active) {
       const pull = resolveDrag();
-      scene.setKickDrag(pull && myIdx >= 0 ? { from: match.world.players[myIdx].pos, dir: pull.dir, power: pull.power } : null);
+      scene.setKickDrag(pull && myIdx >= 0 ? { from: match.world.players[myIdx].pos, dir: pull.dir, power: pull.power, theta: wedgeFor(match.world, myIdx, pull.dir, pull.power) } : null);
     } else if (controls.flickAim && myIdx >= 0 && ballIsMine()) {
-      scene.setKickDrag({ from: match.world.players[myIdx].pos, dir: controls.flickAim.dir, power: controls.flickAim.power });
+      scene.setKickDrag({ from: match.world.players[myIdx].pos, dir: controls.flickAim.dir, power: controls.flickAim.power, theta: wedgeFor(match.world, myIdx, controls.flickAim.dir, controls.flickAim.power) });
     } else scene.setKickDrag(null);
     mouse.clicked = false;
   }
@@ -1042,6 +1046,13 @@ async function boot() {
     };
   };
 
+  // The sight's honesty: the same cone the sim will roll, chalked before you
+  // let go — narrow for a finisher's shot, a barn door for a defender's rake
+  const wedgeFor = (w: World, idx: number, dir: Vec2, power: number) => {
+    const b = w.players[idx];
+    return kickSight(b.stats, w.ball.pos, dir, power, w.goalXOf(b.id.team), w.attackSign(b.id.team)).theta;
+  };
+
   app.canvas.addEventListener('mousemove', (e) => { mouse.x = e.clientX; mouse.y = e.clientY; mouse.moved = true; });
   app.canvas.addEventListener('mousedown', (e) => {
     mouse.clicked = true;
@@ -1078,8 +1089,8 @@ async function boot() {
       : vec(origin.x + 10, origin.y);
     const kind: 'throw' | 'punt' = d <= throwR ? 'throw' : 'punt';
     const scatter = kind === 'throw'
-      ? (0.8 + d * 0.045) * (1.35 - stats.control * 0.7)
-      : (2.2 + d * 0.075) * (1.45 - stats.control * 0.7);
+      ? (0.15 + d * 0.012) * (1.2 - stats.control * 0.55)
+      : (0.7 + d * 0.028) * (1.3 - stats.control * 0.55);
     const pCenter = Math.pow(0.5, 1 / (0.5 + 0.6 * stats.control));
     return { gk: origin, target, throwR, puntR, scatter, kind, pCenter };
   };
@@ -1117,11 +1128,11 @@ async function boot() {
     mouse.moved = false;
     humanIdle = active ? 0 : humanIdle + dt;
 
-    // Auto-tackle: with hands on and THEIR carrier's ball in winning range,
-    // the lunge throws itself — you defend by arriving, not by hotkey
+    // Auto-tackle only bites honest prey now — a heavy touch or a loose ball.
+    // A latched carrier is taken ON PURPOSE: hold K and clamp him.
     const poss = match.teamBrains[0].possessorIdx;
     if (humanIdle < 2.5 && poss !== null && world.players[poss].id.team === 1 &&
-        world.players[cursor.idx].tackleCooldown <= 0 &&
+        world.ballExposed() && world.players[cursor.idx].tackleCooldown <= 0 &&
         dist(world.players[cursor.idx].pos, world.ball.pos) < 1.3) {
       input.tackle = true;
     }
@@ -1157,12 +1168,12 @@ async function boot() {
         } else if (seatIn.kickReleased) {
           seatIn.kickReleased = null; // stale kp in a repeated packet never double-fires
         }
-        // the same auto-tackle the host enjoys: a hands-on guest near an
-        // opponent's carried ball lunges without the button
+        // the same auto-tackle the host enjoys — and the same law: only
+        // exposed balls; a latched carrier needs the guest's own held clamp
         const seatBody = world.players[sc.cursor.idx];
         const seatPoss = match.teamBrains[sc.team].possessorIdx;
         if (!seatIn.tackle && seatPoss !== null && world.players[seatPoss].id.team !== sc.team &&
-            performance.now() - s.activeAt < 2500 && seatBody.tackleCooldown <= 0 &&
+            world.ballExposed() && performance.now() - s.activeAt < 2500 && seatBody.tackleCooldown <= 0 &&
             dist(seatBody.pos, world.ball.pos) < 1.3) {
           seatIn.tackle = true;
         }
@@ -1379,7 +1390,7 @@ async function boot() {
           const target = dRaw > 1e-4
             ? vec(origin.x + (toM.x / dRaw) * d, origin.y + (toM.y / dRaw) * d)
             : vec(origin.x + world.attackSign(0) * 6, origin.y);
-          const scatter = (0.8 + d * 0.05) * (1.35 - taker.stats.control * 0.7);
+          const scatter = (0.2 + d * 0.015) * (1.2 - taker.stats.control * 0.55);
           const pCenter = Math.pow(0.5, 1 / (0.5 + 0.6 * taker.stats.control));
           scene.setKeeperAim({ gk: origin, target, throwR, puntR: throwR, scatter, kind: 'throw', pCenter });
           if (mouse.clicked) {
@@ -1416,10 +1427,10 @@ async function boot() {
     if (drag.active && !ballIsMine()) drag.active = false;
     if (drag.active) {
       const pull = resolveDrag();
-      scene.setKickDrag(pull ? { from: world.players[cursor.idx].pos, dir: pull.dir, power: pull.power } : null);
+      scene.setKickDrag(pull ? { from: world.players[cursor.idx].pos, dir: pull.dir, power: pull.power, theta: wedgeFor(world, cursor.idx, pull.dir, pull.power) } : null);
     } else if (controls.flickAim && ballIsMine()) {
       // the pad's wind-up wears the same arrow the mouse sling does
-      scene.setKickDrag({ from: world.players[cursor.idx].pos, dir: controls.flickAim.dir, power: controls.flickAim.power });
+      scene.setKickDrag({ from: world.players[cursor.idx].pos, dir: controls.flickAim.dir, power: controls.flickAim.power, theta: wedgeFor(world, cursor.idx, controls.flickAim.dir, controls.flickAim.power) });
     } else {
       scene.setKickDrag(null);
     }

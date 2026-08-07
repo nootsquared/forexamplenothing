@@ -53,7 +53,7 @@ describe('the world cup class', () => {
   });
 
   it('keeps the balance caps: nobody but the chosen few touches the ceiling', () => {
-    const pace1 = PLAYER_POOL.filter((p) => p.stats.sprintSpeed >= 6.3 + 0.999 * 1.6);
+    const pace1 = PLAYER_POOL.filter((p) => p.stats.sprintSpeed >= 5.9 + 0.999 * 2.3);
     expect(pace1.map((p) => p.name)).toEqual(['MBAPPE']);
     const power1 = PLAYER_POOL.filter((p) => p.stats.power >= 0.999);
     expect(power1.map((p) => p.name)).toEqual(['HAALAND']);

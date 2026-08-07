@@ -12,7 +12,8 @@ import { PlayerBody } from '../src/sim/player';
 import { Brain } from '../src/ai/brain';
 
 const DT = 1 / 60;
-const archStats = { topSpeed: 6, sprintSpeed: 8.4, accel: 10, agility: 0.8, control: 0.75, power: 0.7 };
+const archStats = { topSpeed: 6, sprintSpeed: 8.4, accel: 10, agility: 0.8, control: 0.75, power: 0.7,
+ shoot: 0.72, pass: 0.8, longBall: 0.72, defend: 0.55, phys: 0.55, reflex: 0.55, dive: 0.55, handling: 0.55 };
 
 describe('the match clock', () => {
   it('runs two halves with a kickoff at the break and a whistle at the end', () => {

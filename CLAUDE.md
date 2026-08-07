@@ -1,4 +1,4 @@
-# Golazo Arcade — project facts
+# Total22 (formerly Golazo Arcade) — project facts
 
 Arcade 11v11 couch-multiplayer soccer game. Premium pixel art that reads as 3D:
 high-angle iso camera (~52°), sprites raytraced offline from real 3D rigs.
