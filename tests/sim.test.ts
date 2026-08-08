@@ -215,7 +215,7 @@ describe('goals', () => {
     p.pos = vec(80, 50); // wandered far from the kickoff spot
     world.ball.pos = vec(2, PITCH.width / 2);
     world.ball.vel = vec(-14, 0);
-    runSteps(world, [idle, idle], 60 * 5);
+    runSteps(world, [idle, idle], 60 * 15); // the party, then the walk home
     expect(world.score.right).toBe(1);
     expect(world.ball.pos.x).toBeCloseTo(PITCH.length / 2, 1);
     expect(p.pos.x).toBeCloseTo(30, 1); // back home for the restart

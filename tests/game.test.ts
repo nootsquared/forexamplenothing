@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { vec, dist } from '../src/core/math';
 import { createMatch, advanceMatch } from '../src/match';
-import { createDraft, aiPickIndex, pick, pickAcademy, needsOf, canPick, QUOTA, SQUAD_SIZE, quickSplit, toSquad, quotaOfShape } from '../src/data/draft';
-import { priceOf, PLAYER_POOL } from '../src/data/players';
+import { createDraft, aiPickIndex, pick, pickAcademy, needsOf, canPick, budgetFor, tierBudget, setTableBudget, QUOTA, SQUAD_SIZE, quickSplit, toSquad, quotaOfShape } from '../src/data/draft';
+import { priceOf, rarityOf, PLAYER_POOL } from '../src/data/players';
+import { setQuickQuality } from '../src/data/quickmatch';
 import { FORMATIONS } from '../src/data/formations';
 import { Role } from '../src/data/formations';
 import { PITCH } from '../src/sim/constants';
@@ -12,6 +13,9 @@ import { PlayerBody } from '../src/sim/player';
 import { Brain } from '../src/ai/brain';
 
 const DT = 1 / 60;
+// Minutes of simulated football take real seconds; vitest's 5s default is a
+// stopwatch on the machine's mood, not on the code
+const LONG_SIM = 30_000;
 const archStats = { topSpeed: 6, sprintSpeed: 8.4, accel: 10, agility: 0.8, control: 0.75, power: 0.7,
  shoot: 0.72, pass: 0.8, longBall: 0.72, defend: 0.55, phys: 0.55, reflex: 0.55, dive: 0.55, handling: 0.55 };
 
@@ -20,7 +24,9 @@ describe('the match clock', () => {
     const match = createMatch({ halfLength: 4 });
     let sawHalf = false;
     let sawFulltime = false;
-    for (let t = 0; t < 60 * 9 && !match.finished; t++) {
+    // dead-ball seconds no longer burn the half, so two 4s halves plus their
+    // ceremonies need real room to run
+    for (let t = 0; t < 60 * 40 && !match.finished; t++) {
       advanceMatch(match, DT);
       for (const e of match.world.events) {
         if (e.kind === 'half') {
@@ -36,7 +42,24 @@ describe('the match clock', () => {
     expect(sawFulltime).toBe(true);
     expect(match.finished).toBe(true);
     expect(match.stats.possession[0] + match.stats.possession[1]).toBeGreaterThan(60);
-  });
+  }, LONG_SIM);
+
+  // The soft-lock that once ate a whole half: the kickoff is handed to a human
+  // body, the human never kicks it, and nothing on earth restarts the game.
+  it('never lets an untaken kickoff burn the clock, and plays it after a beat', () => {
+    const match = createMatch({ halfLength: 120, kickoffFirst: 0 });
+    const taker = match.world.lastTouch!.idx;
+    const idleSeat = { [taker]: { move: vec(), sprint: false, kickCharging: false, kickReleased: null } };
+    let playedAt = -1;
+    for (let t = 0; t < 60 * 12; t++) {
+      advanceMatch(match, DT, idleSeat);
+      if (playedAt < 0 && match.world.ball.speed() > 2) playedAt = t / 60;
+    }
+    expect(playedAt).toBeGreaterThan(0);
+    expect(playedAt).toBeLessThan(8);              // the referee's patience, not forever
+    expect(match.clock).toBeLessThan(12 - playedAt + 0.5); // the dead beat cost no time
+    expect(match.clock).toBeGreaterThan(12 - playedAt - 0.5);
+  }, LONG_SIM);
 
   it('a goal is credited to the last touch', () => {
     const match = createMatch();
@@ -125,7 +148,7 @@ describe('the draft', () => {
       (Object.keys(QUOTA) as Role[]).forEach((r) => expect(needs[r]).toBe(0));
     }
     // snake order means the two spends stay in the same league
-    const spend = draft.sides.map((s) => 200 - s.budget);
+    const spend = draft.sides.map((s) => budgetFor(11) - s.budget);
     expect(Math.abs(spend[0] - spend[1])).toBeLessThan(90);
   });
 
@@ -145,7 +168,7 @@ describe('the draft', () => {
     expect(quotaOfShape(FORMATIONS['3-4-3'])).toEqual({ GK: 1, DF: 3, MF: 4, FW: 3 });
   });
 
-  it('quick match deals the stars into two full XIs that field on any shape', () => {
+  it('quick match deals two full XIs that field on any shape', () => {
     const [a, b] = quickSplit();
     expect(a.length).toBe(SQUAD_SIZE);
     expect(b.length).toBe(SQUAD_SIZE);
@@ -154,13 +177,47 @@ describe('the draft', () => {
     expect(squad[0].role).toBe('GK');
     expect(new Set(squad.map((p) => p.name)).size).toBe(11);
   });
+
+  it('quick match is a fair fight: no names, no stars, one sheet for everyone', () => {
+    setQuickQuality(1, 1);
+    const [a, b] = quickSplit();
+    expect(a.map((p) => p.name)).toEqual(b.map((p) => p.name));       // same jobs, both benches
+    expect(a.some((p) => p.name === 'MBAPPE')).toBe(false);            // nobody famous took the field
+    expect(a.map((p) => p.name)).toContain('STRIKER ONE');
+    const outfield = a.filter((p) => p.role !== 'GK');
+    for (const p of outfield) expect(p.stats).toEqual(outfield[0].stats); // one sheet, every shirt
+    a.forEach((p, i) => expect(p.stats.sprintSpeed).toBe(b[i].stats.sprintSpeed));
+    // ...and the class dial moves the legs of the side it was set for
+    setQuickQuality(0, 2);
+    const [poor, rich] = quickSplit();
+    expect(rich[5].stats.sprintSpeed).toBeGreaterThan(poor[5].stats.sprintSpeed);
+    setQuickQuality(1, 1);
+  });
+
+  it('the budget is priced off the shelf, not invented', () => {
+    const priced = (band: 'rare' | 'epic') => {
+      const shelf = PLAYER_POOL.filter((p) => rarityOf(p.ovr) === band);
+      return shelf.reduce((s, p) => s + p.price, 0) / shelf.length;
+    };
+    // the average table buys five rares and six epics — a squad of halves
+    expect(tierBudget('average', 11)).toBe(Math.round((priced('rare') * 5 + priced('epic') * 6) / 10) * 10);
+    expect(tierBudget('underfunded', 11)).toBeLessThan(tierBudget('average', 11));
+    expect(tierBudget('wealthy', 11)).toBeGreaterThan(tierBudget('average', 11));
+    // three legendaries have to hurt: they eat an average table whole
+    const legends = PLAYER_POOL.filter((p) => rarityOf(p.ovr) === 'legend').slice(0, 3);
+    expect(legends.reduce((s, p) => s + p.price, 0)).toBeGreaterThan(tierBudget('average', 11) * 0.8);
+    setTableBudget(150);
+    expect(createDraft(0).sides[0].budget).toBe(150); // the setup screen's call is the law
+    setTableBudget(null);
+    expect(createDraft(0).sides[0].budget).toBe(tierBudget('average', 11));
+  });
 });
 
 describe('small-sided football', () => {
   it('a 5-a-side draft and quick split both field legal fives', () => {
     const draft = createDraft(0, 5);
     expect(draft.order.length).toBe(10);
-    expect(draft.sides[0].budget).toBe(90);
+    expect(draft.sides[0].budget).toBe(tierBudget('average', 5));
     while (draft.turn < draft.order.length) {
       const i = aiPickIndex(draft);
       if (i >= 0) pick(draft, i);
@@ -191,7 +248,7 @@ describe('small-sided football', () => {
     }
     expect(kicks).toBeGreaterThan(10);
     for (const p of match.world.players) expect(Number.isFinite(p.pos.x)).toBe(true);
-  });
+  }, LONG_SIM);
 });
 
 describe('the broadcast ledger', () => {
@@ -207,7 +264,7 @@ describe('the broadcast ledger', () => {
     expect(s.onTarget[0]).toBeLessThanOrEqual(s.shots[0]);
     expect(s.onTarget[1]).toBeLessThanOrEqual(s.shots[1]);
     expect(s.kicks[0] + s.kicks[1]).toBeGreaterThanOrEqual(passes + s.shots[0] + s.shots[1]);
-  });
+  }, LONG_SIM);
 });
 
 describe('difficulty wears the brain', () => {
@@ -249,5 +306,5 @@ describe('difficulty wears the brain', () => {
     const s = m.stats;
     expect(s.passes[1]).toBeGreaterThan(3);
     expect(s.passesGood[0] / Math.max(1, s.passes[0])).toBeGreaterThan(0.2);
-  });
+  }, LONG_SIM);
 });

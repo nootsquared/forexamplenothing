@@ -31,7 +31,7 @@ const guest = (seat: number, msg: GuestMsg) => (party as unknown as { onGuest(s:
 const seatIn = (seat: number, patch: Partial<NetInput>) => guest(seat, { t: 'input', input: { ...quietInput, ...patch } });
 
 const join = (seat: number, name: string) => {
-  party.seats.set(seat, { seat, name, team: null, claimedAt: 0, ready: false, lastInput: null, switchPressed: false, pendingKick: null, activeAt: 0, heardAt: 0 });
+  party.seats.set(seat, { seat, name, team: null, claimedAt: 0, ready: false, lastInput: null, switchPressed: false, pendingKick: null, heardAt: 0 });
 };
 
 describe('claims and armbands', () => {
@@ -88,13 +88,6 @@ describe('wire inputs at the host desk', () => {
     expect(party.seats.get(1)!.switchPressed).toBe(true);
   });
 
-  it('doing something marks the seat active; idle packets do not', () => {
-    const s = party.seats.get(1)!;
-    seatIn(1, {});
-    expect(s.activeAt).toBe(0); // sixty quiet packets a second are not hands
-    seatIn(1, { mx: 0.5 });
-    expect(s.activeAt).toBeGreaterThan(0);
-  });
 
   it('every packet stamps the freshness gate — even a quiet one', () => {
     const s = party.seats.get(1)!;

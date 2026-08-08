@@ -9,6 +9,9 @@ import { FORMATIONS, STYLES, formationsOf, formationsOfSize } from '../src/data/
 import { toSquadOrdered, quickSplit } from '../src/data/draft';
 
 const DT = 1 / 60;
+// Minutes of simulated football take real seconds; vitest's 5s default is a
+// stopwatch on the machine's mood, not on the code
+const LONG_SIM = 30_000;
 
 describe('the save contest', () => {
   it('pace beats hands: faster and wider strikes are harder to hold', () => {
@@ -104,13 +107,14 @@ describe('the celebration', () => {
     for (let t = 0; t < 120; t++) advanceMatch(match, DT);
     const during = Math.hypot(scorer.pos.x - (PITCH.length - 4), scorer.pos.y - 3);
     expect(during).toBeLessThan(before);
-    // and the whole thing resolves into a fresh kickoff for the conceded
+    // and the whole thing resolves — party, walk home, fresh kickoff for the conceded
     let sawKickoff = false;
-    for (let t = 0; t < 60 * 6; t++) {
+    for (let t = 0; t < 60 * 16; t++) {
       advanceMatch(match, DT);
       if (world.events.some((e) => e.kind === 'kickoff' && e.team === 1)) sawKickoff = true;
     }
     expect(world.celebration).toBeNull();
+    expect(world.ceremony).toBe('live');
     expect(sawKickoff).toBe(true);
-  });
+  }, LONG_SIM);
 });

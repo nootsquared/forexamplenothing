@@ -8,6 +8,9 @@ import { TeamBrain } from '../src/ai/blackboard';
 import { passMargin, leadTarget } from '../src/ai/brain';
 
 const DT = 1 / 60;
+// Minutes of simulated football take real seconds; vitest's 5s default is a
+// stopwatch on the machine's mood, not on the code
+const LONG_SIM = 30_000;
 const idle: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
 const stats = { topSpeed: 6, sprintSpeed: 8.4, accel: 10, agility: 0.8, control: 0.75, power: 0.7,
  shoot: 0.72, pass: 0.8, longBall: 0.72, defend: 0.55, phys: 0.55, reflex: 0.55, dive: 0.55, handling: 0.55 };
@@ -38,14 +41,14 @@ describe('the 22-brain match', () => {
     expect(Number.isFinite(match.world.ball.pos.x)).toBe(true);
     expect(kicks).toBeGreaterThan(8);           // the ball actually gets played
     expect(possessionFlips).toBeGreaterThan(2); // and contested
-  });
+  }, LONG_SIM);
 
   it('keeps a team shape instead of 22 players mobbing the ball', () => {
     const match = createMatch();
     for (let i = 0; i < 60 * 20; i++) advanceMatch(match, DT);
     const near = match.world.players.filter((p) => dist(p.pos, match.world.ball.pos) < 8).length;
     expect(near).toBeLessThan(9); // some contest it; most hold their jobs
-  });
+  }, LONG_SIM);
 
   it('is fully deterministic — same seed, same match, tick for tick', () => {
     const a = createMatch();
@@ -60,7 +63,7 @@ describe('the 22-brain match', () => {
       expect(p.pos.x).toBe(b.world.players[i].pos.x);
       expect(p.pos.y).toBe(b.world.players[i].pos.y);
     });
-  });
+  }, LONG_SIM);
 
   it('a kicked pass gets a NAMED receiver on the team sheet', () => {
     const world = new World();
@@ -357,7 +360,7 @@ describe('the dead ball knows its end', () => {
   });
 });
 
-describe('the whistle and the spot', () => {
+describe('the whistle and the free kick', () => {
   it('a mistimed lunge mid-pitch NEVER whistles — free kicks are gone, play on', () => {
     const world = new World();
     const carrier = new PlayerBody(vec(50, 37), stats, { team: 0, role: 'MF', anchor: vec(0.5, 0.5), number: 8 });
@@ -374,51 +377,32 @@ describe('the whistle and the spot', () => {
         expect(e.kind).not.toBe('foul'); // outside the box the referee waves on
       }
     }
-    expect(world.penalty).toBeNull();
-  });
+    expect(world.awaitingRestart).toBe(false); // play never stopped
+  }, LONG_SIM);
 
-  it('the same crime inside the box still concedes the penalty', () => {
+  it('the same crime inside the box is a free kick — the spot kick is retired', () => {
     const world = new World();
     const carrier = new PlayerBody(vec(106, 37), stats, { team: 0, role: 'FW', anchor: vec(0.9, 0.5), number: 9 });
     const hacker = new PlayerBody(vec(105.1, 36.4), stats, { team: 1, role: 'DF', anchor: vec(0.2, 0.5), number: 4 });
     const gk = new PlayerBody(vec(112, 37), stats, { team: 1, role: 'GK', anchor: vec(0.04, 0.5), number: 1 });
     world.players.push(carrier, hacker, gk);
-    let penalty = false;
-    for (let t = 0; t < 60 * 120 && !penalty; t++) {
+    let whistled = false;
+    let restart = '';
+    for (let t = 0; t < 60 * 120 && !whistled; t++) {
       world.ball.pos = vec(106.8, 37); // staged deep in team 1's box
       world.ball.vel = vec();
       carrier.pos = vec(106, 37);
       hacker.pos = vec(105.45, 36.7); // through the MAN, nowhere near the ball
       world.step(DT, [idle, { ...idle, tackle: true }, idle]);
       for (const e of world.events) {
-        if (e.kind === 'foul' && e.penalty) penalty = true;
+        if (e.kind === 'foul') whistled = true;
+        if (e.kind === 'restart') { restart = e.restart; expect(e.team).toBe(0); }
       }
     }
-    expect(penalty).toBe(true);
-    expect(world.penalty?.phase).toBe('aiming');
-  });
-
-  it('the spot kick: aiming freezes the duel, the strike resolves it live', () => {
-    const world = new World();
-    const shooter = new PlayerBody(vec(60, 30), { ...stats, control: 0.9, power: 0.9 }, { team: 0, role: 'FW', anchor: vec(0.7, 0.5), number: 9 });
-    const gk = new PlayerBody(vec(112, 37), stats, { team: 1, role: 'GK', anchor: vec(0.04, 0.5), number: 1 });
-    world.players.push(shooter, gk);
-    world.beginPenalty(0, 0);
-    expect(world.penalty?.phase).toBe('aiming');
-    for (let t = 0; t < 60; t++) world.step(DT, [idle, idle]);
-    // a full second later the world is still holding its breath
-    expect(world.penalty?.phase).toBe('aiming');
-    expect(world.restartLock).toBeGreaterThan(0);
-    expect(Math.abs(world.ball.pos.x - (PITCH.length - 11))).toBeLessThan(0.01);
-    world.takePenalty(1, false);
-    expect(world.ball.speed()).toBeGreaterThan(15); // the strike is away
-    expect(gk.lungeTimer).toBeGreaterThan(0);       // and the keeper is committed
-    for (let t = 0; t < 60 * 2; t++) world.step(DT, [idle, idle]);
-    expect(world.penalty).toBeNull(); // the duel resolved and cleaned up
-    // a 90-rated striker from the spot: goal, save, or woodwork — never a stall
-    const resolved = world.score.left === 1 || world.restartLock > 0 || world.ball.speed() > 0.5 || world.holdingGk >= 0;
-    expect(resolved).toBe(true);
-  });
+    expect(whistled).toBe(true);
+    expect(restart).toBe('freekick'); // an ordinary restart, taken off the spot he fell on
+    expect(world.awaitingRestart).toBe(true);
+  }, LONG_SIM);
 });
 
 describe('the support triangle', () => {
@@ -439,7 +423,7 @@ describe('the support triangle', () => {
     expect(attackTicks).toBeGreaterThan(200);
     expect(nearHeld / attackTicks).toBeGreaterThan(0.85);  // the safe angle almost always exists
     expect(depthHeld / attackTicks).toBeGreaterThan(0.75); // and so does the stretch
-  });
+  }, LONG_SIM);
 });
 
 describe('the turnover', () => {
@@ -467,7 +451,7 @@ describe('the turnover', () => {
     expect(scored).toBe(true);
     expect(w.score.left).toBe(1);
     expect(w.score.right).toBe(0);
-  });
+  }, LONG_SIM);
 });
 
 describe('the restart law and the rigging', () => {
@@ -511,7 +495,7 @@ describe('the training ground', () => {
     }
     expect(Number.isFinite(match.world.ball.pos.x)).toBe(true);
     expect(restartTeams.every((t) => t === 0)).toBe(true);
-  });
+  }, LONG_SIM);
 
   it('far-end outs come back as YOUR corner, own-end outs as YOUR goal kick', () => {
     const isRestart = (e: { kind: string }): e is Extract<import('../src/sim/events').SimEvent, { kind: 'restart' }> => e.kind === 'restart';

@@ -5,6 +5,9 @@ import { vec } from '../src/core/math';
 import { PlayerInput } from '../src/sim/player';
 
 const DT = 1 / 60;
+// Minutes of simulated football take real seconds; vitest's 5s default is a
+// stopwatch on the machine's mood, not on the code
+const LONG_SIM = 30_000;
 
 // One tick exactly as the browser wires it: sim first, cursor after
 function tick(match: Match, cursor: TeamCursor) {
@@ -16,18 +19,20 @@ describe('the possession-first cursor', () => {
   it('our carrier is instantly YOU — and never the keeper — through 45s of play', () => {
     const match = createMatch();
     const cursor = new TeamCursor(0, match.world);
+    const strays: string[] = []; // every tick that broke the rule, named once at the end
     for (let t = 0; t < 45 * 60; t++) {
       tick(match, cursor);
       const bb = match.teamBrains[0];
       const me = match.world.players[cursor.idx];
-      expect(me.id.team).toBe(0);
-      expect(me.id.role).not.toBe('GK');
+      if (me.id.team !== 0) strays.push(`t${t}: wore the other shirt`);
+      if (me.id.role === 'GK') strays.push(`t${t}: wore the keeper`);
       if (bb.phase === 'attack' && bb.possessorIdx !== null &&
-          match.world.players[bb.possessorIdx].id.role !== 'GK') {
-        expect(cursor.idx).toBe(bb.possessorIdx);
+          match.world.players[bb.possessorIdx].id.role !== 'GK' && cursor.idx !== bb.possessorIdx) {
+        strays.push(`t${t}: carrier ${bb.possessorIdx} was not you`);
       }
     }
-  });
+    expect(strays.slice(0, 3)).toEqual([]);
+  }, LONG_SIM);
 
   it('off the ball, manual mode never moves you without a cause: possession, your kick, a restart, or E', () => {
     const match = createMatch();
@@ -46,7 +51,7 @@ describe('the possession-first cursor', () => {
         expect(causedByPossession || causedByTouch || causedByRestart || sinceMyKick < 1.9).toBe(true);
       }
     }
-  });
+  }, LONG_SIM);
 
   it('a teammate touching an ARRIVING ball is instantly you — no waiting for the bounce to settle', () => {
     const match = createMatch();
@@ -105,7 +110,7 @@ describe('the possession-first cursor', () => {
     }
     expect(manualDefendSwitches).toBe(0);      // defending never yanks you in manual
     expect(autoSwitches).toBeGreaterThan(3);   // auto mode rides the play
-  });
+  }, LONG_SIM);
 
   it('E takes exactly the previewed man, and the preview is empty at your feet', () => {
     const match = createMatch();
@@ -123,7 +128,7 @@ describe('the possession-first cursor', () => {
       }
     }
     expect(checkedTake).toBe(true);
-  });
+  }, LONG_SIM);
 });
 
 describe('set pieces and the cursor', () => {
@@ -164,5 +169,5 @@ describe('two seats, one team', () => {
       if (a.idx === b.idx) collisions++;
     }
     expect(collisions).toBe(0);
-  });
+  }, LONG_SIM);
 });
