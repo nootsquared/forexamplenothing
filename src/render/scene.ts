@@ -1,7 +1,7 @@
 import { Application, Container, Graphics, Sprite } from 'pixi.js';
 import { GameLoop } from '../core/loop';
 import { Vec2, vec, add, sub, scale, clamp, clampLen, rotate } from '../core/math';
-import { director, tackleWindow } from '../director';
+import { director } from '../director';
 import { PITCH } from '../sim/constants';
 import { World } from '../sim/world';
 import { SimEvent } from '../sim/events';
@@ -24,6 +24,17 @@ const RESTART_ZOOM = 2.55;
 const RESTART_SETTLE = 2;
 const HERO_PULL = 6;        // metres the man you hold may drag the restart shot off the ball
 const CELEBRATE_PUSH = 4;   // seconds the goal shot takes to creep all the way in
+const WALK_OPEN = 0.35;     // how much wider than a restart the walk home is framed
+
+// The corner sight: where this delivery is going, how honest it is, and the
+// marks your box is attacking — each lit while its man is actually breaking.
+export interface CornerAimState {
+  from: Vec2;
+  target: Vec2;
+  scatter: number;
+  short: boolean; // a flat ball to the man at the flag, not a cross
+  marks: { at: Vec2; live: boolean }[];
+}
 
 // Owns the display tree; reads sim state, never writes it
 export class Scene {
@@ -43,12 +54,17 @@ export class Scene {
   private switchTargetIdx = -1;
   private keeperAim: KeeperAim;
   private keeperAimState: KeeperAimState | null = null;
+  private cornerG = new Graphics();   // the corner's ring and the marks it can pick
+  private cornerAim: CornerAimState | null = null;
+  private cornerPulse = 0;
   private lawRing = new Graphics();   // the restart exclusion, painted on the turf
   private offsideG = new Graphics();  // the flag's line, chalked when it matters
   private offsideFlash = 0;
   private tackleG = new Graphics();   // the red diamond: a lunge would land NOW
   private tackleFade = 0;
   private tacklePulse = 0;
+  private foulBy = -1;    // ...and the man who went in after it shut
+  private foulT = 0;
   private hoverG = new Graphics();  // the click-to-switch ring, chalked under a body
   private hoverIdx = -1;
   private hoverAt: Vec2 = vec(0, 0);
@@ -88,7 +104,7 @@ export class Scene {
     this.dragHead = new Sprite(assets.aimFrames[0]);
     this.dragHead.anchor.set(0.5, 0.5);
     this.dragHead.visible = false;
-    this.viewport.addChild(this.pitchLayer.ground, this.lawRing, this.offsideG, this.hoverG, this.wedgeG, this.clampG, this.keeperAim.rings, this.cometG, this.worldSorted, this.keeperAim.top, this.dragG, this.dragHead, this.tackleG);
+    this.viewport.addChild(this.pitchLayer.ground, this.lawRing, this.offsideG, this.hoverG, this.wedgeG, this.clampG, this.cornerG, this.keeperAim.rings, this.cometG, this.worldSorted, this.keeperAim.top, this.dragG, this.dragHead, this.tackleG);
 
     this.ballView = new BallView(assets, this.worldSorted);
     this.worldSorted.addChild(this.ballView.root);
@@ -121,6 +137,11 @@ export class Scene {
   setKeeperAim(state: KeeperAimState | null, hands: 'keeper' | 'throwin' = 'keeper') {
     this.keeperAimState = state;
     this.hud.setAimHint(hands, state !== null);
+  }
+
+  // The corner sight — non-null while a human stands over a placed corner
+  setCornerAim(state: CornerAimState | null) {
+    this.cornerAim = state;
   }
 
   // A pad is driving — hint text speaks its buttons instead of the keys
@@ -268,12 +289,38 @@ export class Scene {
       ? RESTART_SETTLE
       : Math.max(0, this.restartHold - dt * (this.world.ball.speed() > 4 ? 2 : 1));
     if (cel) return this.celebrationShot(cel.team, cel.scorer, viewW, viewH);
+    if (this.world.ceremony === 'walkback') return this.walkHomeShot();
     if (this.restartHold <= 0) return null;
     // the ball owns the restart; the man you hold is allowed to tug the frame
     const b = this.world.ball.pos;
     const hero = this.world.players[this.controlledIdx]?.pos;
     const center = hero ? add(b, clampLen(scale(sub(hero, b), 0.34), HERO_PULL)) : vec(b.x, b.y);
     return { center, zoom: RESTART_ZOOM };
+  }
+
+  // The walk home. The eye belongs on twenty-two men pacing in, NOT on a ball
+  // rolling itself back to the spot — so the frame travels with the bodies and
+  // eases onto the centre circle as they arrive. It is already sitting exactly
+  // where the kickoff wants it by the time the last man stands on his mark,
+  // which is why the ball reaching the spot never moves the lens at all.
+  private walkHomeShot(): { center: Vec2; zoom: number } {
+    let sx = 0;
+    let sy = 0;
+    for (const p of this.world.players) { sx += p.pos.x; sy += p.pos.y; }
+    const n = Math.max(1, this.world.players.length);
+    const k = this.world.ceremonyProgress;
+    const ease = k * k * (3 - 2 * k);
+    // the first beat is still the goal's: the lens lets go of the net before
+    // it travels, so the chapter opens on a drift and not on a swing
+    const l = clamp(k / 0.4, 0, 1);
+    const lead = l * l * (3 - 2 * l);
+    const b = this.world.ball.pos;
+    const fx = b.x + (sx / n - b.x) * lead;
+    const fy = b.y + (sy / n - b.y) * lead;
+    return {
+      center: vec(fx + (PITCH.length / 2 - fx) * ease, fy + (PITCH.width / 2 - fy) * ease),
+      zoom: RESTART_ZOOM - WALK_OPEN * (1 - ease),
+    };
   }
 
   // The shot a goal deserves: the mouth that was just beaten held at one edge
@@ -341,7 +388,14 @@ export class Scene {
       if (e.kind === 'kickoff') this.hud.announce('KICK OFF');
       if (e.kind === 'half') this.hud.announce('HALF TIME');
       if (e.kind === 'fulltime') this.hud.announce('FULL TIME');
-      if (e.kind === 'foul') this.hud.announce('FOUL!');
+      // The whistle you can SEE: the banner, a pale pop on the frame, and the
+      // man who went in flashing his own name over the sprawl he caused
+      if (e.kind === 'foul') {
+        this.hud.announce('FOUL!');
+        this.flashAlpha = Math.max(this.flashAlpha, 0.22);
+        this.foulBy = e.by;
+        this.foulT = 2.4;
+      }
       // The flag and its free kick can land on the same tick — both say the
       // one word that matters, so the call survives whichever lands last
       if (e.kind === 'offside') {
@@ -390,6 +444,22 @@ export class Scene {
       const x1 = left ? s.puntR + 10 : PITCH.length + 4;
       const zoom = clamp(Math.min(w / ((x1 - x0) * M), h / (2 * 38 * M * squash())), 0.7, 2.2);
       this.camera.override = { center: vec((x0 + x1) / 2, PITCH.width / 2), zoom };
+    } else if (this.cornerAim) {
+      // aiming into a box you cannot see is not a decision: the shot holds the
+      // arc, the marks and wherever the ring has wandered, all at once
+      const ca = this.cornerAim;
+      let x0 = ca.from.x;
+      let x1 = ca.from.x;
+      let y0 = ca.from.y;
+      let y1 = ca.from.y;
+      for (const p of [...ca.marks.map((m) => m.at), ca.target]) {
+        x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x);
+        y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
+      }
+      const M = pxPerMeter();
+      const pad = 9;
+      const zoom = clamp(Math.min(w / ((x1 - x0 + pad * 2) * M), h / ((y1 - y0 + pad * 2) * M * squash())), 1.1, 2.4);
+      this.camera.override = { center: vec((x0 + x1) / 2, (y0 + y1) / 2), zoom };
     } else if (this.camOverride) {
       // A directed shot is somebody's deliberate choice — the coach's drill or
       // a rest beat — and it outranks the broadcast director every time
@@ -506,6 +576,40 @@ export class Scene {
       }
     }
 
+    // The corner, as a decision: the chalk line your ball will travel, the
+    // zone it can honestly land in, and the marks your box is attacking — a
+    // mark whose man is breaking RIGHT NOW burns mint, so the delivery is
+    // timed to a run you can see instead of to a hope.
+    this.cornerG.clear();
+    if (live && this.cornerAim) {
+      const ca = this.cornerAim;
+      const M = pxPerMeter();
+      const sq = squash();
+      const accent = ca.short ? 0x9ff0b8 : 0xffd95e;
+      this.cornerPulse += dt * 5;
+      const span = Math.hypot(ca.target.x - ca.from.x, ca.target.y - ca.from.y);
+      for (let t = 2; t < span - 1; t += 1.4) {
+        const p = project(ca.from.x + ((ca.target.x - ca.from.x) * t) / span, ca.from.y + ((ca.target.y - ca.from.y) * t) / span, 0);
+        this.cornerG.rect(Math.round(p.sx) - 1, Math.round(p.sy) - 1, 3, 3).fill({ color: accent, alpha: 0.8 });
+      }
+      for (const m of ca.marks) {
+        const p = project(m.at.x, m.at.y, 0);
+        const r = m.live ? 1.5 + 0.25 * Math.sin(this.cornerPulse) : 1.1;
+        this.cornerG.ellipse(p.sx, p.sy, r * M, r * M * sq)
+          .stroke({ width: 1.3, color: m.live ? 0x9ff0b8 : 0xdfe4ee, alpha: m.live ? 0.85 : 0.45 });
+      }
+      const t = project(ca.target.x, ca.target.y, 0);
+      this.cornerG.ellipse(t.sx, t.sy, ca.scatter * M, ca.scatter * M * sq)
+        .fill({ color: accent, alpha: 0.13 })
+        .stroke({ width: 1.3, color: accent, alpha: 0.8 });
+      const tick = 4 + Math.sin(this.cornerPulse) * 1.2;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        this.cornerG.moveTo(t.sx + dx * tick, t.sy + dy * tick * sq)
+          .lineTo(t.sx + dx * (tick + 4), t.sy + dy * (tick + 4) * sq)
+          .stroke({ width: 1.4, color: 0xffffff, alpha: 0.9 });
+      }
+    }
+
     // The law, visible: a restart's mandated space is chalked around the ball
     this.lawRing.clear();
     if (live && this.world.restartLock > 0 && this.world.restartExclusion > 0) {
@@ -537,7 +641,9 @@ export class Scene {
     // The tackle window, made honest: while an opponent's ball is loose of him
     // and your legs are free, a red diamond sits over it. It is a beat long on
     // purpose — defending should be a rhythm you learn, never a button you hold.
-    const lunge = live ? tackleWindow(this.world, this.controlledIdx) : 0;
+    // ...and it is the REFEREE's own number, read straight off the sim, so the
+    // diamond can never invite a challenge the whistle then punishes.
+    const lunge = live ? this.world.tackleWindow(this.controlledIdx) : 0;
     this.tackleFade = clamp(this.tackleFade + (lunge > 0 ? dt * 18 : -dt * 14), 0, 1);
     this.tackleG.clear();
     if (this.tackleFade > 0.02) {
@@ -586,8 +692,10 @@ export class Scene {
     // static — and they punch straight through every shade the shell draws.
     const carrierIdx = this.world.carrier?.idx ?? -1;
     const labels = this.hud.root.visible;
+    this.foulT = Math.max(0, this.foulT - dt); // ...and the offender wears his for a beat
     this.world.players.forEach((p, i) => {
-      this.playerViews[i]?.setNamed(labels && (i === this.controlledIdx || i === this.switchTargetIdx || i === carrierIdx));
+      this.playerViews[i]?.setNamed(labels && (i === this.controlledIdx || i === this.switchTargetIdx ||
+        i === carrierIdx || (i === this.foulBy && this.foulT > 0)));
       this.playerViews[i]?.update(p, dt, alpha, i === this.controlledIdx ? aim : null);
       this.effects.sprintDust(p, dt);
     });

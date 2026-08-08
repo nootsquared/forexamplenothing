@@ -109,6 +109,12 @@ export class ReplayTruck {
     this.phase = 'armed';
   }
 
+  // Loaded, and waiting for its beat. The ceremony holds a whole chapter open
+  // for this — until it clears, nobody may walk home.
+  get arming(): boolean {
+    return this.phase === 'armed';
+  }
+
   // Online: who must press before play resumes (one seat, or none, is solo)
   setRoom(seats: { seat: number; name: string }[], mySeat: number) {
     this.room = seats.length > 1 ? seats : null;
@@ -152,13 +158,14 @@ export class ReplayTruck {
     return (this.room ?? []).map((r) => ({ name: r.name, ready: this.ready.has(r.seat) }));
   }
 
-  // Counted down under every live tick: when the roar has had its beat, the
-  // truck cuts in — unless the tape has no story to tell, and then it never
-  // interrupts at all
-  cue(dt: number, world: World, scene: Scene) {
+  // Counted down under every live tick: when the roar has had its beat AND the
+  // ceremony says the party is over, the truck cuts in — unless the tape has no
+  // story to tell, and then it never interrupts at all. A tab with no ceremony
+  // of its own (a guest, watching snapshots) rides the beat alone.
+  cue(dt: number, world: World, scene: Scene, ready = true) {
     if (this.phase !== 'armed') return;
     this.armT -= dt;
-    if (this.armT > 0) return;
+    if (this.armT > 0 || !ready) return;
     const cut = buildCut(this.ring, this.side, (i) => world.players[i]?.id.team);
     if (!cut) { this.phase = 'off'; return; }
     this.cut = cut;

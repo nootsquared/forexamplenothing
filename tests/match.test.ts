@@ -361,47 +361,49 @@ describe('the dead ball knows its end', () => {
 });
 
 describe('the whistle and the free kick', () => {
-  it('a mistimed lunge mid-pitch NEVER whistles — free kicks are gone, play on', () => {
+  // A man with the ball at his feet and a defender going through him, staged
+  // anywhere on the field. The ball is well inside the carrier's bubble, so
+  // the window is shut the whole time: every lunge here is a late one.
+  const hackAt = (x: number, human: boolean, seconds: number) => {
     const world = new World();
-    const carrier = new PlayerBody(vec(50, 37), stats, { team: 0, role: 'MF', anchor: vec(0.5, 0.5), number: 8 });
-    const hacker = new PlayerBody(vec(49.1, 36.4), stats, { team: 1, role: 'MF', anchor: vec(0.5, 0.5), number: 6 });
+    const carrier = new PlayerBody(vec(x, 37), stats, { team: 0, role: 'FW', anchor: vec(0.5, 0.5), number: 9 });
+    const hacker = new PlayerBody(vec(x - 1, 36.6), stats, { team: 1, role: 'DF', anchor: vec(0.5, 0.5), number: 4 });
     world.players.push(carrier, hacker);
-    world.ball.pos = vec(50.8, 37); // on the carrier's far side — the lunge finds legs, not ball
-    for (let t = 0; t < 60 * 60; t++) {
-      world.ball.pos = vec(50.8, 37); // the duel stays staged
+    world.ball.pos = vec(x + 0.5, 37);
+    world.ball.vel = vec(1.2, 0);
+    for (let i = 0; i < 30 && !world.carrier; i++) world.step(DT, [idle, idle]);
+    if (human) world.humanIdxs.add(1);
+    const call = { world, whistled: false, restart: '', team: -1, spot: 0 };
+    for (let t = 0; t < 60 * seconds && !call.whistled; t++) {
+      world.ball.pos = vec(x + 0.5, 37); // the duel stays staged: his ball, at his feet
       world.ball.vel = vec();
-      carrier.pos = vec(50, 37);
-      hacker.pos = vec(49.45, 36.7); // through the MAN, nowhere near the ball
-      world.step(DT, [idle, { ...idle, tackle: true }]);
+      carrier.pos = vec(x, 37);
+      hacker.pos = vec(x - 1, 36.6);     // through the MAN, never near the ball
+      expect(world.tackleWindow(1)).toBe(0); // the diamond is out for every one of these
+      world.step(DT, [idle, { ...idle, tackle: t % 30 === 0 }]);
       for (const e of world.events) {
-        expect(e.kind).not.toBe('foul'); // outside the box the referee waves on
+        if (e.kind === 'foul') { call.whistled = true; call.spot = e.x; }
+        if (e.kind === 'restart') { call.restart = e.restart; call.team = e.team; }
       }
     }
-    expect(world.awaitingRestart).toBe(false); // play never stopped
+    return call;
+  };
+
+  it('a brain hacking away at him all afternoon never gives a foul away', () => {
+    const call = hackAt(50, false, 30);
+    expect(call.whistled).toBe(false);
+    expect(call.world.awaitingRestart).toBe(false); // play never stopped
   }, LONG_SIM);
 
-  it('the same crime inside the box is a free kick — the spot kick is retired', () => {
-    const world = new World();
-    const carrier = new PlayerBody(vec(106, 37), stats, { team: 0, role: 'FW', anchor: vec(0.9, 0.5), number: 9 });
-    const hacker = new PlayerBody(vec(105.1, 36.4), stats, { team: 1, role: 'DF', anchor: vec(0.2, 0.5), number: 4 });
-    const gk = new PlayerBody(vec(112, 37), stats, { team: 1, role: 'GK', anchor: vec(0.04, 0.5), number: 1 });
-    world.players.push(carrier, hacker, gk);
-    let whistled = false;
-    let restart = '';
-    for (let t = 0; t < 60 * 120 && !whistled; t++) {
-      world.ball.pos = vec(106.8, 37); // staged deep in team 1's box
-      world.ball.vel = vec();
-      carrier.pos = vec(106, 37);
-      hacker.pos = vec(105.45, 36.7); // through the MAN, nowhere near the ball
-      world.step(DT, [idle, { ...idle, tackle: true }, idle]);
-      for (const e of world.events) {
-        if (e.kind === 'foul') whistled = true;
-        if (e.kind === 'restart') { restart = e.restart; expect(e.team).toBe(0); }
-      }
+  it('human hands doing exactly that is a whistle, and it is a whistle anywhere on the field', () => {
+    for (const x of [50, 106]) { // the middle of the park, then deep in their box
+      const call = hackAt(x, true, 20);
+      expect(call.whistled).toBe(true);
+      expect(call.restart).toBe('freekick'); // an ordinary restart, taken off the spot he fell on
+      expect(call.team).toBe(0);
+      expect(Math.abs(call.spot - x)).toBeLessThan(1.5);
+      expect(call.world.awaitingRestart).toBe(true);
     }
-    expect(whistled).toBe(true);
-    expect(restart).toBe('freekick'); // an ordinary restart, taken off the spot he fell on
-    expect(world.awaitingRestart).toBe(true);
   }, LONG_SIM);
 });
 

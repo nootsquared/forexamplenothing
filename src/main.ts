@@ -1,13 +1,14 @@
 import { Application, Container, Graphics, TextureSource } from 'pixi.js';
 import { GameLoop } from './core/loop';
-import { Vec2, vec, dist, clamp, norm, scale, expDecayVec } from './core/math';
+import { Vec2, vec, dist, clamp, norm, scale, sub, expDecayVec } from './core/math';
 import { PlayerInput } from './sim/player';
 import { World } from './sim/world';
 import { kickSight, keeperScatter, keeperCentering } from './sim/tuning';
 import { PITCH } from './sim/constants';
 import { Match, createMatch, advanceMatch, pickDistribution, MAX_STOPPAGE } from './match';
 import { leadTarget, passMargin } from './ai/brain';
-import { AI_PROFILES } from './ai/blackboard';
+import { AI_PROFILES, CORNER_JOBS, CORNER_TARGETS, CornerCall } from './ai/blackboard';
+import { cornerBreaking } from './ai/runs';
 import { FORMATIONS, formationsOfSize } from './data/formations';
 import { quickSplit, toSquad } from './data/draft';
 import { SquadPlayer } from './data/roster';
@@ -20,13 +21,15 @@ import { audio } from './audio/engine';
 import { MatchAudio } from './audio/matchAudio';
 import { loadAssets } from './render/assets';
 import { setProjection, squash } from './render/projection';
-import { Scene } from './render/scene';
+import { Scene, CornerAimState } from './render/scene';
 import { PixelText } from './render/pixelText';
 import { PlayerView } from './render/playerSprite';
 import { MOODS } from './render/variants';
 import { GOLD, MINT, cornerMarks } from './ui/kit';
 import { Screen, MenuScreen, SetupScreen, PauseScreen, StatsScreen, LocalJoinScreen, MatchSetup, fmtClock } from './ui/screens';
 import { Tutorial } from './ui/tutorial';
+import { SandboxPanel } from './ui/sandbox';
+import { ControlsPanel, ControlsDevice, CONTROLS_KEY, CONTROLS_PAD_BUTTON } from './ui/controlsPanel';
 import { SquadBuilderScreen } from './ui/draft';
 import { OnlineScreen } from './ui/online';
 import { NetSession, NetStartConfig, DraftCtl } from './net/net';
@@ -80,7 +83,7 @@ async function boot() {
   let cursor: TeamCursor | null = null;
   let gkIdx = -1;
   let gkHoldCooldown = 0; // a fresh launch can't be instantly re-scooped
-  let halfCountdown = 0; // the 3-2-1 before the second half kicks off
+  let halfCountdown = 0; // the 3-2-1 the referee counts every kickoff in on
   let ceremonyWas: World['ceremony'] = 'live'; // the goal beat we last staged
   let restT = 0;             // seconds left in the breath before the next chapter
   let restAt: Vec2 | null = null; // and the spot the wide lens rests on
@@ -92,6 +95,13 @@ async function boot() {
   let trainT = 0;   // the coach's next line, fused
   let trainIdx = 0;
   let throwAim: { taker: number } | null = null; // your throw-in, aimed like a keeper's throw
+  // Your corner: who stands over it, and how long the box is still breaking on
+  // the run YOU called
+  let cornerAim: { taker: number; called: number; age: number } | null = null;
+  // The teams taking the field: every man's mark, how long they have been
+  // walking onto it, and whether the referee has started counting them in
+  let walkOn: { marks: Vec2[]; t: number; counted: boolean } | null = null;
+  let sandbox: SandboxPanel | null = null; // the training ground's modifier rail
   // ---- the couch ----
   // The first seat wears the shell's own hands (the mouse sling, the keeper
   // sight, the throw) and its side becomes sim team 0; every seat after it
@@ -101,8 +111,8 @@ async function boot() {
   let couch: { seat: Seat; cursor: TeamCursor; team: 0 | 1 }[] = [];
   const couchDown = new Set<string>(); // raw key edges the couch reads for itself
   // The goal party: whose arms X throws up, and whether anybody has asked yet
-  let celebrate: { scorer: number; t: number; taken: boolean; pop: number } | null = null;
-  const CELEBRATE_WINDOW = 4.2; // the sim's own party length — the arms come down with it
+  let celebrate: { scorer: number; t: number; ask: boolean; taken: boolean; pop: number } | null = null;
+  const CELEBRATE_WINDOW = 5.2; // longer than the sim's party — the ceremony ends it, not a timer
   // ---- the online party ----
   let net: NetSession | null = null;
   let party: Party | null = null;                    // host-side authority
@@ -137,6 +147,15 @@ async function boot() {
   const REST_BEAT = 2;       // the law: a breath of stillness before any next chapter
   const REST_ZOOM = 2.25;    // ...shown by the lens easing wide while the game waits
   const CENTER_SPOT = vec(PITCH.length / 2, PITCH.width / 2); // where a half rests
+  const WALK_IN = 14;        // metres up the field the teams walk on from
+  const WALK_ON = 4.2;       // ...how long they take about it
+  const WALK_SET = 0.4;      // ...and the beat on the mark before the count starts
+  const KICKOFF_COUNT = 3.3; // 3 - 2 - 1 - whistle, one second a number
+  const KICKOFF_RING = 0.62; // a ball no referee has started yet is nobody's to lean on
+  const KICKOFF_ZOOM = 2.55; // the size a dead ball is played at, so the hand-off is invisible
+  const CORNER_SHORT = 15;   // aim inside this and the corner is a flat ball, not a cross
+  const CORNER_SNAP = 4.5;   // how near a mark the ring counts as pointing AT it
+  const CORNER_BREAK = 1.6;  // seconds a called run lasts before the box resets
   // The coach's lines, keyboard and pad wordings — rotated slowly on the
   // training ground so a new player learns the sticks without reading a menu
   const TRAINING_TIPS: [string, string][] = [
@@ -161,6 +180,8 @@ async function boot() {
   const statsScreen = new StatsScreen(assets);
   const onlineScreen = new OnlineScreen(assets);
   const localScreen = new LocalJoinScreen(assets, kb);
+  const controlsPanel = new ControlsPanel(assets); // rides over every screen, takes no clicks
+  controlsPanel.layout(app.renderer.width, app.renderer.height); // it knows the room before it is ever drawn
   let activeScreen: Screen | null = null;
 
   // The shell's one warning toast, riding above every screen: the double-press
@@ -183,25 +204,33 @@ async function boot() {
     leaveHint.addChild(t);
   };
 
-  // The goal party's one card, riding over the celebration: gold while it is
-  // asking for the button, mint once the arms are up
-  const celebrateCard = new Container();
-  const celebratePlate = new Graphics();
-  const celebrateText = new PixelText(assets, 3, GOLD);
-  celebrateCard.addChild(celebratePlate, celebrateText);
-  celebrateCard.visible = false;
-  const dressCelebrate = (text: string, tone: number) => {
-    celebrateText.tint = tone;
-    celebrateText.text = text;
-    const w = celebrateText.textWidth + 44;
-    const h = celebrateText.textHeight + 22;
-    celebratePlate.clear();
-    celebratePlate.rect(-w / 2, 0, w, h).fill({ color: 0x0d1119, alpha: 0.92 });
-    celebratePlate.rect(-w / 2, 0, w, 2).fill({ color: tone, alpha: 0.7 });
-    celebratePlate.rect(-w / 2, h - 2, w, 2).fill({ color: 0x000000, alpha: 0.5 });
-    cornerMarks(celebratePlate, -w / 2, 0, w, h, tone, 0.6);
-    celebrateText.centerAt(0, 11);
+  // The shell's card: menu cloth, a crowned rule, corner studs and one line of
+  // pixel text, anchored at its own top-centre. The goal party asks with one;
+  // a corner explains itself with one.
+  const shellCard = (size: number) => {
+    const root = new Container();
+    const plate = new Graphics();
+    const label = new PixelText(assets, size, GOLD);
+    root.addChild(plate, label);
+    root.visible = false;
+    return {
+      root,
+      dress(text: string, tone: number) {
+        label.tint = tone;
+        label.text = text;
+        const w = label.textWidth + 44;
+        const h = label.textHeight + 22;
+        plate.clear();
+        plate.rect(-w / 2, 0, w, h).fill({ color: 0x0d1119, alpha: 0.92 });
+        plate.rect(-w / 2, 0, w, 2).fill({ color: tone, alpha: 0.7 });
+        plate.rect(-w / 2, h - 2, w, 2).fill({ color: 0x000000, alpha: 0.5 });
+        cornerMarks(plate, -w / 2, 0, w, h, tone, 0.6);
+        label.centerAt(0, 11);
+      },
+    };
   };
+  const goalCard = shellCard(3);   // riding over the celebration
+  const cornerCard = shellCard(2); // ...and over a corner you are standing on
 
   const show = (s: Screen | null) => {
     uiRoot.removeChildren();
@@ -211,12 +240,23 @@ async function boot() {
       uiRoot.addChild(s.root);
       s.enter?.(); // entrances land on freshly laid-out rests
     }
-    uiRoot.addChild(leaveHint); // always the top card
+    uiRoot.addChild(leaveHint, controlsPanel.root); // always the top cards
+  };
+  // The card follows you: it answers wherever you called it up, in the language
+  // of the hands that asked. Always the corner — a board you can read the game
+  // (or the pause sheet) around, never one that buries what you were looking at.
+  const toggleControls = (device: ControlsDevice) => {
+    controlsPanel.place('corner');
+    audio.ui(controlsPanel.toggle(device) ? 'card' : 'back');
   };
   // the RENDERER's resize, not the window's — the window event fires before
   // Pixi has taken the new size, and a screen laid out on stale dims paints
   // its backdrop for a canvas that no longer exists
-  app.renderer.on('resize', () => activeScreen?.layout(app.renderer.width, app.renderer.height));
+  app.renderer.on('resize', () => {
+    activeScreen?.layout(app.renderer.width, app.renderer.height);
+    sandbox?.layout(app.renderer.width, app.renderer.height);
+    controlsPanel.layout(app.renderer.width, app.renderer.height);
+  });
 
   // The CPU wears the difficulty mostly in its BRAIN (AI_PROFILES); the legs
   // shift only slightly so nobody ever looks drunk
@@ -497,6 +537,7 @@ async function boot() {
   // Full time online: the ROOM lives on — everyone returns to the lobby for
   // the rematch instead of the party dying with the whistle
   function backToLobby() {
+    killSandbox();
     leaveArm = 0; // an exit armed in the match must not fire in the lobby
     shellHint(null);
     replay.reset(scene);
@@ -575,6 +616,14 @@ async function boot() {
     toMenu();
   };
   pauseScreen.onResume = () => pauseScreen.close(); // slide out, then release
+  // CONTROLS on the board draws the card without closing the board — read it,
+  // then resume with the answer still on screen. No device named: it reads the
+  // hands that are actually in the room.
+  pauseScreen.onControls = () => {
+    controlsPanel.place('corner');
+    controlsPanel.show(!controlsPanel.open);
+    audio.ui(controlsPanel.open ? 'card' : 'back');
+  };
   pauseScreen.onClosed = () => { paused = false; scene?.setHudVisible(true); show(null); };
   pauseScreen.onQuit = () => toMenu();
   statsScreen.onDone = () => { if (netRole === 'host') backToLobby(); else toMenu(); };
@@ -601,7 +650,15 @@ async function boot() {
     attract = null;
   }
 
+  // The rail leaves with the training ground it belongs to
+  function killSandbox() {
+    sandbox?.destroy();
+    sandbox = null;
+  }
+
   function toMenu() {
+    controlsPanel.show(false); // the card belongs to the match it was called up in
+    killSandbox();
     tutorial?.destroy();
     tutorial = null;
     replay.reset(scene);
@@ -809,7 +866,7 @@ async function boot() {
     if (!cursor) return;
     const all: { cursor: TeamCursor }[] = [{ cursor }, ...seatCursors.values(), ...couch];
     for (const a of all) {
-      a.cursor.claimed = (idx) => all.some((b) => b !== a && b.cursor.idx === idx);
+      a.cursor.claimed = (idx) => !!sandbox?.benched(idx) || all.some((b) => b !== a && b.cursor.idx === idx);
     }
   }
 
@@ -817,6 +874,7 @@ async function boot() {
   // WATCHES it through his own camera — inputs go up, snapshots come down
   async function guestStartMatch(config: NetStartConfig) {
     killAttract();
+    killSandbox();
     scene?.destroy();
     await loadNationSheets(assets, config.kits.map((k) => `players-${k}.png`));
     match = createMatch({
@@ -867,7 +925,7 @@ async function boot() {
     fulltimeDelay = 0;
     passHints = [];
     replay.reset(null);
-    app.stage.addChild(replay.root, celebrateCard, uiRoot);
+    app.stage.addChild(replay.root, goalCard.root, cornerCard.root, uiRoot);
     screenName = 'match';
     paused = false;
     show(null);
@@ -1005,6 +1063,7 @@ async function boot() {
     opts?: { kits?: [string, string]; halfLength?: number; kickoffFirst?: 0 | 1; practice?: boolean; tutorial?: boolean },
   ) {
     killAttract();
+    killSandbox();
     tutorial?.destroy();
     tutorial = null;
     scene?.destroy();
@@ -1035,6 +1094,8 @@ async function boot() {
     humanIdle = Infinity;
     keeperAiming = false;
     throwAim = null;
+    cornerAim = null;
+    walkOn = null;
     primary = null;   // a couch room re-seats itself right after this returns
     couch = [];
     endCelebration();
@@ -1049,11 +1110,33 @@ async function boot() {
     passHints = [];
     fulltimeDelay = 0;
     replay.reset(null);
-    app.stage.addChild(replay.root, celebrateCard, uiRoot); // the truck's dress, the party's card, then the UI
+    // The training ground's rail: whole groups of shirts dusted off the field
+    // and back onto it, a fresh ball, a re-staged pitch — all on the numbers
+    if (opts?.practice) {
+      sandbox = new SandboxPanel(assets, {
+        world: match.world,
+        toScreen: (x, y, z) => scene!.worldToScreen(x, y, z),
+        fade: (i, a) => { const v = playerViews[i]; if (v) v.root.alpha = a; },
+        hidden: (i, on) => scene!.setPlayerHidden(i, on),
+        heldIdx: () => cursor?.idx ?? -1,
+      });
+      sandbox.begin();
+      sandbox.layout(app.renderer.width, app.renderer.height);
+      app.stage.addChild(sandbox.root);
+      cursor.claimed = (i) => !!sandbox?.benched(i); // control never lands on a man who isn't here
+      // ...and the card is already up here: this is the field you came to learn
+      // the buttons on, so nobody has to guess that C would have shown them
+      controlsPanel.place('corner');
+      controlsPanel.show(true);
+    }
+    app.stage.addChild(replay.root, goalCard.root, cornerCard.root, uiRoot); // the truck's dress, the party's card, then the UI
     screenName = 'match';
     paused = false;
     show(null);
     matchAudio.begin(MOODS[menu.moodIdx].id);
+    // a real match walks its teams on; school and the training ground stage
+    // their own fields and would only be interrupted by it
+    if (!opts?.tutorial && !opts?.practice) beginWalkOn();
     if (opts?.tutorial) {
       // the coach takes the room: no HUD, no ceremony, his overlay on top
       scene.setHudVisible(false);
@@ -1081,7 +1164,7 @@ async function boot() {
   };
   const uiKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyF', 'KeyX'];
   for (const code of uiKeys) kb.onPress(code, () => routeKey(code));
-  kb.onPress('Space', () => activeScreen?.key('Space'));
+  kb.onPress('Space', () => { if (!callCornerRun()) activeScreen?.key('Space'); });
   // Online exits must be MEANT. ESC, START and B all land here, and every one
   // of them is also a pause or cancel reflex — so the first press only ARMS
   // the door, and a second inside the window actually walks through it.
@@ -1156,6 +1239,8 @@ async function boot() {
     scene.toast(cursor.autoMode ? 'AUTO SWITCH ON' : 'AUTO SWITCH OFF');
   };
   kb.onPress('KeyT', toggleAutoSwitch);
+  // C is the card, everywhere but a field you are typing into
+  kb.onPress(CONTROLS_KEY, () => { if (activeScreen !== onlineScreen) toggleControls('keys'); });
 
   // A raw key edge read straight off the board: the couch's own keys never
   // travel through the shell's UI routing, and two seats never share one
@@ -1207,18 +1292,25 @@ async function boot() {
     if (activeScreen) for (const code of pads.navCodes()) routeKey(code);
     if (pads.pressed('a')) routeKey('Enter');
     if (pads.pressed('start')) pressEscape();
+    if (pads.pressed('b') && !activeScreen && callCornerRun()) return; // over a corner, B is the call
     if (pads.pressed('b') && activeScreen) pressEscape(); // B backs out of menus; in play it tackles
+    if (pads.pressed(CONTROLS_PAD_BUTTON)) toggleControls('pad'); // SELECT: what does this button do
     if (pads.pressed('lb') || pads.pressed('x')) pressSwitch();
     if (pads.pressed('y')) {
       toggleAutoSwitch();                  // in play: hand-me-the-hunter mode
       if (activeScreen) routeKey('KeyF');  // in the lobby: READY UP
     }
   };
+  // Numbers belong to the pitch's mood — except on the training ground, where
+  // the modifier rail borrows them and hands back whatever it doesn't use
   MOODS.forEach((mood, i) => kb.onPress(`Digit${i + 1}`, () => {
-    if (screenName !== 'match') return;
+    if (screenName !== 'match' || sandbox?.key(`Digit${i + 1}`)) return;
     scene?.setVariant(mood);
     matchAudio.setMood(mood.id);
   }));
+  for (let n = MOODS.length + 1; n <= 6; n++) {
+    kb.onPress(`Digit${n}`, () => { if (screenName === 'match') sandbox?.key(`Digit${n}`); });
+  }
 
   // The pull, resolved on the FIELD: direction is anchor-minus-mouse in world
   // space (so the iso squash never skews your aim), power is hand travel
@@ -1271,8 +1363,9 @@ async function boot() {
     mouse.x = e.clientX;
     mouse.y = e.clientY;
     if (screenName !== 'match' || paused) return;
-    // The sling only arms with the ball at YOUR feet — no phantom arrows
-    if (!keeperAiming && ballIsMine()) {
+    // The sling only arms with the ball at YOUR feet — no phantom arrows, and
+    // never over a corner, where the same button is the delivery itself
+    if (!keeperAiming && !cornerAim && ballIsMine()) {
       drag.active = true;
       drag.anchorX = e.clientX;
       drag.anchorY = e.clientY;
@@ -1345,26 +1438,128 @@ async function boot() {
     restLens(shot?.center ?? fallback, REST_BEAT, shot?.zoom ?? REST_ZOOM);
   };
 
+  // ---- the teams take the field ------------------------------------------
+  // A match starts the way a goal ends: staged. Every man is lifted off his
+  // mark onto the grass in front of it before the first frame is ever drawn —
+  // so nothing teleports in view — and then walks the whole shape back down
+  // onto the kickoff. The ball is already on the spot; the referee simply has
+  // not started the game yet.
+  function beginWalkOn() {
+    if (!match) return;
+    const marks = match.world.players.map((p) => vec(p.pos.x, p.pos.y));
+    for (const p of match.world.players) {
+      p.pos = vec(p.pos.x, Math.max(1, p.pos.y - WALK_IN));
+      p.vel = vec();
+      p.savePrev();
+    }
+    walkOn = { marks, t: 0, counted: false };
+  }
+
+  // The ball the referee has not started yet belongs to nobody: any body that
+  // reaches it is stood back off, so you cannot walk through the thing the
+  // whole stadium is waiting on. Same ring the sim keeps between a boot and a
+  // ball it may not play — a step, never a shove.
+  function holdOffDeadBall(world: World) {
+    const ball = world.ball.pos;
+    for (const p of world.players) {
+      const away = sub(p.pos, ball);
+      const d = Math.hypot(away.x, away.y);
+      if (d >= KICKOFF_RING) continue;
+      const out = d < 1e-6 ? vec(-p.facing.x, -p.facing.y) : scale(away, 1 / d);
+      p.pos = vec(ball.x + out.x * KICKOFF_RING, ball.y + out.y * KICKOFF_RING);
+    }
+  }
+
+  // A party has a shape, and its last half is men already drifting back. It
+  // has to be: the walk home is paced to five seconds, and a scorer who ends
+  // it hanging off the corner flag is seventy metres from his mark — further
+  // than any pair of legs can cover before the referee gives up waiting and
+  // stands him there. So the long-distance men turn for home while the
+  // cheering is still going, and nobody is ever placed on his spot.
+  function driftHome(world: World, overrides: Record<number, PlayerInput>) {
+    if (world.ceremony !== 'celebrate' || world.ceremonyProgress < 0.5) return;
+    world.players.forEach((p, i) => {
+      if (i in overrides) return;
+      const to = sub(p.home, p.pos);
+      const d = Math.hypot(to.x, to.y);
+      if (d < 26) return; // anyone this close already makes the beat at a stroll
+      overrides[i] = { move: scale(to, 1 / d), sprint: true, kickCharging: false, kickReleased: null };
+    });
+  }
+
+  // One frame of the arrival: everybody paced to land on his mark at the same
+  // moment (the far men stride, the near men amble), a breath on it, then the
+  // count and the whistle. Your own hands outrank the walk the instant you
+  // push — they just cannot reach the ball while they do it.
+  function tickWalkOn(dt: number, world: World, overrides: Record<number, PlayerInput>) {
+    const w = walkOn!;
+    w.t += dt;
+    world.restartLock = Math.max(world.restartLock, 0.2); // nothing is live until the whistle
+    const left = Math.max(0.4, WALK_ON - w.t);
+    world.players.forEach((p, i) => {
+      if (overrides[i] && Math.hypot(overrides[i].move.x, overrides[i].move.y) > 0.2) return;
+      const to = sub(w.marks[i], p.pos);
+      const d = Math.hypot(to.x, to.y);
+      const needed = d / left;
+      const pace = clamp(needed / p.stats.topSpeed, 0.4, 1) * Math.min(1, 0.35 + d / 1.4);
+      overrides[i] = {
+        move: d < 0.05 ? vec() : scale(to, pace / d),
+        sprint: needed > p.stats.topSpeed,
+        kickCharging: false,
+        kickReleased: null,
+      };
+    });
+    // The opening shot: the whole field while they come down it, pushing in
+    // onto the centre spot as they arrive — so handing back to live football
+    // is a settle and never a cut
+    const k = clamp(w.t / (WALK_ON + WALK_SET), 0, 1);
+    const ease = k * k * (3 - 2 * k);
+    let sx = 0;
+    let sy = 0;
+    for (const p of world.players) { sx += p.pos.x; sy += p.pos.y; }
+    const n = Math.max(1, world.players.length);
+    const wide = scene?.fitFieldZoom() ?? 1.6;
+    scene?.setCameraOverride({
+      center: vec(sx / n + (CENTER_SPOT.x - sx / n) * ease, sy / n + (CENTER_SPOT.y - sy / n) * ease),
+      zoom: wide + (KICKOFF_ZOOM - wide) * ease,
+    });
+    if (w.t < WALK_ON + WALK_SET) return;
+    // Set on their marks, and the referee counts them in on the SAME 3-2-1 the
+    // second half gets. The marks and the wide lens hold all the way through it
+    if (!w.counted) {
+      w.counted = true;
+      halfCountdown = KICKOFF_COUNT;
+    }
+    if (halfCountdown > 0) return;
+    walkOn = null;
+    // The whistle IS the start — the taker may play it now, and the circle
+    // stays his until he does (the sim drops the exclusion on the strike)
+    world.restartLock = 0;
+    scene?.setCameraOverride(null);
+  }
+
   // ---- the goal party ----------------------------------------------------
-  // A goal for somebody in this room opens the prompt; X throws the scorer's
-  // arms up for the rest of the window. Nobody is ever asked to cheer a goal
-  // that was scored against them.
+  // A goal is the scorer's moment whoever he plays for: his own celebration
+  // starts on the whistle and runs the whole party. Only a goal for somebody
+  // in THIS room also asks the hands for a cheer — nobody is ever asked to
+  // applaud one scored against them.
   const armCelebrate = (cel: World['celebration']) => {
     if (!cel || cel.scorer < 0 || !match) return;
-    if (cel.team !== 0 && !couch.some((cs) => cs.team === cel.team)) return;
-    // an own goal names the man who put it in his own net — nobody's arms go up
+    // an own goal names the man who put it in his own net — his arms stay down
     if (match.world.players[cel.scorer].id.team !== cel.team) return;
-    celebrate = { scorer: cel.scorer, t: CELEBRATE_WINDOW, taken: false, pop: 0 };
-    dressCelebrate('PRESS X TO CELEBRATE', GOLD);
+    const ask = cel.team === 0 || couch.some((cs) => cs.team === cel.team);
+    playerViews[cel.scorer]?.setCelebrating(true);
+    celebrate = { scorer: cel.scorer, t: CELEBRATE_WINDOW, ask, taken: false, pop: 0 };
+    if (ask) goalCard.dress('PRESS X TO CHEER', GOLD);
   };
 
   // True when the press was SPENT here — the caller keeps its own hands off it
   const takeCelebration = (): boolean => {
-    if (!celebrate || celebrate.taken || paused || replay.holds) return false;
+    if (!celebrate || !celebrate.ask || celebrate.taken || paused || replay.holds) return false;
     celebrate.taken = true;
     celebrate.pop = 1;
-    playerViews[celebrate.scorer]?.setCelebrating(true);
-    dressCelebrate('GET IN!', MINT);
+    // his own signature has a name; a man without one simply gets in
+    goalCard.dress(playerViews[celebrate.scorer]?.celebrationLabel ?? 'GET IN!', MINT);
     audio.ui('select');
     audio.play('kick-hard', { vol: 0.5, jitter: 0.08 });
     pads.rumble(0.9, 300);
@@ -1376,7 +1571,7 @@ async function boot() {
     if (!celebrate) return;
     playerViews[celebrate.scorer]?.setCelebrating(false);
     celebrate = null;
-    celebrateCard.visible = false;
+    goalCard.root.visible = false;
   };
 
   // The card breathes while it asks and pops once when it is answered; the
@@ -1387,10 +1582,115 @@ async function boot() {
     if (celebrate.t <= 0 || ceremony !== 'celebrate') return endCelebration();
     celebrate.pop = Math.max(0, celebrate.pop - dt * 3.5);
     const h = app.renderer.height;
-    celebrateCard.visible = true;
-    celebrateCard.position.set(Math.round(app.renderer.width / 2), Math.round(Math.max(h * 0.42, h - 200)));
-    celebrateCard.scale.set(1 + celebrate.pop * 0.14);
-    celebrateCard.alpha = celebrate.taken ? 1 : 0.82 + 0.18 * Math.sin(celebrate.t * 7);
+    goalCard.root.visible = celebrate.ask;
+    goalCard.root.position.set(Math.round(app.renderer.width / 2), Math.round(Math.max(h * 0.42, h - 200)));
+    goalCard.root.scale.set(1 + celebrate.pop * 0.14);
+    goalCard.root.alpha = celebrate.taken ? 1 : 0.82 + 0.18 * Math.sin(celebrate.t * 7);
+  };
+
+  // ---- your corner -------------------------------------------------------
+  // A corner is a decision, not a hoof. The mouse picks the spot — snapping
+  // onto the heads that are actually attacking it — SPACE sends the box in on
+  // YOUR beat instead of the sheet's own loop, and the click delivers with the
+  // honest scatter your taker's touch has earned. Short ball or cross is
+  // simply how far out you aimed it.
+  const cornerMarkList = (call: CornerCall, bb: Match['teamBrains'][0]) =>
+    [...CORNER_TARGETS, 'cornerShort' as const].map((job) => ({
+      at: call.marks[job].at,
+      live: call.men[job] >= 0 && cornerBreaking(bb, job),
+    }));
+
+  const readCornerSight = (call: CornerCall, at?: Vec2): CornerAimState => {
+    const world = match!.world;
+    const from = world.ball.pos;
+    const taker = world.players[cornerAim!.taker];
+    const marks = cornerMarkList(call, match!.teamBrains[0]);
+    const m = at ?? scene!.screenToWorld(mouse.x, mouse.y);
+    let target = vec(clamp(m.x, 1, PITCH.length - 1), clamp(m.y, 1, PITCH.width - 1));
+    // the ring settles onto a head rather than hovering just off one
+    for (const mk of marks) {
+      if (dist(mk.at, target) < CORNER_SNAP) { target = vec(mk.at.x, mk.at.y); break; }
+    }
+    const d = dist(from, target);
+    const short = d <= CORNER_SHORT;
+    return { from, target, scatter: keeperScatter(short ? 'throw' : 'punt', d, taker.stats.control), short, marks };
+  };
+
+  // The ball leaves, and control travels with it to whoever it was aimed at
+  const deliverCorner = (sight: CornerAimState) => {
+    if (!match || !cursor || !scene || !cornerAim) return;
+    const world = match.world;
+    const taker = cornerAim.taker;
+    world.gkLaunch(taker, sight.target, sight.short ? 'throw' : 'punt', sight.scatter);
+    let best = -1;
+    let bestD = Infinity;
+    world.players.forEach((p, i) => {
+      if (p.id.team !== 0 || i === taker) return;
+      const d = dist(p.pos, sight.target);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    if (best >= 0) cursor.assign(best);
+    cornerAim = null;
+    scene.setCornerAim(null);
+    cornerCard.root.visible = false;
+  };
+
+  // True when the press was SPENT here: the box breaks NOW, on your call
+  const callCornerRun = (): boolean => {
+    if (!cornerAim || paused || replay.holds) return false;
+    cornerAim.called = CORNER_BREAK;
+    cornerCard.dress('IN THE BOX - CLICK DELIVERS', MINT);
+    audio.ui('select', 0.8);
+    return true;
+  };
+
+  // The called break, driven the one tick before the sim moves: the four dealt
+  // runs attack their marks together instead of waiting for their own beat
+  const driveCornerRun = (dt: number, overrides: Record<number, PlayerInput>) => {
+    const call = match?.teamBrains[0].corner;
+    if (!cornerAim || !call || cornerAim.called <= 0) return;
+    cornerAim.called -= dt;
+    for (const job of CORNER_JOBS) {
+      const i = call.men[job];
+      if (i < 0) continue;
+      const to = sub(call.marks[job].at, match!.world.players[i].pos);
+      const d = Math.hypot(to.x, to.y);
+      overrides[i] = {
+        move: d < 0.4 ? vec() : scale(to, 1 / d),
+        sprint: d > 4,
+        kickCharging: false,
+        kickReleased: null,
+      };
+    }
+  };
+
+  const dropCornerAim = () => {
+    cornerAim = null;
+    scene?.setCornerAim(null);
+    cornerCard.root.visible = false;
+  };
+
+  // The sight itself, held until the ball is struck — or until you walk away
+  // from it, and then the taker swings it at the spot rather than stand there
+  const tickCornerAim = (world: World, dt: number) => {
+    if (!cornerAim || !match || !scene) return;
+    cornerAim.age += dt;
+    const call = match.teamBrains[0].corner;
+    // the sheet deals its jobs on the tick AFTER the whistle, so the ring
+    // waits a beat for them instead of calling its own false start
+    if (!call) return cornerAim.age > 0.25 ? dropCornerAim() : undefined;
+    if (call.struck || call.taker !== cornerAim.taker || (world.restartLock <= 0 && world.ball.speed() > 2)) {
+      return dropCornerAim();
+    }
+    if (humanIdle >= 6 && !match.practice) return deliverCorner(readCornerSight(call, call.marks.cornerSpot.at));
+    const sight = readCornerSight(call);
+    scene.setCornerAim(sight);
+    cornerCard.root.visible = true;
+    cornerCard.root.position.set(Math.round(app.renderer.width / 2), app.renderer.height - 118);
+    if (mouse.clicked) {
+      mouse.clicked = false;
+      deliverCorner(sight);
+    }
   };
 
   // A goal has gone in: the truck lines up its cut, and online it learns which
@@ -1423,11 +1723,12 @@ async function boot() {
     const world = match.world;
 
     // The truck has the room: the sim holds absolutely still while the goal is
-    // shown back, and hands the lens back onto the goal's own shot when it lets go
+    // shown back. When the tape lets go, the walk home starts on that same
+    // frame — the truck's own breath IS the beat between the two chapters.
     if (replay.holds) {
       shareReplay(dt);
-      celebrateCard.visible = false;
-      if (replay.tick(dt, world, scene)) restOnCeremony(world.ball.pos);
+      goalCard.root.visible = false;
+      if (replay.tick(dt, world, scene)) world.resumeCeremony();
       mouse.clicked = false;
       return;
     }
@@ -1442,6 +1743,9 @@ async function boot() {
     }
     applyFlick(input, world, primary);
     if (primary && seatSwitchPressed(primary)) askSwitch(cursor);
+    // over a corner the tackle key changes jobs — it calls the box in, and
+    // nobody lunges at a dead ball of his own
+    if (cornerAim && cursor.idx === cornerAim.taker) input.tackle = false;
     const active = input.move.x !== 0 || input.move.y !== 0 ||
       input.sprint || input.kickCharging || !!input.kickReleased || !!input.tackle || mouse.moved;
     mouse.moved = false;
@@ -1536,6 +1840,9 @@ async function boot() {
         overrides[gkIdx] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
       }
     }
+    driveCornerRun(dt, overrides); // the run you called, on the tick you called it
+    if (!tutorial) driftHome(world, overrides);
+    if (walkOn) tickWalkOn(dt, world, overrides);
     // The coach speaks last: freezes his statues, scripts his actors, gentles
     // early kicks and ticks the objectives — right before the world moves
     if (tutorial) {
@@ -1543,6 +1850,9 @@ async function boot() {
       tutorial.update(dt);
     }
     advanceMatch(match, dt, overrides);
+    // A kickoff is a ceremony until the whistle: nobody leans on the ball while
+    // the teams walk on or the count runs, so the frame ENDS with everyone off it
+    if (walkOn || halfCountdown > 0) holdOffDeadBall(world);
     // Deferred actions fire INSIDE the tick, so their events survive to
     // every end-of-tick listener: a wire keeper launch, the host's spot kick
     if (pendingGkLaunch) {
@@ -1613,6 +1923,12 @@ async function boot() {
           cursor.assign(e.taker);
           // your throw-in opens the throw sight — pick the man, not the walk
           if (e.restart === 'throwin' && humanIdle < 2.5) throwAim = { taker: e.taker };
+          // ...and your corner opens the whole delivery: the ring, the marks
+          // your box will attack, and the call that sends them
+          if (e.restart === 'corner' && humanIdle < 2.5) {
+            cornerAim = { taker: e.taker, called: 0, age: 0 };
+            cornerCard.dress('CLICK DELIVERS - SPACE CALLS THEM IN', GOLD);
+          }
         }
         // a kickoff is the CURSOR's own law now — the man nearest the ball,
         // ours or theirs, so nobody restarts a half parked at centre-back
@@ -1630,11 +1946,15 @@ async function boot() {
       }
       if (e.kind === 'goal') pads.rumble(1, 350);
       if (e.kind === 'goal' && e.scorer >= 0) scene.toast(`${match.names[e.scorer]}!`);
-      // the roar gets its beat first; the truck cuts in behind it
+      // the party gets its five seconds first; the truck holds the ceremony's
+      // own replay chapter open and cuts in the moment the cheering is done
       if (e.kind === 'goal' && !tutorial && !match.practice) {
         armReplay(e.side);
         armCelebrate(world.celebration);
+        world.holdCeremony();
       }
+      // the whistle names the man who went in — the sprawl alone never says who
+      if (e.kind === 'foul') scene.toast(`FOUL - ${match.names[e.by] ?? ''}`);
     }
 
     // The goal ceremony is the SIM's now — celebrate, then the walk home, then
@@ -1644,9 +1964,13 @@ async function boot() {
     if (!tutorial) {
       tickCelebration(dt, world.ceremony);
       if (world.ceremony !== ceremonyWas) {
-        if (ceremonyWas === 'celebrate') restOnCeremony(world.ball.pos);
+        // the party is over: the truck takes the room if it has a cut of its
+        // own, and if it hasn't, the lens simply breathes on the goal instead
+        if (ceremonyWas === 'celebrate' && !replay.arming && !replay.holds) restOnCeremony(world.ball.pos);
         ceremonyWas = world.ceremony;
       }
+      // a tape with nothing to show must never hold the walk home hostage
+      if (world.ceremonyHeld && !replay.arming && !replay.holds) world.resumeCeremony();
       if (restT > 0 && restAt) {
         restT -= dt;
         if (restT > 0) scene.setCameraOverride({ center: restAt, zoom: restZoom });
@@ -1654,7 +1978,8 @@ async function boot() {
       }
     }
 
-    // The second half arrives on a count, not a drop: 3… 2… 1… PLAY!
+    // Every kickoff arrives on a count, not a drop: 3… 2… 1… PLAY! The opening
+    // whistle and the second half both come through here.
     if (halfCountdown > 0) {
       const before = halfCountdown;
       halfCountdown -= dt;
@@ -1687,6 +2012,7 @@ async function boot() {
         if (mouse.clicked) launchKeeper(sight.target, sight.kind, sight.scatter);
       }
     }
+    tickCornerAim(world, dt);
     // The throw-in sight: the keeper's throw ring, worn by the taker at the
     // line. Click a spot inside it and the ball is slung there — control
     // follows the throw to whoever it was for.
@@ -1818,7 +2144,7 @@ async function boot() {
     // Drills and the training ground stage their own goals and are left alone.
     if (!tutorial && !match.practice) {
       replay.ring.record(match, dt, world.events);
-      replay.cue(dt, world, scene);
+      replay.cue(dt, world, scene, world.ceremony === 'replay');
     }
     scene.handleEvents(world.events);
 
@@ -1847,18 +2173,25 @@ async function boot() {
         else if (!match.finished || fulltimeDelay > 0) tickMatch(dt);
       } else if (paused) { // the pause board owns the screen outright
         replay.root.visible = false;
-        celebrateCard.visible = false;
+        goalCard.root.visible = false;
+        cornerCard.root.visible = false;
       }
       if (screenName === 'menu' && attract) advanceMatch(attract.match, dt); // the backdrop plays on
       activeScreen?.update?.(dt);
+      controlsPanel.update(dt); // the card rides in and out over everything, paused or not
     },
     (alpha, renderDt) => {
       if (scene) scene.render(alpha, renderDt, { charge: controls.charge, move: input.move, dir: controls.aimDir });
       else if (screenName === 'menu') attract?.scene.render(alpha, renderDt, { charge: 0, move: vec(), dir: null });
+      // the rail's dust is projected through the lens that was just drawn
+      if (sandbox) {
+        sandbox.root.visible = screenName === 'match' && !paused;
+        if (sandbox.root.visible) sandbox.update(renderDt);
+      }
     },
   );
 
-  app.stage.addChild(celebrateCard, uiRoot);
+  app.stage.addChild(goalCard.root, cornerCard.root, uiRoot);
   toMenu();
   loop.start();
 
@@ -1873,6 +2206,8 @@ async function boot() {
       get suggested() { return cursor?.suggested ?? -1; },
       get passHints() { return passHints; },
       get keeperAiming() { return keeperAiming; },
+      get cornerAim() { return cornerAim; },
+      get walkOn() { return walkOn ? +walkOn.t.toFixed(2) : null; },
       get replay() { return replay; },
       get cursor() { return cursor; },
       get seatCursors() { return [...seatCursors.entries()].map(([s, sc]) => ({ seat: s, team: sc.team, captain: sc.cursor.isCaptain, idx: sc.cursor.idx })); },

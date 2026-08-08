@@ -286,28 +286,35 @@ describe('the shield', () => {
 });
 
 describe('the whistle', () => {
-  // A shielded carrier deep in the corner of the box, with a quicker man
-  // arriving through his back — the one contact the referee actually watches
-  const boxStage = () => {
+  // A latched carrier with a defender on his shoulder, mid-pitch. `loose`
+  // knocks the ball out of the carrier's bubble — the heavy touch that opens
+  // the window the red diamond paints.
+  const challengeStage = (loose: boolean) => {
     const world = new World();
-    const carrier = new PlayerBody(vec(102, 37), mk({ control: 0.8, phys: 0.8 }), id(0, 'FW'));
-    const defender = new PlayerBody(vec(100.4, 37), mk({ topSpeed: 7.5, sprintSpeed: 9.5, defend: 0.9 }), id(1, 'DF'));
+    const carrier = new PlayerBody(vec(52, 34), mk({ control: 0.8, phys: 0.8 }), id(0, 'FW'));
+    const defender = new PlayerBody(vec(52.8, 34.7), mk({ defend: 0.9 }), id(1, 'DF'));
     world.players.push(carrier, defender);
-    world.ball.pos = vec(102.5, 37); // the carrier's body sits between the two
+    world.ball.pos = vec(52.5, 34);
     world.ball.vel = vec(1.2, 0);
     for (let i = 0; i < 30 && !world.carrier; i++) world.step(DT, [idle, idle]);
-    return world;
+    if (loose) {
+      world.ball.pos = vec(53.4, 34); // knocked past his own bubble, still his ball
+      world.ball.vel = vec();
+    }
+    return { world, carrier, defender };
   };
-  // Charge him down and report the call: whether a whistle blew, and the
-  // restart that landed on the very same tick. Stops on the whistle so the
-  // dead-ball beat is still standing when the assertions look at it.
-  const charge = (world: World, ticks: number) => {
-    const call = { whistled: false, restart: '', team: -1 };
+  // Go through him and report the call: the whistle, and the restart that
+  // landed on the very same tick. Stops there, so the dead-ball beat is still
+  // standing when the assertions look at it.
+  const goIn = (world: World, ticks: number) => {
+    const call = { whistled: false, restart: '', team: -1, by: -1, stole: false };
     for (let t = 0; t < ticks; t++) {
-      world.step(DT, [{ ...idle, move: vec(1, 0) }, { ...idle, move: vec(1, 0), sprint: true, tackle: t % 40 === 0 }]);
+      world.step(DT, [{ ...idle, move: vec(1, 0) }, { ...idle, move: vec(-0.3, -0.95), tackle: t === 0 }]);
+      call.stole ||= world.events.some((e) => e.kind === 'steal');
       const foul = world.events.find((e) => e.kind === 'foul');
       if (foul?.kind !== 'foul') continue;
       call.whistled = true;
+      call.by = foul.by;
       for (const e of world.events) {
         if (e.kind === 'restart') { call.restart = e.restart; call.team = e.team; }
       }
@@ -316,22 +323,45 @@ describe('the whistle', () => {
     return call;
   };
 
-  it('a challenge through the back inside the box is a free kick, never a penalty', () => {
-    const world = boxStage();
-    const call = charge(world, 400);
+  it('a lunge that leaves after the window has shut takes the man, and the whistle knows whose it was', () => {
+    const { world } = challengeStage(false);
+    world.humanIdxs.add(1);
+    expect(world.tackleWindow(1)).toBe(0);    // the diamond is out — the ball is glued to him
+    const call = goIn(world, 60);
     expect(call.whistled).toBe(true);
-    expect(call.restart).toBe('freekick');    // the spot kick is retired
+    expect(call.by).toBe(1);                  // a foul always has a name on it
+    expect(call.restart).toBe('freekick');
     expect(call.team).toBe(0);                // the fouled side gets the ball
-    // placed where the man went down — deep in the box, not on the spot
-    expect(world.ball.pos.x).toBeGreaterThan(PITCH.length - 16.5);
+    // placed where the man went down: the middle of the park, where the old
+    // referee only ever waved play on
+    expect(Math.abs(world.ball.pos.x - 52)).toBeLessThan(1.5);
+    expect(world.ball.pos.x).toBeGreaterThan(16.5);
+    expect(world.ball.pos.x).toBeLessThan(PITCH.length - 16.5);
     expect(world.awaitingRestart).toBe(true);
     expect(world.restartLock).toBeGreaterThan(0);
   });
 
+  it('the same challenge inside the window is simply football', () => {
+    const { world } = challengeStage(true);
+    world.humanIdxs.add(1);
+    expect(world.tackleWindow(1)).toBeGreaterThan(0); // the diamond is lit
+    const call = goIn(world, 60);
+    expect(call.whistled).toBe(false);
+    expect(call.stole).toBe(true);            // he timed it, so he simply took it
+  });
+
+  it('a brain never gives a foul away, however late it goes in', () => {
+    const { world } = challengeStage(false);  // no human hands anywhere near this body
+    expect(world.tackleWindow(1)).toBe(0);
+    expect(goIn(world, 60).whistled).toBe(false);
+    expect(world.awaitingRestart).toBe(false);
+  });
+
   it('a staged session switches the referee off, and nobody is ever re-staged by him', () => {
-    const world = boxStage();
+    const { world } = challengeStage(false);
+    world.humanIdxs.add(1);
     world.foulsEnabled = false;
-    expect(charge(world, 400).whistled).toBe(false);
+    expect(goIn(world, 60).whistled).toBe(false);
     expect(world.awaitingRestart).toBe(false); // nothing was ever staged
   });
 });
@@ -369,7 +399,8 @@ describe('stoppage time', () => {
 });
 
 describe('the walk back', () => {
-  it('a goal ends in a kickoff, and nobody ever jumps a step getting there', () => {
+  // Put one in the net and hand the ceremony the whole stage
+  const scoreOne = () => {
     const match = createMatch();
     const world = match.world;
     world.restartLock = 0;
@@ -377,25 +408,85 @@ describe('the walk back', () => {
     world.lastTouch = { team: 0, idx: 9 };
     world.ball.pos = vec(PITCH.length - 0.5, PITCH.width / 2);
     world.ball.vel = vec(15, 0);
-    const seen = new Set<string>();
+    return match;
+  };
+
+  it('a goal ends in a kickoff, and nobody ever jumps a step getting there', () => {
+    const match = scoreOne();
+    const world = match.world;
+    const seen: string[] = [];
     let sawKickoff = false;
     let biggestStep = 0;
-    for (let t = 0; t < 60 * 20 && !sawKickoff; t++) {
+    let ballHop = 0;
+    for (let t = 0; t < 60 * 25 && !sawKickoff; t++) {
       const before = world.players.map((p) => vec(p.pos.x, p.pos.y));
+      const ballBefore = vec(world.ball.pos.x, world.ball.pos.y);
       advanceMatch(match, DT);
-      seen.add(world.ceremony);
+      if (seen[seen.length - 1] !== world.ceremony) seen.push(world.ceremony);
       world.players.forEach((p, i) => { biggestStep = Math.max(biggestStep, dist(before[i], p.pos)); });
+      if (world.ceremony === 'walkback') ballHop = Math.max(ballHop, dist(ballBefore, world.ball.pos));
       sawKickoff = world.events.some((e) => e.kind === 'kickoff');
     }
-    expect(seen.has('celebrate')).toBe(true);
-    expect(seen.has('walkback')).toBe(true);
+    // the chapters run in order, every one of them, exactly once
+    expect(seen).toEqual(['live', 'celebrate', 'replay', 'walkback', 'live']);
     expect(sawKickoff).toBe(true);
     expect(biggestStep).toBeLessThan(0.16); // a hurried stride at 60Hz — never a jump cut
+    expect(ballHop).toBeLessThan(0.32);     // and the ball is ROLLED onto the spot, never popped there
     // everybody arrived on his own mark, on his own legs — one man on the spot
     const spot = vec(PITCH.length / 2, PITCH.width / 2);
     for (const p of world.players) {
       expect(Math.min(dist(p.pos, p.home), dist(p.pos, spot))).toBeLessThan(2);
     }
+  }, LONG_SIM);
+
+  it('the party runs five seconds, and the walk is paced so the team lands on five together', () => {
+    const match = scoreOne();
+    const world = match.world;
+    const spot = vec(PITCH.length / 2, PITCH.width / 2);
+    // the taker's mark is the SPOT, not his slot — either one counts as home,
+    // and his own mark sits a stride behind the ball
+    const toMark = (p: PlayerBody) => Math.min(dist(p.pos, p.home), dist(p.pos, spot) - 1.5);
+    let party = 0;
+    let walk = 0;
+    let start: number[] = [];
+    let farManSprinted = true; // the man with the furthest to go never dawdles
+    let stragglers: number[] = [];
+    for (let t = 0; t < 60 * 25; t++) {
+      advanceMatch(match, DT);
+      if (world.ceremony === 'celebrate') party += DT;
+      if (world.ceremony !== 'walkback') continue;
+      if (!start.length) start = world.players.map(toMark);
+      walk += DT;
+      if (walk > 1 && walk < 3) {
+        const far = world.players.reduce((a, b) => (toMark(a) > toMark(b) ? a : b));
+        farManSprinted &&= far.isSprinting;
+      }
+      // everybody who COULD make the beat is standing on his mark by it
+      if (walk >= 5.5 && !stragglers.length) {
+        stragglers = world.players.map((p, i) => (toMark(p) < 1 ? -1 : start[i])).filter((d) => d >= 0);
+      }
+      if (world.events.some((e) => e.kind === 'kickoff')) break;
+    }
+    expect(party).toBeGreaterThan(4.9);
+    expect(party).toBeLessThan(5.6);
+    expect(farManSprinted).toBe(true);
+    // and the only men still coming in are the ones the corner flag stranded
+    // beyond sprinting range — nobody is late because he was strolling
+    for (const d of stragglers) expect(d).toBeGreaterThan(30);
+    expect(walk).toBeLessThan(9); // the referee is never left waiting past the cap
+  }, LONG_SIM);
+
+  it('the truck can park the ceremony at the replay and hand it back', () => {
+    const match = scoreOne();
+    const world = match.world;
+    world.holdCeremony(); // the goal has gone in; the truck says it has a cut
+    for (let t = 0; t < 60 * 9; t++) advanceMatch(match, DT);
+    expect(world.ceremony).toBe('replay');   // parked, four seconds past the party
+    expect(world.ceremonyHeld).toBe(true);
+    expect(world.ceremonyProgress).toBe(0);  // that clock is the truck's, not the sim's
+    world.resumeCeremony();
+    expect(world.ceremony).toBe('walkback'); // and the walk starts the moment it lets go
+    expect(world.ceremonyHeld).toBe(false);
   }, LONG_SIM);
 
   it('the coach can abort the whole ceremony mid-walk and the world plays on', () => {
