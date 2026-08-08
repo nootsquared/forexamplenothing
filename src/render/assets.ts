@@ -12,6 +12,8 @@ export interface Manifest {
       kickStart: number; kickLen: number; lunge: number; recover: number;
       shuffleStart: number; shuffleLen: number; shuffleSideStride: number;
       celebStart: number; celebLen: number;
+      // one block per signature celebration, blocked in celebSigs order
+      celebSigStart: number; celebSigLen: number; celebSigs: string[];
       diveStart: number; diveSideStride: number;
       diveStage: { launch: number; low: number; high: number; catch: number; parry: number; land: number };
     };

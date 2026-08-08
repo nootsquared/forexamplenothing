@@ -110,7 +110,7 @@ console.log(`assets generated in ${(performance.now() - t0).toFixed(0)}ms → pu
 async function buildPreview() {
   const { loadImage } = await import('@napi-rs/canvas');
   const W = 1870;
-  const H = 1900;
+  const H = 3040; // the signature celebrations own the bottom third
   const { canvas, ctx } = makeCanvas(W, H);
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = '#14181f';
@@ -141,13 +141,23 @@ async function buildPreview() {
   compass(home, ANIMS.runStart + 2, 980);
   compass(away, ANIMS.diveStart + ANIMS.diveSideStride + ANIMS.diveStage.high, 1284);
   // One direction's WHOLE strip at 2×, wrapped: idle, run, kick, lunge,
-  // recover, both shuffle sides, the celebration, both dive sides
-  const perLine = 13;
+  // recover, both shuffle sides, the generic celebration, both dive sides,
+  // then a four-frame block per signature celebration
+  const perLine = 13; // stays clear of the ball matrix on the right
   for (let i = 0; i < FRAMES; i += perLine) {
     const n = Math.min(perLine, FRAMES - i);
     ctx.drawImage(home, i * FRAME_W, 2 * FRAME_H, FRAME_W * n, FRAME_H,
       10, 1590 + (i / perLine) * 100, FRAME_W * n * 2, FRAME_H * 2);
   }
+  // Every signature celebration through all 16 headings at its held frame —
+  // the one test these poses have to pass is surviving the whole compass
+  ANIMS.celebSigs.forEach((id, s) => {
+    const held = ANIMS.celebSigStart + s * ANIMS.celebSigLen + ANIMS.celebSigLen - 2;
+    for (let d = 0; d < DIRS; d++) {
+      ctx.drawImage(home, held * FRAME_W, d * FRAME_H, FRAME_W, FRAME_H,
+        10 + d * FRAME_W * 2.4, 2210 + s * 116, FRAME_W * 2.4, FRAME_H * 2.4);
+    }
+  });
   // Ball roll matrix at 4×
   ctx.drawImage(ball, 0, 0, ball.width, ball.height, 1280, 980, ball.width * 4, ball.height * 4);
   savePNG(canvas, `${OUT}preview.png`);

@@ -4,6 +4,7 @@ import { Vec2, len, norm, signedAngle } from '../core/math';
 import { PITCH } from '../sim/constants';
 import { PlayerBody } from '../sim/player';
 import { GameAssets, Manifest } from './assets';
+import { Celebration, celebrationFor } from './celebrations';
 import { PixelText } from './pixelText';
 import { project, pxPerMeter, squash } from './projection';
 
@@ -24,6 +25,7 @@ const BACK_NUMBER_Z = 1.75;
 const LAUNCH_BEAT = 0.1;  // the push-off before he is truly flying
 const LAND_HOLD = 0.4;    // the crumple after he comes back down
 const SAVE_HOLD = 0.6;    // gloves latched on the ball for the rest of the flight
+const SIG_ARRIVE_FPS = 9; // how fast he gets INTO his celebration; the hold is slower
 
 export class PlayerView {
   root = new Container();
@@ -44,6 +46,8 @@ export class PlayerView {
   private chevPulse = 0;
   private aiCharge = 0; // estimated windup of an AI body, for the charge tell
   private celebrating = false;
+  private signature: Celebration | null;
+  private sigColumn = 0; // where his own celebration starts in the strip
   private diveClock = 0;  // seconds since the keeper left his feet
   private landTimer = 0;
   private saveStage: 'catch' | 'parry' | null = null;
@@ -58,6 +62,11 @@ export class PlayerView {
 
   constructor(private assets: GameAssets, sheet: string, name = '', number = 0) {
     this.sheet = sheet;
+    const anims = assets.manifest.player.anims;
+    this.signature = celebrationFor(name);
+    const block = this.signature ? anims.celebSigs.indexOf(this.signature.id) : -1;
+    if (block < 0) this.signature = null; // a pose the bake no longer carries
+    else this.sigColumn = anims.celebSigStart + block * anims.celebSigLen;
     this.shadow = new Sprite(assets.shadow);
     this.shadow.anchor.set(0.5, 0.5);
     this.shadow.alpha = 0.75;
@@ -143,10 +152,17 @@ export class PlayerView {
     this.kickTimer = 0.26;
   }
 
-  // The goal party: arms overhead for as long as the scoring team owns the
-  // screen. Off again the moment the ball is respotted.
+  // The goal party: the marquee men do their OWN thing — Ronaldo's landing,
+  // Haaland sitting down, Salah on the turf — and everybody else wheels away
+  // with their arms up. Off again the moment the ball is respotted.
   setCelebrating(on: boolean) {
+    if (on && !this.celebrating) this.animPhase = 0; // always from the first beat
     this.celebrating = on;
+  }
+
+  // What the goal card can call this man's celebration, if he has one
+  get celebrationLabel(): string | null {
+    return this.signature?.label ?? null;
   }
 
   // How the flight ENDS — gloves wrapped around it, or a hand flung through
@@ -207,7 +223,9 @@ export class PlayerView {
     const strafe = speed > 0.7 ? signedAngle(p.look, p.vel) : 0;
 
     let frame: number;
-    if (this.celebrating) {
+    if (this.celebrating && this.signature) {
+      frame = this.sigColumn + this.signatureStep(this.signature, dt, anims.celebSigLen);
+    } else if (this.celebrating) {
       this.animPhase += dt * (4.5 + speed * 1.2);
       frame = anims.celebStart + (speed > 0.7 ? Math.floor(this.animPhase) % anims.celebLen : 0);
     } else if (airborne) {
@@ -279,6 +297,17 @@ export class PlayerView {
     this.aimArrow.position.set(dir.x * 1.7 * M, dir.y * 1.7 * M * squash() - 2);
     this.aimArrow.visible = true;
     this.aimArrow.alpha = 0.82 + 0.18 * Math.sin(this.aimPulse);
+  }
+
+  // His block lands him in the pose at speed, then settles into its tail —
+  // a slow breath for a held shape, a kept beat for a dance. animPhase counts
+  // plain seconds here, which is why the goal press rewinds it.
+  private signatureStep(sig: Celebration, dt: number, len: number): number {
+    this.animPhase += dt;
+    const arrive = len / SIG_ARRIVE_FPS;
+    if (this.animPhase < arrive) return Math.floor(this.animPhase * SIG_ARRIVE_FPS);
+    const held = len - sig.loopFrom;
+    return sig.loopFrom + Math.floor((this.animPhase - arrive) * sig.loopFps) % held;
   }
 
   // The keeper flies ALONG his heading, so the sheet's two side blocks are
