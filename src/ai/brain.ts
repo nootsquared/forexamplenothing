@@ -1,110 +1,88 @@
-import { Vec2, vec, len, dist, norm, sub, add, scale, clamp, angleBetween, signedAngle, rotate } from '../core/math';
+import { Vec2, vec, len, dist, norm, sub, add, scale, clamp, angleBetween, signedAngle, rotate, perpRight } from '../core/math';
 import { Rng } from '../core/rng';
 import { PITCH } from '../sim/constants';
 import { World } from '../sim/world';
 import { PlayerBody, PlayerInput } from '../sim/player';
 import { TeamBrain } from './blackboard';
+import { KeeperMind } from './keeper';
+import { leadTarget, passMargin } from './intercept';
+import { RunCtx, RunKind, pickRun, runCommit, runSprints, runTarget } from './runs';
+import { clampPitch, laneOpen, pressureAt, spaceAt } from './space';
 
 // One brain per body. Thinks at ~10Hz (staggered so ~4 brains think per frame),
 // steers at 60Hz, and acts ONLY through PlayerInput — the exact interface a
 // human uses, so control handoff is seamless and the AI can never cheat.
 //
-// Tactics are EMERGENT, never scripted: called passes give every ball in
-// flight one owner, released passers burst beyond their marker (one-twos
-// happen by themselves), wingers drive the chalk and cut it back, strikers
-// shoot when the lane shows and lay off when it doesn't, and committed runs
-// with personal wander kill the robot-lockstep look.
+// Tactics are EMERGENT, never scripted: the run engine hands every off-ball
+// player one committed IDEA at a time, called passes give every ball in flight
+// one owner, released passers burst beyond their marker, and defenders own
+// runners by name instead of drifting toward the ball. Nobody re-decides on
+// every beat — that lockstep twitch is the whole robot look.
 //
 // Perception is asymmetric by design: own team is ground truth (plus the
 // blackboard), opponents exist only as decaying beliefs from a vision cone —
 // blind-side runs genuinely work.
+
+// The cursor and the shell share this team's interception model — one owner
+export { leadTarget, passMargin } from './intercept';
 
 const THINK_TICKS = 6;
 const VISION_NEAR = 12;   // meters: sensed all around, no cone needed
 const VISION_FAR = 40;    // meters: seen only inside the facing cone
 const VISION_HALF_ANGLE = 1.92; // ~110° each side
 const BELIEF_MAX_AGE = 2.5;
-const OPP_EST_SPEED = 7.1; // how fast everyone assumes an opponent can run — mean of the widened pace band
-const OPP_REACTION = 0.25; // seconds before that opponent gets moving
+const PARK_BAND = 1.5;    // close enough IS arrived — the deadband that killed the shuffle
+const KICK_LEAD = 0.25;   // seconds of windup a pass decision has to see through
 
 type Intent =
-  | { kind: 'hold' }
-  | { kind: 'goto'; target: Vec2; sprint: boolean }
-  | { kind: 'chase'; sprint: boolean }   // live ball pursuit, retargeted every tick
-  | { kind: 'receive'; sprint: boolean } // cut to where the pass and I can MEET
-  | { kind: 'cover' }                    // live goal-side screen behind the press
-  | { kind: 'keeper' };                  // live arc positioning
+  | { kind: 'run' }                                              // the committed idea, target recomputed live
+  | { kind: 'goto'; target: Vec2; sprint: boolean; band: number } // a one-off spot: restarts, celebrations, carrying
+  | { kind: 'chase'; sprint: boolean }                           // live ball pursuit, retargeted every tick
+  | { kind: 'receive' }                                          // cut to where the pass and I can MEET
+  | { kind: 'mark'; man: number }                                // he is MINE: goal-side and ball-side of him
+  | { kind: 'cover'; man: number }                               // stand on the pass that would hurt us
+  | { kind: 'stand' };                                           // the keeper's feet belong to KeeperMind
 
 interface Belief {
   pos: Vec2;
+  vel: Vec2;
   age: number;
 }
 
-// Where do the ball and a moving receiver actually MEET? Solves the classic
-// intercept: receiver keeps running his line, the ball leaves now at
-// ballSpeed — aim at the meeting point, not at where he's standing.
-export function leadTarget(from: Vec2, receiverPos: Vec2, receiverVel: Vec2, ballSpeed: number): Vec2 {
-  const R = sub(receiverPos, from);
-  const a = receiverVel.x * receiverVel.x + receiverVel.y * receiverVel.y - ballSpeed * ballSpeed;
-  const b = 2 * (R.x * receiverVel.x + R.y * receiverVel.y);
-  const c = R.x * R.x + R.y * R.y;
-  let t: number | null = null;
-  if (Math.abs(a) < 1e-6) {
-    if (Math.abs(b) > 1e-6) t = -c / b;
-  } else {
-    const disc = b * b - 4 * a * c;
-    if (disc >= 0) {
-      const r1 = (-b - Math.sqrt(disc)) / (2 * a);
-      const r2 = (-b + Math.sqrt(disc)) / (2 * a);
-      t = r1 > 0.05 ? r1 : r2 > 0.05 ? r2 : null;
-    }
-  }
-  const tt = clamp(t ?? len(R) / ballSpeed, 0.05, 1.6);
-  return add(receiverPos, scale(receiverVel, tt));
-}
-
-// Seconds of margin the fastest known defender leaves on a pass along
-// from→to at ballSpeed: positive = it arrives first, negative = cut out.
-// This is every player's mental model of "can THAT guy get there before my
-// ball does" — pure, shared, and testable.
-export function passMargin(from: Vec2, to: Vec2, ballSpeed: number, opponents: Vec2[]): number {
-  const ab = sub(to, from);
-  const L = len(ab);
-  if (L < 1e-4) return 9;
-  const dir = scale(ab, 1 / L);
-  let worst = 9;
-  for (const opp of opponents) {
-    const along = clamp((opp.x - from.x) * dir.x + (opp.y - from.y) * dir.y, 1, L - 0.4);
-    const point = add(from, scale(dir, along));
-    const ballT = along / ballSpeed;
-    const oppT = dist(opp, point) / OPP_EST_SPEED + OPP_REACTION;
-    worst = Math.min(worst, oppT - ballT);
-  }
-  return worst;
-}
-
 export class Brain {
-  private intent: Intent = { kind: 'hold' };
+  private intent: Intent = { kind: 'stand' };
   private kickPlan: { aim: Vec2; power: number; windup: number } | null = null;
   private settleLeft = 0;  // the settle touch: seconds before a fresh ball releases
   private hadBall = false;
   private beliefs = new Map<number, Belief>();
+  private oppBuf: Vec2[] = [];  // believed positions, rebuilt in place each perceive
+  private mateBuf: Vec2[] = [];
   private thinkIn: number;
   private rng: Rng;
-  private t = 0;          // personal clock — wander and desync live here
-  private commit = 0;     // seconds the current run is promised for
-  private burst = 0;      // give-and-go window after releasing a pass
+  private t = 0;            // personal clock — wander and desync live here
+  private commit = 0;       // seconds the current run is promised for
+  private burst = 0;        // give-and-go window after releasing a pass
   private lastPhase = 'loose';
   private wanderSeed: number;
+  private daring: number;   // personal appetite for the ambitious run
+  private run: RunKind = 'hold';
+  private runFree = 0;      // seconds the offside line stops holding my run back
+  private parked = false;   // arrived and standing — the anti-jitter latch
+  private escapeT = 0;      // beat before this carrier may plant another cut
+  private coverMan = -1;
+  private runCtx: RunCtx | null = null;
+  private keeper: KeeperMind | null = null;
 
   constructor(private idx: number, private bb: TeamBrain) {
     this.thinkIn = idx % THINK_TICKS;
     this.rng = new Rng(0xa11ce + idx * 7919);
     this.wanderSeed = idx * 1.7;
+    this.daring = this.rng.next();
   }
 
   tick(world: World, dt: number): PlayerInput {
     this.t += dt;
+    this.escapeT = Math.max(0, this.escapeT - dt);
     if (--this.thinkIn <= 0) {
       this.thinkIn = THINK_TICKS;
       this.perceive(world, THINK_TICKS / 60);
@@ -123,15 +101,27 @@ export class Brain {
       const d = dist(me.pos, p.pos);
       const seen = d < VISION_NEAR ||
         (d < VISION_FAR && angleBetween(me.facing, sub(p.pos, me.pos)) < VISION_HALF_ANGLE);
-      if (seen) this.beliefs.set(i, { pos: vec(p.pos.x, p.pos.y), age: 0 });
+      if (!seen) return;
+      // Beliefs are written in place — 22 brains refreshing memories must not
+      // hand the collector a fresh object every think
+      const known = this.beliefs.get(i);
+      if (known) {
+        known.pos.x = p.pos.x;
+        known.pos.y = p.pos.y;
+        known.vel.x = p.vel.x;
+        known.vel.y = p.vel.y;
+        known.age = 0;
+      } else {
+        this.beliefs.set(i, { pos: vec(p.pos.x, p.pos.y), vel: vec(p.vel.x, p.vel.y), age: 0 });
+      }
     });
     for (const [i, b] of this.beliefs) if (b.age > BELIEF_MAX_AGE) this.beliefs.delete(i);
+    this.oppBuf.length = 0;
+    for (const [, b] of this.beliefs) this.oppBuf.push(b.pos);
   }
 
   private believedOpponents(): Vec2[] {
-    const out: Vec2[] = [];
-    for (const [, b] of this.beliefs) out.push(b.pos);
-    return out;
+    return this.oppBuf;
   }
 
   // ---- decision (10Hz) --------------------------------------------------
@@ -164,20 +154,17 @@ export class Brain {
       const corner = vec(goalX === 0 ? 4 : PITCH.length - 4, 3);
       const hero = world.players[c.scorer]?.id.team === c.team ? c.scorer : -1;
       if (me.id.team !== c.team) {
-        this.intent = { kind: 'goto', target: vec(me.home.x, me.home.y), sprint: false };
+        this.goto(vec(me.home.x, me.home.y), false, 1.2);
       } else if (this.idx === hero) {
         const arrived = dist(me.pos, corner) < 2.2;
-        this.intent = {
-          kind: 'goto',
-          target: arrived ? add(corner, vec(this.rng.range(-1.6, 1.6), this.rng.range(-1.6, 1.6))) : corner,
-          sprint: !arrived,
-        };
+        this.goto(arrived ? add(corner, vec(this.rng.range(-1.6, 1.6), this.rng.range(-1.6, 1.6))) : corner, !arrived, 1.2);
       } else {
         const focus = hero >= 0 ? world.players[hero].pos : corner;
         const near = dist(me.pos, focus) < 40; // the far keeper just applauds from home
-        this.intent = near
-          ? { kind: 'goto', target: add(focus, vec(this.rng.range(-2, 2), this.rng.range(-2, 2))), sprint: true }
-          : { kind: 'goto', target: vec(me.home.x, me.home.y), sprint: false };
+        this.goto(
+          near ? add(focus, vec(this.rng.range(-2, 2), this.rng.range(-2, 2))) : vec(me.home.x, me.home.y),
+          near, 1.2,
+        );
       }
       return;
     }
@@ -189,11 +176,7 @@ export class Brain {
       this.kickPlan = null;
       const away2 = sub(me.pos, world.ball.pos);
       const out2 = len(away2) > 1e-4 ? norm(away2) : norm(sub(this.bb.goalWeDefend(), world.ball.pos));
-      this.intent = {
-        kind: 'goto',
-        target: this.clampPitch(add(world.ball.pos, scale(out2, world.restartExclusion + 2.5))),
-        sprint: false,
-      };
+      this.goto(add(world.ball.pos, scale(out2, world.restartExclusion + 2.5)), false, 1);
       return;
     }
     // Dead-ball etiquette: the taker walks on, everyone else holds shape —
@@ -205,11 +188,7 @@ export class Brain {
       if (theirs && dist(me.pos, world.ball.pos) < world.restartExclusion + 1.5) {
         const away = sub(me.pos, world.ball.pos);
         const out = len(away) > 1e-4 ? norm(away) : norm(sub(this.bb.goalWeDefend(), world.ball.pos));
-        this.intent = {
-          kind: 'goto',
-          target: this.clampPitch(add(world.ball.pos, scale(out, world.restartExclusion + 2.5))),
-          sprint: false,
-        };
+        this.goto(add(world.ball.pos, scale(out, world.restartExclusion + 2.5)), false, 1);
       } else if (world.lastTouch?.idx === this.idx) {
         this.intent = { kind: 'chase', sprint: false };
       } else {
@@ -219,9 +198,9 @@ export class Brain {
         const off = sub(spot, world.ball.pos);
         if (len(off) < 8) {
           const out = len(off) > 1e-4 ? norm(off) : norm(sub(this.bb.goalWeDefend(), world.ball.pos));
-          spot = this.clampPitch(add(world.ball.pos, scale(out, 8)));
+          spot = add(world.ball.pos, scale(out, 8));
         }
-        this.intent = { kind: 'goto', target: spot, sprint: false };
+        this.goto(spot, false, 1);
       }
       return;
     }
@@ -232,7 +211,7 @@ export class Brain {
 
     // My name was called — that ball in flight is mine, cut to the meet point
     if (this.bb.calledReceiver === this.idx) {
-      this.intent = { kind: 'receive', sprint: true };
+      this.intent = { kind: 'receive' };
       this.commit = 0;
       return;
     }
@@ -243,7 +222,7 @@ export class Brain {
     const ballSpeed = world.ball.speed();
     if (!world.practice && this.bb.calledReceiver < 0 && this.bb.phase !== 'defend' && ballSpeed > 4 && len(toMe) < 14 &&
         (world.ball.vel.x * toMe.x + world.ball.vel.y * toMe.y) / (ballSpeed * len(toMe) + 1e-6) > 0.72) {
-      this.intent = { kind: 'receive', sprint: true };
+      this.intent = { kind: 'receive' };
       return;
     }
 
@@ -254,124 +233,33 @@ export class Brain {
       } else if (this.bb.chaserIdxs[1] === this.idx) {
         // Second man never doubles the same blade of grass: he takes the
         // goal-side cutoff angle so a missed first challenge isn't fatal
-        const cutoff = add(world.ball.pos, scale(norm(sub(this.bb.goalWeDefend(), world.ball.pos)), 4));
-        this.intent = { kind: 'goto', target: this.clampPitch(cutoff), sprint: true };
+        this.goto(add(world.ball.pos, scale(norm(sub(this.bb.goalWeDefend(), world.ball.pos)), 4)), true, 0.8);
+      } else if ((this.bb.markOf[this.idx] ?? -1) >= 0) {
+        this.intent = { kind: 'mark', man: this.bb.markOf[this.idx] };
       } else {
-        this.intent = { kind: 'goto', target: this.wanderedAnchor(), sprint: false };
+        this.decideRun(world, me);
       }
       return;
     }
-    this.decideAttackingRun(world, me);
+    this.decideRun(world, me);
   }
 
-  // Candidate runs scored on space + passability + progress + role bias.
-  // Once picked, a run is COMMITTED for a second or two — eleven players
-  // re-deciding in lockstep every beat is what reads as robotic.
-  private decideAttackingRun(world: World, me: PlayerBody) {
-    if (this.commit > 0 && this.intent.kind === 'goto' && dist(me.pos, this.intent.target) > 1.2) return;
-
-    const fwd = vec(this.bb.attackSign(), 0);
-    const anchor = this.bb.anchorOf(this.idx);
-    const ball = world.ball.pos;
-    const goal = this.bb.goalWeAttack();
-
-    // Just released a pass: go THROUGH, past whoever was marking — the
-    // second half of a one-two exists before anyone plans it
+  // Pick an IDEA and live with it for a couple of seconds. The commitment is
+  // to the run, never to a point on the grass — the target is recomputed at
+  // 60Hz, so a promised run tracks the play instead of going stale.
+  private decideRun(world: World, me: PlayerBody) {
     if (this.burst > 0) {
-      let dir = fwd;
-      const marker = this.nearestBelieved(me.pos, 5);
-      if (marker) dir = norm(add(fwd, scale(norm(sub(me.pos, marker)), 0.7)));
-      this.intent = { kind: 'goto', target: this.clampPitch(add(me.pos, scale(dir, 9))), sprint: true };
-      this.commit = 1.2;
-      return;
-    }
-
-    const isWinger = me.id.role === 'FW' && Math.abs(me.id.anchor.y - 0.5) > 0.27;
-    const isWideDF = me.id.role === 'DF' && Math.abs(me.id.anchor.y - 0.5) > 0.3;
-    const carrierForJobs = this.bb.possessorIdx !== null ? world.players[this.bb.possessorIdx] : null;
-    const candidates: { p: Vec2; bonus: number }[] = [{ p: this.wanderedAnchor(), bonus: 0 }];
-    if (me.id.role !== 'DF') {
-      candidates.push({ p: add(me.pos, add(scale(fwd, 11), vec(0, (goal.y - me.pos.y) * 0.35))), bonus: 0.1 }); // through
-      candidates.push({ p: vec(ball.x + fwd.x * 13, (ball.y + anchor.y) / 2), bonus: 0 });                      // channel
-      candidates.push({ p: add(anchor, scale(fwd, -6)), bonus: 0 });                                            // drop
-      candidates.push({ p: add(ball, add(scale(fwd, 7), vec(0, anchor.y > ball.y ? 6 : -6))), bonus: 0 });      // support
-      // probe BOTH half-spaces ahead of the ball — the gap nobody fills is
-      // exactly the run the carrier is begging for
-      candidates.push({ p: vec(ball.x + fwd.x * 12, ball.y - 12), bonus: 0.15 });
-      candidates.push({ p: vec(ball.x + fwd.x * 12, ball.y + 12), bonus: 0.15 });
-      if (isWinger) {
-        // Hold the chalk high: width is the winger's whole job
-        const wideY = me.id.anchor.y < 0.5 ? 3.5 : PITCH.width - 3.5;
-        candidates.push({ p: vec(clamp(ball.x + fwd.x * 9, 4, PITCH.length - 4), wideY), bonus: 0.7 });
+      // Just released a pass: go THROUGH, past whoever was marking. The
+      // second half of a one-two exists before anyone plans it.
+      if (this.run !== 'burst') {
+        this.run = 'burst';
+        this.commit = runCommit('burst', this.rng);
       }
-      // ball living wide: a central body attacks the FAR POST for the cutback
-      if (Math.abs(ball.y - PITCH.width / 2) > 16 && !isWinger && this.bb.axisOf(ball.x) > 58) {
-        const farY = PITCH.width / 2 + (ball.y < PITCH.width / 2 ? 7 : -7);
-        candidates.push({ p: vec(goal.x - fwd.x * 7, farY), bonus: 0.55 });
-      }
-      // third man: a teammate is taking a pass RIGHT NOW — run the layer
-      // beyond him so the next ball has somewhere to go before it exists
-      const rcv = this.bb.calledReceiver;
-      if (rcv >= 0 && rcv !== this.idx && dist(world.players[rcv].pos, me.pos) < 20) {
-        const beyond = add(world.players[rcv].pos, scale(fwd, 10));
-        const marker = this.nearestBelieved(me.pos, 6);
-        const slide = marker ? scale(norm(sub(me.pos, marker)), 4) : vec(0, 0);
-        candidates.push({ p: add(beyond, slide), bonus: 0.6 });
-      }
-    } else {
-      candidates.push({ p: add(anchor, scale(fwd, 4)), bonus: 0 });
-      // the OVERLAP: a wide defender bombs outside his winger when the ball
-      // works his flank in the final two-thirds
-      if (isWideDF && Math.sign(ball.y - PITCH.width / 2) === Math.sign(me.id.anchor.y - 0.5) && this.bb.axisOf(ball.x) > 42) {
-        const chalkY = me.id.anchor.y < 0.5 ? 3.5 : PITCH.width - 3.5;
-        candidates.push({ p: vec(clamp(ball.x + fwd.x * 12, 4, PITCH.length - 4), chalkY), bonus: 0.55 });
-      }
+    } else if (this.commit <= 0 || this.run === 'burst') {
+      this.run = pickRun(this.runContext(world, me), this.run);
+      this.commit = runCommit(this.run, this.rng);
     }
-
-    // The support auction's elected jobs override taste: the NEAR man shows
-    // at a 45 behind the ball, the DEPTH man stretches the last line — the
-    // triangle around the carrier always exists because someone OWNS each leg
-    if (this.bb.supportNearIdx === this.idx && carrierForJobs) {
-      const side = me.pos.y > carrierForJobs.pos.y ? 1 : -1;
-      candidates.push({ p: add(carrierForJobs.pos, add(scale(fwd, -6), vec(0, side * 7))), bonus: 1.0 });
-    }
-    if (this.bb.supportDepthIdx === this.idx) {
-      const lineAxis = clamp(this.bb.offsideAxis - 0.6, this.bb.axisOf(ball.x) + 6, 108);
-      const lineX = this.bb.attackSign() > 0 ? lineAxis : PITCH.length - lineAxis;
-      candidates.push({ p: vec(lineX, (goal.y + me.pos.y) / 2), bonus: 0.85 });
-    }
-
-    const carrier = carrierForJobs;
-    let best = anchor;
-    let bestScore = -Infinity;
-    for (const c of candidates) {
-      const target = this.clampPitch(c.p);
-      let s = c.bonus
-        + this.spaceAt(target) * 1.0
-        + this.laneOpen(ball, target) * 1.3
-        + this.bb.axisOf(target.x) * (me.id.role === 'FW' ? 0.09 : me.id.role === 'MF' ? 0.05 : 0.015)
-        + this.rng.next() * 0.4; // dither so 11 brains never lockstep
-      const nearestMate = this.nearestTeammateDist(world, target);
-      if (nearestMate < 9) s -= (9 - nearestMate) * 0.8; // spread out — bunching kills plays
-      // A run beyond the second-last defender is a flag, not a run
-      if (this.bb.phase === 'attack' && this.bb.axisOf(target.x) > this.bb.offsideAxis - 0.4) s -= 2.5;
-      if (carrier && carrier !== me) {
-        // The carrier needs AIR, not company: never crowd him, and if I'm
-        // already on top of him, runs that open the gap score higher
-        const dTarget = dist(target, carrier.pos);
-        if (dTarget < 7.5) s -= (7.5 - dTarget) * 0.7;
-        const dNow = dist(me.pos, carrier.pos);
-        if (dNow < 7) s += (dTarget - dNow) * 0.09;
-      }
-      if (s > bestScore) { bestScore = s; best = target; }
-    }
-    // Sprint is a decision, not a default: strikers stretch, the rest jog into shape
-    const far = dist(me.pos, best) > 10;
-    this.intent = { kind: 'goto', target: best, sprint: far && (me.id.role === 'FW' || this.rng.next() < 0.25) };
-    this.commit = 0.9 + this.rng.next() * 1.2;
-    // An elected support job re-reads the play twice a second — the triangle
-    // tracks the carrier instead of chasing where he used to be
-    if (this.bb.supportNearIdx === this.idx || this.bb.supportDepthIdx === this.idx) this.commit = 0.5;
+    this.intent = { kind: 'run' };
   }
 
   private decideDefending(world: World, me: PlayerBody) {
@@ -380,53 +268,53 @@ export class Brain {
       return;
     }
     if (this.bb.coverIdx === this.idx) {
-      this.intent = { kind: 'cover' };
+      this.coverMan = this.pickCoverMan(world);
+      this.intent = { kind: 'cover', man: this.coverMan };
       return;
     }
-    // Zonal anchor, warped goal-side of the nearest believed threat in my
-    // zone — then a step INTO the ball line, because the pass he's waiting
-    // for is the one to kill before it exists
+    const man = this.bb.markOf[this.idx] ?? -1;
+    if (man >= 0) {
+      this.intent = { kind: 'mark', man };
+      return;
+    }
+    // Nobody of mine to pick up: hold the zone with a step INTO the ball line,
+    // because the pass they're waiting for is the one to kill before it exists
     const anchor = this.wanderedAnchor();
-    let target = anchor;
-    let marking = false;
-    let bestD = 8;
-    for (const opp of this.believedOpponents()) {
-      const d = dist(opp, anchor);
-      if (d < bestD) {
-        bestD = d;
-        target = add(opp, scale(norm(sub(this.bb.goalWeDefend(), opp)), 1.4));
-        marking = true;
-      }
-    }
-    if (marking) {
-      const toBall = sub(world.ball.pos, target);
-      if (len(toBall) > 2) target = add(target, scale(norm(toBall), 1.1));
-    }
-    this.intent = { kind: 'goto', target: this.clampPitch(target), sprint: dist(me.pos, target) > 12 };
+    const toBall = sub(world.ball.pos, anchor);
+    const d = len(toBall);
+    const spot = d > 2 ? add(anchor, scale(scale(toBall, 1 / d), 1.2)) : anchor;
+    this.goto(spot, dist(me.pos, spot) > 12, PARK_BAND);
   }
 
-  // On the ball: shoot when the lane shows, feed the runs, drive the flank,
-  // lay it off under pressure — and only boot it blind as the last resort
+  // On the ball: shoot when the lane shows, feed the runs (and feed the human
+  // hardest of all), drive at the weak side, lay it off under pressure — and
+  // only boot it blind as the last resort
   private decideOnBall(world: World, me: PlayerBody) {
     if (this.kickPlan) return; // committed to the strike
     const goal = this.bb.goalWeAttack();
     const goalDist = dist(me.pos, goal);
-    const pressure = this.pressureAt(me.pos);
+    const opps = this.believedOpponents();
+    const pressure = pressureAt(me.pos, opps);
     const myAxis = this.bb.axisOf(me.pos.x);
+    const safeAxis = this.bb.offsideSafeAxis();
     const isWinger = me.id.role === 'FW' && Math.abs(me.id.anchor.y - 0.5) > 0.27;
+    const called = this.bb.humanRun;
 
     // In shooting range the head is ALREADY up — nobody receives in the box
-    // and stands composing himself while the chance dies
-    if (goalDist < 21) this.settleLeft = 0;
+    // and stands composing himself while the chance dies. Neither does anyone
+    // keep a human waiting when he has genuinely sprinted into space.
+    if (goalDist < 21 || (called && called.quality > 0.45)) this.settleLeft = 0;
 
     // The settle touch: a fresh ball is CARRIED for a beat while the head
     // comes up — unless a presser forces the issue, and a forced release
-    // wears extra error (the hurried ball is how pressing gets paid)
-    const settling = this.settleLeft > 0 && pressure < 0.55;
-    const rushed = this.settleLeft > 0 && pressure >= 0.55;
+    // wears extra error (the hurried ball is how pressing gets paid). Sharper
+    // brains let go of it sooner.
+    const releaseAt = 0.32 + this.bb.profile.settle * 0.3;
+    const settling = this.settleLeft > 0 && pressure < releaseAt;
+    const rushed = this.settleLeft > 0 && pressure >= releaseAt;
 
     const central = 1 - Math.abs(me.pos.y - PITCH.width / 2) / (PITCH.width / 2);
-    const lane = goalDist < 21 ? this.shotLane(me.pos, goal) : 0;
+    const lane = goalDist < 21 ? laneOpen(me.pos, goal, opps, 7) : 0;
     let shoot = -1;
     if (!settling && goalDist < 21) {
       shoot = (21 - goalDist) * 0.075
@@ -446,43 +334,53 @@ export class Brain {
     let passTo: PlayerBody | null = null;
     let passAim: Vec2 | null = null;
     let passSpeed = 14;
-    const opps = this.believedOpponents();
-    for (const p of settling ? [] : world.players) {
-      if (p === me || p.id.team !== me.id.team || p.id.role === 'GK') continue;
-      const d = dist(me.pos, p.pos);
-      if (d < 4 || d > 48) continue;
-      const speedWanted = clamp(10 + d * 0.5, 11, 23);
-      const meet = leadTarget(me.pos, p.pos, p.vel, speedWanted);
-      const margin = passMargin(me.pos, meet, speedWanted, opps);
-      if (margin < 0.15) continue; // a defender gets there first — not my pass
-      const progress = (this.bb.axisOf(meet.x) - myAxis) * 0.05;
-      const mateWide = Math.abs(p.id.anchor.y - 0.5) > 0.27;
-      const marked = this.spaceAt(p.pos);
-      let s = Math.min(margin, 1.4) * 0.9 + marked * 0.1 + progress + this.rng.next() * 0.25;
-      const runLead = dist(meet, p.pos);
-      if (runLead > 2.5 && this.spaceAt(meet) > 4) s += 0.35; // the ball INTO the run
-      // The assist: if he receives this with goal in range and in sight,
-      // that's the pass the whole move was for
-      const shotDist = dist(meet, goal);
-      if (shotDist < 20) s += (20 - shotDist) * 0.03 + this.shotLane(meet, goal) * 0.55;
-      if (d < 8) s -= 0.35;                                // micro-passes are a last resort
-      if (d > 14 && margin > 0.5) s += 0.3;                // the switch, the cross
-      if (d > 26 && margin > 0.55) s += 0.4;               // the RAKING diagonal across the map
-      if (marked < 2 && !(pressure > 0.5 && progress < 0)) s -= 0.5; // he's wearing a defender
-      if (world.players.indexOf(p) === this.bb.humanIdx) s += 0.5;   // the human's ball, naturally
-      if (me.id.role === 'MF' && p.id.role === 'FW') s += 0.25;      // mids feed the line
-      if (isWinger && myAxis > 66 && p.id.role === 'FW' && !mateWide) s += 0.85; // the cutback
-      // the relief valve back — but never from shooting range: this close,
-      // turning around is how chances die, not how pressure is escaped
-      if (pressure > 0.5 && progress < 0 && margin > 0.6 && goalDist > 21) s += 0.45;
-      if (s > passScore) { passScore = s; passTo = p; passAim = meet; passSpeed = speedWanted; }
+    if (!settling) {
+      for (let i = 0; i < world.players.length; i++) {
+        const p = world.players[i];
+        if (p === me || p.id.team !== me.id.team || p.id.role === 'GK') continue;
+        const d = dist(me.pos, p.pos);
+        if (d < 4 || d > 48) continue;
+        // The flag is a real whistle now: a man who would be beyond the line
+        // the moment this ball leaves is not an option, however open he looks
+        if (this.bb.axisOf(p.pos.x + p.vel.x * KICK_LEAD) > safeAxis - 0.4) continue;
+        const speedWanted = clamp(10 + d * 0.5, 11, 23);
+        const meet = leadTarget(me.pos, p.pos, p.vel, speedWanted);
+        const margin = passMargin(me.pos, meet, speedWanted, opps);
+        if (margin < 0.15) continue; // a defender gets there first — not my pass
+        const progress = (this.bb.axisOf(meet.x) - myAxis) * 0.05;
+        const mateWide = Math.abs(p.id.anchor.y - 0.5) > 0.27;
+        const marked = spaceAt(p.pos, opps);
+        let s = Math.min(margin, 1.4) * 0.9 + marked * 0.1 + progress + this.rng.next() * 0.25;
+        const runLead = dist(meet, p.pos);
+        if (runLead > 2.5 && spaceAt(meet, opps) > 4) s += 0.35; // the ball INTO the run
+        // The assist: if he receives this with goal in range and in sight,
+        // that's the pass the whole move was for
+        const shotDist = dist(meet, goal);
+        if (shotDist < 20) s += (20 - shotDist) * 0.03 + laneOpen(meet, goal, opps, 7) * 0.55;
+        if (d < 8) s -= 0.35;                                // micro-passes are a last resort
+        if (d > 14 && margin > 0.5) s += 0.3;                // the switch, the cross
+        if (d > 26 && margin > 0.55) s += 0.4;               // the RAKING diagonal across the map
+        if (marked < 2 && !(pressure > 0.5 && progress < 0)) s -= 0.5; // he's wearing a defender
+        // The human's ball, naturally — and when he has CALLED for it by
+        // sprinting into space, how badly we want to find him is exactly how
+        // good his run is. Good runs get fed fast; hopeful ones don't.
+        if (i === this.bb.humanIdx) s += 0.5 + (called && called.idx === i ? called.quality * 1.4 : 0);
+        if (me.id.role === 'MF' && p.id.role === 'FW') s += 0.25;      // mids feed the line
+        if (isWinger && myAxis > 66 && p.id.role === 'FW' && !mateWide) s += 0.85; // the cutback
+        // the relief valve back — but never from shooting range: this close,
+        // turning around is how chances die, not how pressure is escaped
+        if (pressure > 0.5 && progress < 0 && margin > 0.6 && goalDist > 21) s += 0.45;
+        if (s > passScore) { passScore = s; passTo = p; passAim = meet; passSpeed = speedWanted; }
+      }
     }
 
-    // Carry: wingers DRIVE the touchline; everyone else weighs space ahead
+    // Carry: wingers DRIVE the touchline; everyone else weighs space ahead.
+    // Under pressure a sharp brain lets go of it sooner than a soft one.
     const ahead = add(me.pos, scale(vec(this.bb.attackSign(), 0), 6));
-    let dribble = 0.85 + this.spaceAt(ahead) * 0.1 - pressure * 0.55;
+    let dribble = 0.85 + spaceAt(ahead, opps) * 0.1
+      - pressure * (0.4 + 0.3 * clamp(1 - this.bb.profile.settle, 0, 1));
     if (isWinger && myAxis < 74) {
-      const laneAhead = this.spaceAt(add(me.pos, scale(vec(this.bb.attackSign(), 0), 8)));
+      const laneAhead = spaceAt(add(me.pos, scale(vec(this.bb.attackSign(), 0), 8)), opps);
       if (laneAhead > 4) dribble += 0.55; // the flank is open — take them on
     }
     // In sight of goal you HIT it — nobody walks the ball over the line.
@@ -511,7 +409,21 @@ export class Brain {
         const wideY = me.id.anchor.y < 0.5 ? 4 : PITCH.width - 4;
         dir = norm(add(scale(vec(this.bb.attackSign(), 0), 1), vec(0, (wideY - me.pos.y) * 0.06)));
       }
-      for (const opp of this.believedOpponents()) {
+      // The man in front of me has a WEAK side — the one his weight isn't
+      // already covering. Run at it. Jockeyed close, plant a cut across him:
+      // the same chop the sim pays a dribbler for, and it buys the yard back.
+      const threat = this.nearestBelief(me.pos, 6.5);
+      if (threat) {
+        const gap = dist(me.pos, threat.pos);
+        const weak = this.weakSide(me, threat, dir);
+        if (gap < 2 && this.escapeT <= 0 && me.speed() > 3.4) {
+          this.escapeT = 2.2;
+          dir = weak;
+        } else if (gap < 6) {
+          dir = norm(add(dir, scale(weak, clamp((6 - gap) / 6, 0, 1) * 0.9)));
+        }
+      }
+      for (const opp of opps) {
         const away = sub(me.pos, opp);
         const d = len(away);
         if (d < 6 && d > 1e-4) dir = add(dir, scale(norm(away), (6 - d) * 0.22));
@@ -522,51 +434,43 @@ export class Brain {
       // circle a defender can chase you around.
       const want = norm(dir);
       const turn = Math.abs(signedAngle(me.facing, want));
-      this.intent = {
-        kind: 'goto',
-        target: this.clampPitch(add(me.pos, scale(want, turn > 1.1 ? 2.2 : 7))),
-        sprint: pressure < 0.3 && turn < 0.7,
-      };
+      this.goto(add(me.pos, scale(want, turn > 1.1 ? 2.2 : 7)), pressure < 0.3 && turn < 0.7, 0);
     }
   }
 
   private decideKeeper(world: World) {
     const me = world.players[this.idx];
-    if (this.bb.possessorIdx === this.idx) {
-      // Distribution is a DECISION: find the safest open teammate by the same
-      // interception model everyone uses; only hoof it when nobody's on
-      const opps = this.believedOpponents();
-      let best: PlayerBody | null = null;
-      let bestScore = 0.45; // below this margin, the hoof is safer
-      let bestSpeed = 16;
-      for (const p of world.players) {
-        if (p === me || p.id.team !== me.id.team || p.id.role === 'GK') continue;
-        const d = dist(me.pos, p.pos);
-        if (d < 10 || d > 48) continue;
-        const speedWanted = clamp(10 + d * 0.5, 12, 23);
-        const margin = passMargin(me.pos, p.pos, speedWanted, opps);
-        let s = margin * 0.7 + this.bb.axisOf(p.pos.x) * 0.008;
-        if (world.players.indexOf(p) === this.bb.humanIdx) s += 0.4; // serve the human
-        if (margin > 0.5 && s > bestScore) { bestScore = s; best = p; bestSpeed = speedWanted; }
-      }
-      if (best) {
-        const lead = leadTarget(me.pos, best.pos, best.vel, bestSpeed);
-        this.planKick(norm(sub(lead, me.pos)), clamp((bestSpeed - 10) / 14 / (0.75 + 0.25 * me.stats.power), 0.3, 0.95));
-      } else {
-        const sideY = world.ball.pos.y < PITCH.width / 2 ? 12 : PITCH.width - 12;
-        this.planKick(norm(add(scale(vec(this.bb.attackSign(), 0), 30), vec(0, sideY - me.pos.y))), 0.9);
-      }
-      // A keeper CLEARS: short windup, no wandering off with the ball
-      if (this.kickPlan) this.kickPlan.windup = Math.min(this.kickPlan.windup, 16);
+    if (this.bb.possessorIdx !== this.idx) {
+      this.kickPlan = null;
+      this.intent = { kind: 'stand' }; // KeeperMind owns his feet at full 60Hz
       return;
     }
-    this.kickPlan = null;
-    const ball = world.ball.pos;
-    const nearMyGoal = dist(ball, this.bb.goalWeDefend()) < 10;
-    const slowBall = world.ball.speed() < 6.5;
-    this.intent = nearMyGoal && slowBall && this.bb.phase !== 'attack'
-      ? { kind: 'chase', sprint: true }
-      : { kind: 'keeper' };
+    // Distribution is a DECISION: find the safest open teammate by the same
+    // interception model everyone uses; only hoof it when nobody's on
+    const opps = this.believedOpponents();
+    let best: PlayerBody | null = null;
+    let bestScore = 0.45; // below this margin, the hoof is safer
+    let bestSpeed = 16;
+    for (let i = 0; i < world.players.length; i++) {
+      const p = world.players[i];
+      if (p === me || p.id.team !== me.id.team || p.id.role === 'GK') continue;
+      const d = dist(me.pos, p.pos);
+      if (d < 10 || d > 48) continue;
+      const speedWanted = clamp(10 + d * 0.5, 12, 23);
+      const margin = passMargin(me.pos, p.pos, speedWanted, opps);
+      let s = margin * 0.7 + this.bb.axisOf(p.pos.x) * 0.008;
+      if (i === this.bb.humanIdx) s += 0.4; // serve the human
+      if (margin > 0.5 && s > bestScore) { bestScore = s; best = p; bestSpeed = speedWanted; }
+    }
+    if (best) {
+      const lead = leadTarget(me.pos, best.pos, best.vel, bestSpeed);
+      this.planKick(norm(sub(lead, me.pos)), clamp((bestSpeed - 10) / 14 / (0.75 + 0.25 * me.stats.power), 0.3, 0.95));
+    } else {
+      const sideY = world.ball.pos.y < PITCH.width / 2 ? 12 : PITCH.width - 12;
+      this.planKick(norm(add(scale(vec(this.bb.attackSign(), 0), 30), vec(0, sideY - me.pos.y))), 0.9);
+    }
+    // A keeper CLEARS: short windup, no wandering off with the ball
+    if (this.kickPlan) this.kickPlan.windup = Math.min(this.kickPlan.windup, 16);
   }
 
   // extraErr piles onto the team's own scatter — hurried balls fly loose
@@ -576,11 +480,23 @@ export class Brain {
     this.kickPlan = { aim: dir, power, windup: Math.max(8, Math.round(10 + power * 26)) };
   }
 
+  private goto(target: Vec2, sprint: boolean, band: number) {
+    this.intent = { kind: 'goto', target: clampPitch(target), sprint, band };
+  }
+
   // ---- execution (60Hz) -------------------------------------------------
 
-  private act(world: World, _dt: number): PlayerInput {
+  private act(world: World, dt: number): PlayerInput {
     const me = world.players[this.idx];
-    const input: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null, tackle: false };
+    const input: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+
+    // The line only stops holding a run once the ball is genuinely struck —
+    // a runner who beats the pass is a flag, not a chance
+    this.runFree = Math.max(0, this.runFree - dt);
+    if (this.bb.calledReceiver === this.idx) this.runFree = 1.4;
+    else if (this.bb.phase === 'attack' && world.ball.vel.x * this.bb.attackSign() > 3.5) {
+      this.runFree = Math.max(this.runFree, 0.5);
+    }
 
     if (this.kickPlan) {
       const plan = this.kickPlan;
@@ -597,14 +513,41 @@ export class Brain {
       }
       return input;
     }
+    // Off the ball the keeper is a state machine, not a utility brain — but
+    // the ceremony and the restart law still own him like everyone else
+    if (me.id.role === 'GK' && !world.celebration && world.restartLock <= 0) {
+      (this.keeper ??= new KeeperMind(this.idx)).steer(world, me, this.bb, dt, input);
+      return input;
+    }
 
     let target: Vec2 | null = null;
     let sprint = false;
+    let band = PARK_BAND;
+    // Everyone off the ball watches the play — at walking pace the sim turns
+    // that into shoulders square to the ball, so a man jogging into position
+    // sidesteps instead of pirouetting. The carrier's eyes follow his own run.
+    let attend: Vec2 | null = this.bb.possessorIdx === this.idx ? null : world.ball.pos;
+
     switch (this.intent.kind) {
+      case 'stand':
+        break;
       case 'goto':
         target = this.intent.target;
         sprint = this.intent.sprint;
+        band = this.intent.band;
         break;
+      case 'run': {
+        target = runTarget(this.runContext(world, me), this.run);
+        // Offside discipline: the break sits on the last shoulder until the
+        // ball is struck, then it goes. Timing is the whole run.
+        if (this.run === 'linebreak' && this.runFree <= 0) {
+          const holdAt = this.bb.offsideSafeAxis() - 0.6;
+          if (this.bb.axisOf(target.x) > holdAt) target = vec(this.bb.xAtAxis(holdAt), target.y);
+        }
+        sprint = runSprints(this.run) &&
+          (this.run !== 'linebreak' || this.runFree > 0 || this.bb.carrierLoaded);
+        break;
+      }
       case 'chase': {
         const lead = clamp(dist(me.pos, world.ball.pos) / 9, 0, 0.8);
         target = add(world.ball.pos, scale(world.ball.vel, lead));
@@ -616,6 +559,7 @@ export class Brain {
           target = add(target, scale(norm(sub(this.bb.goalWeDefend(), world.ball.pos)), hold));
         }
         sprint = this.intent.sprint;
+        band = 0;
         // The press bites INTENTIONALLY: a latched carrier gets the CLAMP —
         // jaws, not dives — and the lunge is saved for honest prey (a heavy
         // touch, a loose ball) where arriving first still wins it clean
@@ -629,66 +573,159 @@ export class Brain {
         }
         break;
       }
-      case 'receive': {
+      case 'receive':
         // Cut to where the pass and I MEET — never trail a ball from behind
         target = this.meetPoint(world, me);
-        sprint = this.intent.sprint;
+        sprint = true;
+        band = 0;
+        break;
+      case 'mark': {
+        const at = this.seenAt(world, this.intent.man);
+        target = this.markSpot(world, at, this.intent.man);
+        sprint = dist(me.pos, target) > 9;
+        band = 0.9;
+        // See ball AND man: when the ball is a postcode away, watch the runner
+        if (dist(me.pos, world.ball.pos) > 26) attend = at;
         break;
       }
-      case 'cover': {
-        const presser = world.players[this.bb.presserIdx];
-        const base = presser ? presser.pos : world.ball.pos;
-        target = add(base, scale(norm(sub(this.bb.goalWeDefend(), base)), 5));
+      case 'cover':
+        target = this.coverSpot(world, this.intent.man);
+        sprint = dist(me.pos, target) > 10;
+        band = 0.9;
         break;
-      }
-      case 'keeper': {
-        const goal = this.bb.goalWeDefend();
-        const toBall = norm(sub(world.ball.pos, goal));
-        target = add(goal, scale(toBall, 0.9 + Math.min(2.2, dist(goal, world.ball.pos) * 0.08)));
-        const patrol = PITCH.goalWidth / 2 - 0.4; // the keeper works the full mouth
-        target.y = clamp(target.y, PITCH.width / 2 - patrol, PITCH.width / 2 + patrol);
-        target.x = clamp(target.x, 0.4, PITCH.length - 0.4);
-        break;
-      }
     }
-
-    // Shot-stopping runs at full 60Hz — a dive can't wait for the next think
-    if (me.id.role === 'GK') this.keeperReflexes(world, me, input);
 
     if (target && !input.tackle) {
       const to = sub(target, me.pos);
       const d = len(to);
-      if (d > 0.25) {
-        const steer = d < 1.2 ? scale(norm(to), clamp(d / 1.2, 0.35, 1)) : norm(to);
-        if (len(input.move) < 0.05) input.move = steer;
-        input.sprint = input.sprint || (sprint && d > 2.5 && me.stamina > 0.15);
+      // The deadband: close enough IS arrived, and it takes a real move of the
+      // shape to un-park him. Chasing millimeters is what looked like twitching.
+      if (band <= 0) this.parked = false;
+      else if (this.parked) { if (d > band * 1.8) this.parked = false; }
+      else if (d < band) this.parked = true;
+      if (!this.parked && d > 0.2) {
+        input.move = scale(norm(to), d < 1.6 ? clamp(d / 1.6, 0.4, 1) : 1);
+        input.sprint = sprint && d > 2.5 && me.stamina > 0.15;
       }
     }
+
+    // Contact coming: shoulder in, legs slow, body between him and the ball —
+    // the sim pays that as a real shield. Never during the beat after a cut,
+    // where the whole point is getting away.
+    if (this.bb.possessorIdx === this.idx && this.escapeT <= 1.6) {
+      const threat = this.nearestBelief(me.pos, 1.7);
+      if (threat) {
+        attend = threat.pos;
+        if (len(input.move) > 0.05) {
+          input.move = scale(norm(add(input.move, scale(norm(sub(me.pos, threat.pos)), 0.8))), 0.62);
+        }
+      }
+    }
+    if (attend) input.attend = attend;
     return input;
   }
 
-  // Read the shot, attack the line of flight, and DIVE when it's in reach
-  private keeperReflexes(world: World, me: PlayerBody, input: PlayerInput) {
-    const b = world.ball;
-    const speed = b.speed();
-    if (speed < 8.5) return;
-    const myGoal = this.bb.goalWeDefend();
-    const toGoal = sub(myGoal, b.pos);
-    const closing = (b.vel.x * toGoal.x + b.vel.y * toGoal.y) / (speed * (len(toGoal) + 1e-6));
-    if (closing < 0.55 || dist(b.pos, myGoal) > 16) return;
-    // Perpendicular foot of me on the shot line: the point to attack
-    const dirHat = norm(b.vel);
-    const rel = sub(me.pos, b.pos);
-    const along = Math.max(0.5, rel.x * dirHat.x + rel.y * dirHat.y);
-    const intercept = add(b.pos, scale(dirHat, along));
-    input.move = norm(sub(intercept, me.pos));
-    input.sprint = true;
-    if (dist(me.pos, intercept) < 1.5 && dist(me.pos, b.pos) < 3.2 && me.tackleCooldown <= 0) {
-      input.tackle = true; // the dive
-    }
+  // ---- reads (believed world only) --------------------------------------
+
+  // The run engine's view of the world, filled in place — one object per brain
+  // for the life of the match, never one per think
+  private runContext(world: World, me: PlayerBody): RunCtx {
+    const c = this.runCtx ??= {
+      world,
+      bb: this.bb,
+      me,
+      idx: this.idx,
+      opps: this.oppBuf,
+      anchor: this.bb.anchorOf(this.idx),
+      side: me.id.anchor.y < 0.5 ? -1 : 1,
+      daring: this.daring,
+      rng: this.rng,
+    };
+    c.world = world;
+    c.me = me;
+    c.anchor = this.wanderedAnchor();
+    return c;
   }
 
-  // ---- scoring helpers (believed world only) ----------------------------
+  // The most dangerous BALL, not the most dangerous man: which of theirs can
+  // actually be found from here, and how much it would cost us. The incumbent
+  // keeps a bonus so the cover man doesn't dance between two lanes.
+  private pickCoverMan(world: World): number {
+    const ball = world.ball.pos;
+    const mates = this.teamPositions(world);
+    let best = -1;
+    let bestDanger = 0.25;
+    for (const [i, b] of this.beliefs) {
+      const d = dist(b.pos, ball);
+      if (d < 3 || d > 34) continue;
+      const margin = passMargin(ball, b.pos, clamp(10 + d * 0.5, 11, 23), mates);
+      if (margin < 0) continue;
+      const danger = Math.min(margin, 1.2) + (60 - this.bb.axisOf(b.pos.x)) * 0.02 +
+        (i === this.coverMan ? 0.35 : 0);
+      if (danger > bestDanger) { bestDanger = danger; best = i; }
+    }
+    return best;
+  }
+
+  // Cover is not standing behind the presser hoping: it is standing ON the
+  // pass that would actually hurt us, always behind the point of attack
+  private coverSpot(world: World, man: number): Vec2 {
+    const ball = world.ball.pos;
+    const goal = this.bb.goalWeDefend();
+    const base = man >= 0
+      ? add(ball, scale(sub(this.seenAt(world, man), ball), 0.55))
+      : add(ball, scale(norm(sub(goal, ball)), 5));
+    const axis = Math.min(this.bb.axisOf(base.x), this.bb.axisOf(ball.x) - 1.5);
+    return clampPitch(vec(this.bb.xAtAxis(axis), base.y));
+  }
+
+  // Goal-side and ball-side of my man: he never gets it facing forward, and
+  // if it comes anyway I am the one who arrives
+  private markSpot(world: World, at: Vec2, man: number): Vec2 {
+    const lead = add(at, scale(this.seenVel(world, man), 0.25));
+    const goalSide = norm(sub(this.bb.goalWeDefend(), lead));
+    const toBall = sub(world.ball.pos, lead);
+    const ballD = len(toBall);
+    // tight when the ball can reach him, a step off it when it can't
+    let spot = add(lead, scale(goalSide, clamp(1.1 + ballD * 0.045, 1.1, 3.2)));
+    if (ballD > 2) spot = add(spot, scale(scale(toBall, 1 / ballD), 1.1));
+    return clampPitch(spot);
+  }
+
+  // Where I believe that man is — my own eyes while they're fresh, the team
+  // sheet after that. Eleven mates shouting is how a defender keeps a runner
+  // he can't currently see.
+  private seenAt(world: World, idx: number): Vec2 {
+    const b = this.beliefs.get(idx);
+    return b && b.age < 1.2 ? b.pos : world.players[idx].pos;
+  }
+
+  private seenVel(world: World, idx: number): Vec2 {
+    const b = this.beliefs.get(idx);
+    return b && b.age < 1.2 ? b.vel : world.players[idx].vel;
+  }
+
+  // The side his weight isn't already covering — and when he's set, whichever
+  // side has the air
+  private weakSide(me: PlayerBody, threat: Belief, drive: Vec2): Vec2 {
+    const right = perpRight(drive);
+    const drift = threat.vel.x * right.x + threat.vel.y * right.y;
+    if (Math.abs(drift) > 0.8) return scale(right, drift > 0 ? -1 : 1);
+    const opps = this.believedOpponents();
+    const openRight = spaceAt(add(me.pos, scale(right, 4)), opps);
+    const openLeft = spaceAt(sub(me.pos, scale(right, 4)), opps);
+    return scale(right, openRight >= openLeft ? 1 : -1);
+  }
+
+  // My own team is ground truth: the interceptors on any lane they might try
+  private teamPositions(world: World): Vec2[] {
+    this.mateBuf.length = 0;
+    const team = world.players[this.idx].id.team;
+    world.players.forEach((p, i) => {
+      if (p.id.team === team && i !== this.idx) this.mateBuf.push(p.pos);
+    });
+    return this.mateBuf;
+  }
 
   // Roll the ball forward in the head (same friction the pitch applies) and
   // find the earliest point I can beat it to — receiving is an intercept
@@ -711,83 +748,26 @@ export class Brain {
       }
       if (dist(me.pos, vec(px, py)) / mySpeed <= t) break;
     }
-    return this.clampPitch(vec(px, py));
+    return clampPitch(vec(px, py));
   }
 
-  // The formation slot plus a slow personal drift — no two players idle alike
+  // The formation slot plus a slow personal drift. Small on purpose: the
+  // deadband should swallow it, so idle men breathe instead of shuffling.
   private wanderedAnchor(): Vec2 {
     const a = this.bb.anchorOf(this.idx);
-    return this.clampPitch(vec(
-      a.x + Math.sin(this.t * 0.23 + this.wanderSeed) * 1.4,
-      a.y + Math.cos(this.t * 0.31 + this.wanderSeed * 1.3) * 1.4,
+    return clampPitch(vec(
+      a.x + Math.sin(this.t * 0.17 + this.wanderSeed) * 0.55,
+      a.y + Math.cos(this.t * 0.21 + this.wanderSeed * 1.3) * 0.55,
     ));
   }
 
-  private clampPitch(p: Vec2): Vec2 {
-    return vec(clamp(p.x, 1.5, PITCH.length - 1.5), clamp(p.y, 1.5, PITCH.width - 1.5));
-  }
-
-  private nearestBelieved(point: Vec2, within: number): Vec2 | null {
-    let best: Vec2 | null = null;
+  private nearestBelief(point: Vec2, within: number): Belief | null {
+    let best: Belief | null = null;
     let bestD = within;
-    for (const opp of this.believedOpponents()) {
-      const d = dist(opp, point);
-      if (d < bestD) { bestD = d; best = opp; }
+    for (const [, b] of this.beliefs) {
+      const d = dist(b.pos, point);
+      if (d < bestD) { bestD = d; best = b; }
     }
     return best;
-  }
-
-  private spaceAt(point: Vec2): number {
-    let nearest = 10;
-    for (const opp of this.believedOpponents()) nearest = Math.min(nearest, dist(opp, point));
-    return nearest;
-  }
-
-  private pressureAt(point: Vec2): number {
-    let p = 0;
-    for (const opp of this.believedOpponents()) {
-      const d = dist(opp, point);
-      if (d < 4.5) p = Math.max(p, 1 - d / 4.5);
-    }
-    return p;
-  }
-
-  // 1 when no believed opponent sits near the segment a→b, →0 as one blocks it
-  // Shot sight: like laneOpen, but blockers living in the keeper's zone don't
-  // count — the keeper is never a reason NOT to shoot, beating him is the game
-  private shotLane(from: Vec2, goal: Vec2): number {
-    const ab = sub(goal, from);
-    const abLen = len(ab);
-    if (abLen < 1e-4) return 1;
-    let worst = 1;
-    for (const opp of this.believedOpponents()) {
-      if (dist(opp, goal) < 7) continue;
-      const t = clamp(((opp.x - from.x) * ab.x + (opp.y - from.y) * ab.y) / (abLen * abLen), 0.05, 0.95);
-      const perp = dist(opp, add(from, scale(ab, t)));
-      if (perp < 2.2) worst = Math.min(worst, perp / 2.2);
-    }
-    return worst;
-  }
-
-  private laneOpen(a: Vec2, b: Vec2): number {
-    const ab = sub(b, a);
-    const abLen = len(ab);
-    if (abLen < 1e-4) return 1;
-    let worst = 1;
-    for (const opp of this.believedOpponents()) {
-      const t = clamp(((opp.x - a.x) * ab.x + (opp.y - a.y) * ab.y) / (abLen * abLen), 0.05, 0.95);
-      const perp = dist(opp, add(a, scale(ab, t)));
-      if (perp < 2.2) worst = Math.min(worst, perp / 2.2);
-    }
-    return worst;
-  }
-
-  private nearestTeammateDist(world: World, point: Vec2): number {
-    let nearest = 40;
-    world.players.forEach((p, i) => {
-      if (i === this.idx || p.id.team !== world.players[this.idx].id.team) return;
-      nearest = Math.min(nearest, dist(p.pos, point));
-    });
-    return nearest;
   }
 }
