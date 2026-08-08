@@ -1,11 +1,14 @@
-import { Container, Graphics, Rectangle, Sprite } from 'pixi.js';
+import { Container, FederatedWheelEvent, Graphics, Rectangle, Sprite } from 'pixi.js';
 import { GameAssets } from '../render/assets';
 import { PixelText } from '../render/pixelText';
 import { audio } from '../audio/engine';
 import { Rng } from '../core/rng';
+import { clamp } from '../core/math';
 import { Reveal, centerShade } from './kit';
 import { Screen } from './screens';
-import { StarPlayer, rarityOf, academyPlayer } from '../data/players';
+import { CompareCard, RatingStrip } from './compare';
+import { rateSquad } from '../data/ratings';
+import { StarPlayer, Rarity, rarityOf, academyPlayer } from '../data/players';
 import { FORMATIONS, Role, STYLES, formationsOf } from '../data/formations';
 import { SquadPlayer } from '../data/roster';
 import { DraftCtl, DraftIntent, DraftOp } from '../net/net';
@@ -26,7 +29,10 @@ import {
 const RARITY_TINT: Record<string, number> = { legend: 0xffe27a, epic: 0xd9a6ff, rare: 0x9cc4f0, common: 0xc4ccd8 };
 const ROLE_TINT: Record<Role, number> = { GK: 0xf0c552, DF: 0x8ecff0, MF: 0x9ff0b8, FW: 0xff9c8a };
 const FILTERS: (Role | 'ALL')[] = ['ALL', 'GK', 'DF', 'MF', 'FW'];
+const BANDS: (Rarity | 'ALL')[] = ['ALL', 'legend', 'epic', 'rare', 'common'];
 const ROLES: Role[] = ['GK', 'DF', 'MF', 'FW'];
+const CARD_GAP = 14;     // air between shelf cards, and the row pitch's other half
+const GRID_TOP = 58;     // the two chip bars own the market's first 58 pixels
 const SHAPE_TIME = 15;
 const PICK_TIME = 30;
 const REMOTE_TIME = 35;  // an absent captain's clock — the room never stalls
@@ -355,10 +361,20 @@ export class SquadBuilderScreen implements Screen {
   private remoteClock = REMOTE_TIME;
   private doneT = 0; // boards full: the last reveal's beat before finish()
   private filter: Role | 'ALL' = 'ALL';
+  private band: Rarity | 'ALL' = 'ALL';
+  private sortBy: 'ovr' | 'price' = 'ovr';
   private gridSel = 0;
-  private gridScroll = 0;
+  private selRef: StarPlayer | null = null; // the ring holds a MAN, not a slot
+  private barFocus = -1;   // -1 the shelf, 0 the job chips, 1 the band chips
+  private barSel = 0;
+  private scrollPx = 0;    // where the shelf sits
+  private scrollTo = 0;    // where it's gliding
+  private builtRow = -1;   // first row currently cut into the grid layer
+  private shelfCount = 0;
   private gridCols = 4;
   private gridRows = 2;
+  private gridW = 0;
+  private gridH = 0;
   private arrangements: [(number | null)[], (number | null)[]] = [[], []]; // per side: slot → pick index
   private cpuReveal: { view: Container; t: number } | null = null;
   private flyer: { view: Container; t: number; fx: number; fy: number; tx: number; ty: number } | null = null;
@@ -392,15 +408,21 @@ export class SquadBuilderScreen implements Screen {
   private cpuTitle: PixelText;
   private myBudget: PixelText;
   private cpuBudget: PixelText;
-  private myStats: PixelText;
+  private myStrip: RatingStrip;   // the sub-cards that argue across the room
+  private cpuStrip: RatingStrip;
   private myNeeds: PixelText;
   private myBoard: CardBoard;
   private cpuBoard: CardBoard;
+  private verdict: CompareCard;   // the full head-to-head, once the boards fill
   private wheelPrompt: PixelText;
   private promptPulse = 0;
   private market = new Container();
+  private gridClip = new Container();   // the window the shelf slides behind
   private gridLayer = new Container();
+  private gridMask = new Graphics();
+  private gridRail = new Graphics();    // how much shelf is left, and where you are
   private filterRow = new Container();
+  private bandRow = new Container();
   private focusLayer = new Container();
   private overlay = new Container();
   private backBtn = new Container();
@@ -419,21 +441,29 @@ export class SquadBuilderScreen implements Screen {
     this.cpuTitle = new PixelText(assets, 3, 0x9cc4f0);
     this.myBudget = new PixelText(assets, 2, 0x9ff0b8);
     this.cpuBudget = new PixelText(assets, 2, 0x8f97a8);
-    this.myStats = new PixelText(assets, 2, 0x8f97a8);
+    this.myStrip = new RatingStrip(assets);
+    this.cpuStrip = new RatingStrip(assets);
     this.myNeeds = new PixelText(assets, 2, 0x8f97a8);
+    this.verdict = new CompareCard(assets, 3);
+    this.verdict.visible = false;
     this.myBoard = new CardBoard(assets, true);
     this.myBoard.onSwap = (a, b) => this.swapSlots(a, b);
     this.cpuBoard = new CardBoard(assets, false);
     this.wheelPrompt = new PixelText(assets, 3, 0xffd95e);
-    this.myPanel.addChild(this.myTitle, this.myBudget, this.myBoard, this.myStats, this.myNeeds);
-    this.cpuPanel.addChild(this.cpuTitle, this.cpuBudget, this.cpuBoard);
-    this.market.addChild(this.filterRow, this.gridLayer, this.focusLayer);
+    this.myPanel.addChild(this.myTitle, this.myBudget, this.myBoard, this.myStrip, this.myNeeds);
+    this.cpuPanel.addChild(this.cpuTitle, this.cpuBudget, this.cpuBoard, this.cpuStrip);
+    this.gridClip.addChild(this.gridLayer);
+    this.gridClip.mask = this.gridMask;
+    this.market.addChild(this.filterRow, this.bandRow, this.gridMask, this.gridClip, this.gridRail, this.focusLayer);
+    // the wheel walks the shelf wherever the pointer sits over the market
+    this.market.eventMode = 'static';
+    this.market.on('wheel', (e: FederatedWheelEvent) => this.wheelShelf(e.deltaY, e.deltaMode));
     this.buildBackBtn();
     this.root.addChild(
       this.shade, this.header, this.turnText, this.clockBar, this.myPanel, this.cpuPanel,
       this.market, this.shapePanels, this.coin, this.caption,
       this.reelBack, this.reelStrip, this.reelMaskG, this.reelFront, this.wheelPrompt, this.overlay,
-      this.backBtn, this.foot,
+      this.verdict, this.backBtn, this.foot,
     );
   }
 
@@ -469,6 +499,7 @@ export class SquadBuilderScreen implements Screen {
     this.flyer?.view.destroy({ children: true });
     this.flyer = null;
     this.overlay.removeChildren().forEach((c) => c.destroy({ children: true }));
+    this.verdict.visible = false;
     this.killReel();
   }
 
@@ -541,8 +572,15 @@ export class SquadBuilderScreen implements Screen {
     this.shapeRow = 0;
     this.shapeClock = SHAPE_TIME;
     this.filter = 'ALL';
+    this.band = 'ALL';
+    this.sortBy = 'ovr';
     this.gridSel = 0;
-    this.gridScroll = 0;
+    this.selRef = null;
+    this.barFocus = -1;
+    this.barSel = 0;
+    this.scrollPx = 0;
+    this.scrollTo = 0;
+    this.builtRow = -1;
     this.roleSel = 0;
     this.doneT = 0;
     this.myTitle.text = this.teamNames[this.mySide];
@@ -551,7 +589,7 @@ export class SquadBuilderScreen implements Screen {
     this.foot.text = !this.iAmCaptain
       ? 'YOUR CAPTAIN RUNS THE WAR ROOM - DRAG CHIPS TO PREVIEW - THE MATCH STARTS WHEN THE BOARDS FILL'
       : setup.mode === 'draft'
-        ? 'WASD MOVE - ENTER SIGN - F FILTER - X ACADEMY - DRAG CHIPS TO REARRANGE'
+        ? 'WASD MOVE - WHEEL SCROLLS - PRESS UP AT THE TOP FOR FILTERS - ENTER SIGNS - X ACADEMY'
         : 'A D PICK A SHELF - ENTER ROLLS - DRAG CHIPS TO REARRANGE';
     this.backBtn.visible = this.authority;
     audio.ui('coin');
@@ -748,11 +786,11 @@ export class SquadBuilderScreen implements Screen {
     }
     const needs = needsOf(mine);
     this.myNeeds.text = `NEED GK ${needs.GK} DF ${needs.DF} MF ${needs.MF} FW ${needs.FW}`;
-    const avg = (roles: Role[]) => {
-      const grp = mine.picks.filter((p) => roles.includes(p.role));
-      return grp.length ? String(Math.round(grp.reduce((s, p) => s + p.ovr, 0) / grp.length)) : '--';
-    };
-    this.myStats.text = `ATT ${avg(['FW'])}  MID ${avg(['MF'])}  DEF ${avg(['DF', 'GK'])}  OVR ${avg(['GK', 'DF', 'MF', 'FW'])}`;
+    // both dugouts re-rate on every pick: the gold moves as the boards fill
+    const mineRating = rateSquad(mine.picks);
+    const oppRating = rateSquad(opp.picks);
+    this.myStrip.setRatings(mineRating, oppRating);
+    this.cpuStrip.setRatings(oppRating, mineRating);
     if (this.myShape) {
       this.myBoard.setShape(this.myShape);
       this.myBoard.setEntries(FORMATIONS[this.myShape].slots.map((_, i) => {
@@ -771,74 +809,203 @@ export class SquadBuilderScreen implements Screen {
   }
 
   // ------------------------------------------------------------ the market
+  // The WHOLE shelf, cut the way this drafter wants to shop it. Filters and
+  // sort are local view state — the ops still speak in absolute pool indices.
   private pool(): { p: StarPlayer; poolIdx: number }[] {
-    return this.draft.pool
+    const list = this.draft.pool
       .map((p, poolIdx) => ({ p, poolIdx }))
-      .filter(({ p }) => this.filter === 'ALL' || p.role === this.filter);
+      .filter(({ p }) => (this.filter === 'ALL' || p.role === this.filter)
+        && (this.band === 'ALL' || rarityOf(p.ovr) === this.band));
+    // by price the bargains come FIRST — shopping down-market is a mode, not a fallback
+    list.sort((a, b) => this.sortBy === 'price'
+      ? a.p.price - b.p.price || b.p.ovr - a.p.ovr
+      : b.p.ovr - a.p.ovr || a.p.price - b.p.price);
+    return list;
   }
 
-  private rebuildFilters() {
+  private rowH(): number { return this.assets.manifest.cards.h * 2 + CARD_GAP; }
+
+  private maxScroll(count: number): number {
+    return Math.max(0, Math.ceil(count / this.gridCols) * this.rowH() - CARD_GAP - this.gridH);
+  }
+
+  // Two bars over the shelf: the job, the band, which way it's sorted — and
+  // how much of it your money can actually touch
+  private rebuildBars(entries: { p: StarPlayer }[]) {
     this.filterRow.removeChildren().forEach((c) => c.destroy({ children: true }));
-    let x = 0;
-    for (const f of FILTERS) {
-      const active = f === this.filter;
-      const chip = new Container();
+    this.bandRow.removeChildren().forEach((c) => c.destroy({ children: true }));
+    const chip = (row: Container, x: number, text: string, active: boolean, lit: number, focused: boolean, tap: () => void) => {
+      const c = new Container();
       const label = new PixelText(this.assets, 2, active ? 0x12161f : 0x9aa2b0);
-      label.text = f === 'ALL' ? 'ALL' : f;
-      const g = new Graphics();
+      label.text = text;
       const w = label.textWidth + 16;
-      g.rect(0, 0, w, 20).fill({ color: active ? 0xffd95e : 0x161b26, alpha: active ? 0.95 : 0.85 });
+      const g = new Graphics();
+      g.rect(0, 0, w, 20).fill({ color: active ? lit : 0x161b26, alpha: active ? 0.95 : 0.85 });
       g.rect(0, 0, w, 1).fill({ color: 0xfff8e0, alpha: active ? 0.6 : 0.15 });
+      if (focused) g.rect(-2, -2, w + 4, 24).stroke({ width: 2, color: 0xffe98f, alpha: 0.9 });
       label.position.set(8, 4);
-      chip.addChild(g, label);
-      chip.position.set(x, 0);
-      chip.eventMode = 'static';
-      chip.cursor = 'pointer';
-      chip.on('pointertap', () => { this.filter = f; this.gridSel = 0; this.gridScroll = 0; audio.ui('move'); this.rebuildMarket(); });
-      this.filterRow.addChild(chip);
-      x += w + 8;
+      c.addChild(g, label);
+      c.position.set(x, 0);
+      c.eventMode = 'static';
+      c.cursor = 'pointer';
+      c.on('pointertap', tap);
+      row.addChild(c);
+      return x + w + 8;
+    };
+    let x = 0;
+    FILTERS.forEach((f, i) => {
+      x = chip(this.filterRow, x, f, f === this.filter, 0xffd95e, this.barFocus === 0 && this.barSel === i, () => this.applyChip(0, i));
+    });
+    x = 0;
+    BANDS.forEach((b, i) => {
+      x = chip(this.bandRow, x, b, b === this.band, RARITY_TINT[b] ?? 0xffd95e, this.barFocus === 1 && this.barSel === i, () => this.applyChip(1, i));
+    });
+    // the sort chip only lights up when it's pointing at the bargains
+    const cheap = this.sortBy === 'price';
+    chip(this.bandRow, x + 6, cheap ? 'BY PRICE' : 'BY OVERALL', cheap, 0x9ff0b8,
+      this.barFocus === 1 && this.barSel === BANDS.length, () => this.applyChip(1, BANDS.length));
+    // the honest count: the whole shelf, and the slice your budget reaches
+    const mine = this.draft.sides[this.mySide];
+    const shelf = new PixelText(this.assets, 2, 0x8f97a8);
+    shelf.text = `SHELF ${entries.length}`;
+    shelf.position.set(this.gridW + 44, 3);
+    const reach = new PixelText(this.assets, 2, 0x9ff0b8);
+    reach.text = `IN REACH ${entries.filter((e) => canPick(mine, e.p)).length}`;
+    reach.position.set(this.gridW + 44, 29);
+    this.filterRow.addChild(shelf, reach);
+  }
+
+  // Which chip did what: the job bar, the band bar, and the sort toggle riding
+  // the band bar's tail
+  private applyChip(row: 0 | 1, i: number) {
+    if (this.barFocus === row) this.barSel = i;
+    if (row === 0) this.filter = FILTERS[i];
+    else if (i < BANDS.length) this.band = BANDS[i];
+    else this.sortBy = this.sortBy === 'ovr' ? 'price' : 'ovr';
+    audio.ui('move');
+    this.recut();
+  }
+
+  private focusChip(row: 0 | 1, i: number) {
+    this.barFocus = row;
+    this.barSel = i;
+    audio.ui('move');
+    this.rebuildMarket();
+  }
+
+  // A new cut of the shelf: the held man keeps the ring and the list GLIDES to
+  // find him — nothing under the pointer ever jumps
+  private recut() {
+    const entries = this.pool();
+    const held = entries.findIndex((e) => e.p === this.selRef);
+    if (held < 0) {
+      this.selRef = entries[0]?.p ?? null;
+      this.gridSel = 0;
+      this.scrollTo = 0;
+    } else {
+      this.gridSel = held;
+      this.keepSelInView(held, entries.length);
     }
+    this.rebuildMarket();
+  }
+
+  // The shelf moves the least it can to show the ringed card whole
+  private keepSelInView(idx: number, count: number) {
+    const top = Math.floor(idx / this.gridCols) * this.rowH();
+    const floorPx = top + this.rowH() - CARD_GAP - this.gridH;
+    this.scrollTo = clamp(clamp(this.scrollTo, floorPx, top), 0, this.maxScroll(count));
+  }
+
+  // Mouse wheel walks the shelf — trackpads count pixels, notched mice lines
+  private wheelShelf(deltaY: number, mode: number) {
+    if (this.phase !== 'market' || this.mode !== 'draft') return;
+    const px = mode === 1 ? deltaY * 28 : mode === 2 ? deltaY * this.gridH : deltaY;
+    this.scrollTo = clamp(this.scrollTo + px, 0, this.maxScroll(this.shelfCount));
+  }
+
+  // Every frame the shelf eases toward its mark, re-cutting the built window
+  // only when it crosses a row line
+  private glideShelf(dt: number) {
+    const diff = this.scrollTo - this.scrollPx;
+    if (Math.abs(diff) < 0.5) {
+      if (this.scrollPx === this.scrollTo) return;
+      this.scrollPx = this.scrollTo;
+    } else {
+      this.scrollPx += diff * (1 - Math.exp(-dt * 16));
+    }
+    const row = Math.floor(this.scrollPx / this.rowH());
+    if (row !== this.builtRow) this.rebuildMarket();
+    else this.gridLayer.y = Math.round(row * this.rowH() - this.scrollPx);
+    this.drawRail();
+  }
+
+  private drawRail() {
+    const g = this.gridRail;
+    g.clear();
+    const total = Math.ceil(this.shelfCount / this.gridCols) * this.rowH() - CARD_GAP;
+    if (total <= this.gridH) return; // the whole shelf fits: no rail to draw
+    const x = this.gridW + 10;
+    g.rect(x, GRID_TOP, 4, this.gridH).fill({ color: 0x10141c, alpha: 0.85 });
+    const th = Math.max(22, Math.round((this.gridH * this.gridH) / total));
+    const ty = GRID_TOP + Math.round((this.gridH - th) * clamp(this.scrollPx / (total - this.gridH), 0, 1));
+    g.rect(x, ty, 4, th).fill({ color: 0xffd95e, alpha: 0.8 });
+    g.rect(x, ty, 4, 1).fill({ color: 0xfff8e0, alpha: 0.5 });
   }
 
   private rebuildMarket(animate = false) {
     if (this.phase !== 'market' || this.mode !== 'draft') return;
-    this.rebuildFilters();
     this.gridLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
+    this.focusLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
     this.reveal.clear();
     const entries = this.pool();
     const mine = this.draft.sides[this.mySide];
     const s = 2;
     const cardW = this.assets.manifest.cards.w * s;
     const cardH = this.assets.manifest.cards.h * s;
-    const maxSel = entries.length - 1;
-    this.gridSel = Math.max(0, Math.min(this.gridSel, maxSel));
-    const selRow = Math.floor(this.gridSel / this.gridCols);
-    if (selRow < this.gridScroll) this.gridScroll = selRow;
-    if (selRow >= this.gridScroll + this.gridRows) this.gridScroll = selRow - this.gridRows + 1;
-    const first = this.gridScroll * this.gridCols;
-    const visible = entries.slice(first, first + this.gridCols * this.gridRows);
+    this.shelfCount = entries.length;
+    // the ring holds a man; a signing or a re-cut never slides it onto a stranger
+    const held = entries.findIndex((e) => e.p === this.selRef);
+    this.gridSel = clamp(held >= 0 ? held : this.gridSel, 0, Math.max(0, entries.length - 1));
+    this.selRef = entries[this.gridSel]?.p ?? null;
+    const rowH = this.rowH();
+    const max = this.maxScroll(entries.length);
+    this.scrollTo = clamp(this.scrollTo, 0, max);
+    this.scrollPx = clamp(this.scrollPx, 0, max);
+    this.rebuildBars(entries);
+    // only the rows in the window get cut — the shelf can be two hundred deep
+    this.builtRow = Math.floor(this.scrollPx / rowH);
+    this.gridLayer.y = Math.round(this.builtRow * rowH - this.scrollPx);
+    const first = this.builtRow * this.gridCols;
+    const visible = entries.slice(first, first + (this.gridRows + 2) * this.gridCols);
     visible.forEach(({ p, poolIdx }, vi) => {
       const i = first + vi;
       const col = vi % this.gridCols;
       const row = Math.floor(vi / this.gridCols);
       const card = new CardView(this.assets, p, s, true); // stats live ON the card
-      card.position.set(col * (cardW + 14), row * (cardH + 14));
+      card.position.set(col * (cardW + CARD_GAP), row * rowH);
       const affordable = this.myTurn && canPick(mine, p);
       card.alpha = affordable ? 1 : 0.45;
       const holder = new Container();
       holder.addChild(card);
       if (i === this.gridSel) {
+        // the held card stands up out of the row: gold ring, lit corner studs
         const ring = new Graphics();
         ring.rect(-3, -3, cardW + 6, cardH + 6).stroke({ width: 2, color: 0xffe98f, alpha: 0.95 });
-        holder.addChild(ring);
+        for (const [sx, sy] of [[-4, -4], [cardW, -4], [-4, cardH], [cardW, cardH]]) {
+          ring.rect(sx, sy, 4, 4).fill({ color: 0xffd95e, alpha: 0.95 });
+        }
         ring.position.copyFrom(card.position);
+        card.y -= 2;
+        holder.addChild(ring);
       }
       holder.eventMode = 'static';
       holder.cursor = 'pointer';
-      holder.hitArea = new Rectangle(card.position.x, card.position.y, cardW, cardH);
+      holder.hitArea = new Rectangle(col * (cardW + CARD_GAP), row * rowH, cardW, cardH);
       holder.on('pointertap', () => {
         if (this.gridSel === i) return this.trySign(poolIdx);
         this.gridSel = i;
+        this.selRef = p;
+        this.barFocus = -1;
         audio.ui('move');
         this.rebuildMarket();
       });
@@ -846,17 +1013,26 @@ export class SquadBuilderScreen implements Screen {
       if (animate) this.reveal.add(holder, vi * 0.03);
     });
     if (animate) this.reveal.play();
+    this.drawRail();
     // the focus card: the man under the glass
-    this.focusLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
     const sel = entries[this.gridSel];
     const fw = this.assets.manifest.cards.w;
     if (sel) {
       const focus = new CardView(this.assets, sel.p, 3, true);
       this.focusLayer.addChild(focus);
-      const hint = new PixelText(this.assets, 2, this.myTurn && canPick(mine, sel.p) ? 0x9ff0b8 : 0x5a6070);
+      const reachable = this.myTurn && canPick(mine, sel.p);
+      const hint = new PixelText(this.assets, 2, reachable ? 0x9ff0b8 : 0x5a6070);
       hint.text = !this.myTurn ? this.clockLabel(this.curSide) : canPick(mine, sel.p) ? 'ENTER TO SIGN' : 'OUT OF REACH';
-      hint.centerAt(fw * 1.5, this.assets.manifest.cards.h * 3 + 12);
+      hint.centerAt(fw * 1.5, this.assets.manifest.cards.h * 3 + 10);
       this.focusLayer.addChild(hint);
+      // what signing him LEAVES you — the whole argument for shopping cheap
+      const slotsLeft = mine.size - mine.picks.length - 1;
+      if (reachable && slotsLeft > 0) {
+        const after = new PixelText(this.assets, 2, 0xffd95e);
+        after.text = `LEAVES ${(mine.budget - sel.p.price).toFixed(1)}M FOR ${slotsLeft}`;
+        after.centerAt(fw * 1.5, this.assets.manifest.cards.h * 3 + 26);
+        this.focusLayer.addChild(after);
+      }
     }
     // the academy shelf: an honest journeyman card, always in stock
     const needs = needsOf(mine);
@@ -864,7 +1040,7 @@ export class SquadBuilderScreen implements Screen {
     const junior = academyPlayer(role, mine.picks.length + 1);
     junior.name = 'ACADEMY';
     const juniorCard = new CardView(this.assets, junior, 2, true);
-    const jy = this.assets.manifest.cards.h * 3 + 44;
+    const jy = this.assets.manifest.cards.h * 3 + 48;
     juniorCard.position.set(Math.round((fw * 3 - fw * 2) / 2), jy);
     juniorCard.alpha = this.myTurn ? 1 : 0.45;
     juniorCard.eventMode = 'static';
@@ -937,7 +1113,8 @@ export class SquadBuilderScreen implements Screen {
   private afterTurn() {
     this.refreshPanels();
     if (this.draft.turn >= this.draft.order.length) {
-      this.doneT = 2.2; // the final close-up breathes before the boots go on
+      this.doneT = 2.6; // the head-to-head breathes before the boots go on
+      this.showVerdict();
       this.turnRefresh();
       this.layoutPhase();
       return;
@@ -947,6 +1124,25 @@ export class SquadBuilderScreen implements Screen {
     this.pickClock = PICK_TIME;
     this.rebuildMarket();
     this.layoutPhase();
+  }
+
+  // Boards full: the two squads step up and are measured against each other,
+  // every number climbing from nothing so you WATCH the argument get made
+  private showVerdict() {
+    const zero = { att: 0, mid: 0, def: 0, gk: 0, pace: 0 };
+    const mine = rateSquad(this.draft.sides[this.mySide].picks);
+    const theirs = rateSquad(this.draft.sides[1 - this.mySide].picks);
+    this.verdict.setNames(this.teamNames[this.mySide], this.teamNames[1 - this.mySide]);
+    this.verdict.setRatings(zero, zero, true);
+    this.verdict.setRatings(mine, theirs);
+    this.verdict.visible = true;
+    this.placeVerdict();
+    audio.ui('card');
+  }
+
+  private placeVerdict() {
+    const { w, h } = this.verdict.size;
+    this.verdict.position.set(Math.round((this.w - w) / 2), Math.round((this.h - h) / 2));
   }
 
   // The clock (or an empty chair) makes the current side's call
@@ -1123,27 +1319,63 @@ export class SquadBuilderScreen implements Screen {
     }
     if (this.phase !== 'market') return;
     if (this.mode === 'draft') {
-      const entries = this.pool();
-      const cols = this.gridCols;
-      if (code === 'ArrowLeft' || code === 'KeyA') { this.gridSel = Math.max(0, this.gridSel - 1); audio.ui('move'); this.rebuildMarket(); }
-      if (code === 'ArrowRight' || code === 'KeyD') { this.gridSel = Math.min(entries.length - 1, this.gridSel + 1); audio.ui('move'); this.rebuildMarket(); }
-      if (code === 'ArrowUp' || code === 'KeyW') { this.gridSel = Math.max(0, this.gridSel - cols); audio.ui('move'); this.rebuildMarket(); }
-      if (code === 'ArrowDown' || code === 'KeyS') { this.gridSel = Math.min(entries.length - 1, this.gridSel + cols); audio.ui('move'); this.rebuildMarket(); }
-      if (code === 'KeyF') {
-        this.filter = FILTERS[(FILTERS.indexOf(this.filter) + 1) % FILTERS.length];
-        this.gridSel = 0;
-        this.gridScroll = 0;
-        audio.ui('move');
-        this.rebuildMarket();
-      }
-      if (code === 'KeyX') this.signAcademy();
-      if ((code === 'Enter' || code === 'Space') && entries[this.gridSel]) this.trySign(entries[this.gridSel].poolIdx);
+      this.marketKey(code);
     } else {
       if (this.roll || !this.myTurn) return;
       if (code === 'ArrowLeft' || code === 'KeyA') { this.roleSel = (this.roleSel + 3) % 4; audio.ui('move'); this.layoutPhase(); }
       if (code === 'ArrowRight' || code === 'KeyD') { this.roleSel = (this.roleSel + 1) % 4; audio.ui('move'); this.layoutPhase(); }
       if (code === 'Enter' || code === 'Space') this.requestRoll(ROLES[this.roleSel]);
     }
+  }
+
+  // One stick walks the whole market: the chips sit above the shelf, so off the
+  // top row the cursor steps UP into them instead of hitting a wall
+  private marketKey(code: string) {
+    if (code === 'KeyX') return this.signAcademy();
+    if (code === 'KeyF') return this.applyChip(0, (FILTERS.indexOf(this.filter) + 1) % FILTERS.length);
+    if (code === 'KeyR') return this.applyChip(1, (BANDS.indexOf(this.band) + 1) % BANDS.length);
+    if (code === 'KeyT') return this.applyChip(1, BANDS.length);
+    const entries = this.pool();
+    if (this.barFocus >= 0) {
+      const row = this.barFocus as 0 | 1;
+      const len = row === 0 ? FILTERS.length : BANDS.length + 1;
+      if (code === 'ArrowLeft' || code === 'KeyA') return this.focusChip(row, (this.barSel + len - 1) % len);
+      if (code === 'ArrowRight' || code === 'KeyD') return this.focusChip(row, (this.barSel + 1) % len);
+      if (code === 'ArrowUp' || code === 'KeyW') return this.focusChip(0, Math.min(this.barSel, FILTERS.length - 1));
+      if (code === 'ArrowDown' || code === 'KeyS') {
+        if (row === 0) return this.focusChip(1, this.barSel);
+        this.barFocus = -1;
+        audio.ui('move');
+        return this.rebuildMarket();
+      }
+      if (code === 'Enter' || code === 'Space') this.applyChip(row, this.barSel);
+      return;
+    }
+    const cols = this.gridCols;
+    const last = Math.max(0, entries.length - 1);
+    const page = cols * this.gridRows;
+    let sel = this.gridSel;
+    if (code === 'ArrowLeft' || code === 'KeyA') sel--;
+    else if (code === 'ArrowRight' || code === 'KeyD') sel++;
+    else if (code === 'ArrowDown' || code === 'KeyS') sel += cols;
+    else if (code === 'PageDown') sel += page;
+    else if (code === 'PageUp') sel -= page;
+    else if (code === 'Home') sel = 0;
+    else if (code === 'End') sel = last;
+    else if (code === 'ArrowUp' || code === 'KeyW') {
+      if (this.gridSel < cols) return this.focusChip(1, Math.max(0, BANDS.indexOf(this.band)));
+      sel -= cols;
+    } else if (code === 'Enter' || code === 'Space') {
+      if (entries[this.gridSel]) this.trySign(entries[this.gridSel].poolIdx);
+      return;
+    } else return;
+    sel = clamp(sel, 0, last);
+    if (sel === this.gridSel) return;
+    this.gridSel = sel;
+    this.selRef = entries[sel]?.p ?? null;
+    this.keepSelInView(sel, entries.length);
+    audio.ui('move');
+    this.rebuildMarket();
   }
 
   // ----------------------------------------------------------------- phases
@@ -1239,6 +1471,9 @@ export class SquadBuilderScreen implements Screen {
   // ------------------------------------------------------------------ tick
   update(dt: number) {
     this.reveal.update(dt);
+    this.myStrip.update(dt);
+    this.cpuStrip.update(dt);
+    if (this.verdict.visible) this.verdict.update(dt);
 
     if (this.phase === 'toss') {
       this.tossT += dt;
@@ -1286,6 +1521,7 @@ export class SquadBuilderScreen implements Screen {
     }
 
     if (this.phase !== 'market') return;
+    if (this.mode === 'draft') this.glideShelf(dt);
 
     // showcase and flight animations ride the same clock
     if (this.cpuReveal) {
@@ -1571,19 +1807,24 @@ export class SquadBuilderScreen implements Screen {
     // The two dugouts: full-height team boards flanking the whole screen
     const boardW = Math.max(264, Math.min(400, Math.round(w * 0.2)));
     const boardTop = 56;
-    const boardH = h - 120 - boardTop - 52;
+    const stripH = this.myStrip.plateHeight;
+    const boardH = h - 120 - boardTop - (stripH + 44);
     this.myPanel.position.set(16, 100);
     this.cpuPanel.position.set(w - 16 - boardW, 100);
     this.myTitle.position.set(0, 0);
     this.myBudget.position.set(0, 28);
     this.myBoard.position.set(0, boardTop);
     this.myBoard.resize(boardW, boardH);
-    this.myStats.position.set(0, boardTop + boardH + 10);
-    this.myNeeds.position.set(0, boardTop + boardH + 32);
+    this.myStrip.position.set(0, boardTop + boardH + 8);
+    this.myStrip.resize(boardW);
+    this.myNeeds.position.set(0, boardTop + boardH + stripH + 16);
     this.cpuTitle.position.set(0, 0);
     this.cpuBudget.position.set(0, 28);
     this.cpuBoard.position.set(0, boardTop);
     this.cpuBoard.resize(boardW, boardH);
+    this.cpuStrip.position.set(0, boardTop + boardH + 8);
+    this.cpuStrip.resize(boardW);
+    this.placeVerdict();
     // the slot machine spans the gap between the dugouts
     this.reelX = 16 + boardW + 24;
     this.reelW = w - this.reelX * 2;
@@ -1593,18 +1834,24 @@ export class SquadBuilderScreen implements Screen {
     // the market between the two dugouts
     const s = 2;
     const cardW = this.assets.manifest.cards.w * s;
-    const cardH = this.assets.manifest.cards.h * s;
     const focusW = this.assets.manifest.cards.w * 3;
     const zoneX = 16 + boardW + 28;
     const zoneW = w - zoneX * 2 + 16;
-    this.gridCols = Math.max(2, Math.min(4, Math.floor((zoneW - focusW - 56) / (cardW + 14))));
-    this.gridRows = Math.max(1, Math.floor((h - 132 - 110) / (cardH + 14)));
-    const gridW = this.gridCols * (cardW + 14) - 14;
-    const marketX = zoneX + Math.max(0, Math.round((zoneW - (gridW + 44 + focusW)) / 2));
+    const rowH = this.rowH();
+    this.gridCols = Math.max(2, Math.min(4, Math.floor((zoneW - focusW - 56) / (cardW + CARD_GAP))));
+    this.gridRows = Math.max(1, Math.floor((h - 132 - GRID_TOP - 74) / rowH));
+    this.gridW = this.gridCols * (cardW + CARD_GAP) - CARD_GAP;
+    this.gridH = this.gridRows * rowH - CARD_GAP;
+    const marketX = zoneX + Math.max(0, Math.round((zoneW - (this.gridW + 44 + focusW)) / 2));
     this.market.position.set(marketX, 132);
+    this.market.hitArea = new Rectangle(-10, -10, this.gridW + 64 + focusW, h - 132);
     this.filterRow.position.set(0, 0);
-    this.gridLayer.position.set(0, 36);
-    this.focusLayer.position.set(gridW + 44, 36);
+    this.bandRow.position.set(0, 26);
+    this.gridClip.position.set(0, GRID_TOP);
+    this.gridMask.clear();
+    // a few pixels of bleed so the held card's studs never get shaved
+    this.gridMask.rect(-6, GRID_TOP - 5, this.gridW + 12, this.gridH + 5).fill(0xffffff);
+    this.focusLayer.position.set(this.gridW + 44, GRID_TOP);
     if (this.phase === 'shape') this.buildShapePanels();
     if (this.phase === 'market' && this.mode === 'draft') this.rebuildMarket();
     this.layoutPhase();

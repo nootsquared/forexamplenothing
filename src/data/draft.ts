@@ -1,19 +1,47 @@
 import { Formation, Role } from './formations';
 import { SquadPlayer } from './roster';
-import { StarPlayer, PLAYER_POOL, academyPlayer } from './players';
+import { StarPlayer, PLAYER_POOL, Rarity, rarityOf, academyPlayer } from './players';
+import { quickSquads, quickQuality } from './quickmatch';
 
 // The pre-match draft, as specced: coin flip, snake picks (ABBA), a budget
-// deep enough for a GALAXY of stars, and role quotas so both sides leave
-// with a real XI. Pure logic — the UI renders it, the tests drive it headless.
+// priced off the live shelf, and role quotas so both sides leave with a real
+// XI. Pure logic — the UI renders it, the tests drive it headless.
 
-// Role quotas and budgets scale with the side size — 5s, 7s, or full 11s
+// Role quotas scale with the side size — 5s, 7s, or full 11s
 export function quotaFor(size: number): Record<Role, number> {
   if (size === 5) return { GK: 1, DF: 2, MF: 1, FW: 1 };
   if (size === 7) return { GK: 1, DF: 3, MF: 2, FW: 1 };
   return { GK: 1, DF: 4, MF: 4, FW: 2 };
 }
+
+// The money on the table is never invented — it is PRICED off the shelf. An
+// AVERAGE budget buys half a squad of rares and half a squad of epics, so
+// three legendaries genuinely wreck the eleven behind them. The other two
+// tiers shift the pair of bands and run the identical sum.
+export type BudgetTier = 'underfunded' | 'average' | 'wealthy';
+export const BUDGET_TIERS: BudgetTier[] = ['underfunded', 'average', 'wealthy'];
+const TIER_BANDS: Record<BudgetTier, [Rarity, Rarity]> = {
+  underfunded: ['common', 'rare'],
+  average: ['rare', 'epic'],
+  wealthy: ['epic', 'legend'],
+};
+const avgPrice = (band: Rarity) => {
+  const shelf = PLAYER_POOL.filter((p) => rarityOf(p.ovr) === band);
+  return shelf.reduce((s, p) => s + p.price, 0) / Math.max(1, shelf.length);
+};
+export function tierBudget(tier: BudgetTier, size: number): number {
+  const [lo, hi] = TIER_BANDS[tier];
+  const cheap = Math.floor(size / 2);
+  return Math.max(10, Math.round((avgPrice(lo) * cheap + avgPrice(hi) * (size - cheap)) / 10) * 10);
+}
+
+// What the setup screen put on the table; null hands every side the average
+let tableBudget: number | null = null;
+export function setTableBudget(budget: number | null) {
+  tableBudget = budget;
+}
 export function budgetFor(size: number): number {
-  return size === 5 ? 90 : size === 7 ? 130 : 200;
+  return tableBudget ?? tierBudget('average', size);
 }
 export const QUOTA = quotaFor(11);
 export const SQUAD_SIZE = 11;
@@ -172,19 +200,10 @@ export function bestOpenSlot(slots: { role: Role }[], taken: (number | null)[], 
   return best;
 }
 
-// Quick match: the world's best dealt into two fair sides, alternating down
-// each role's rank with an offset so neither side hoards every number one
+// Quick match: no stars, no shopping — two anonymous sides of equals wearing
+// the job they do, at whatever class the setup screen last dialed
 export function quickSplit(size = 11): [StarPlayer[], StarPlayer[]] {
-  const quota = quotaFor(size);
-  const a: StarPlayer[] = [];
-  const b: StarPlayer[] = [];
-  (['GK', 'DF', 'MF', 'FW'] as Role[]).forEach((role, r) => {
-    PLAYER_POOL.filter((p) => p.role === role)
-      .sort((x, y) => y.ovr - x.ovr)
-      .slice(0, quota[role] * 2)
-      .forEach((p, i) => (((i + r) % 2 === 0) ? a : b).push(p));
-  });
-  return [a, b];
+  return quickSquads(quotaFor(size), quickQuality());
 }
 
 // Draft over (or a side priced out of a role): finish the XI from the academy

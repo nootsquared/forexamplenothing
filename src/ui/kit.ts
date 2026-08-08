@@ -6,6 +6,59 @@ import { audio } from '../audio/engine';
 // Pixel UI atoms every screen shares: panels, shades, the materialize
 // choreographer, and the pick-list.
 
+// The shell's palette, named once. Gold speaks, mint accents, cloth is the
+// plate itself — anything that paints a panel reads them from here.
+export const GOLD = 0xffd95e;
+export const GOLD_LIT = 0xfff3c4;
+export const MINT = 0x9ff0b8;
+
+// The crop-mark corner: four L-brackets and nothing between them. It is the
+// shell's "this is a plate" mark, so it is drawn from ONE recipe — five
+// hand-copies with five different arm lengths is five subtly different games.
+const CORNER_ARM = 9;
+const CORNER_T = 2;
+
+export function cornerMarks(g: Graphics, x: number, y: number, w: number, h: number, color: number, alpha = 0.68) {
+  const a = CORNER_ARM;
+  const t = CORNER_T;
+  const paint = { color, alpha };
+  for (const right of [false, true]) {
+    for (const low of [false, true]) {
+      g.rect(right ? x + w - a : x, low ? y + h - t : y, a, t).fill(paint);
+      g.rect(right ? x + w - t : x, low ? y + h - a : y, t, a).fill(paint);
+    }
+  }
+}
+
+// Center a whole ROW of pixel text — words, keycaps, a link — on a point.
+// Bounds are no good here: every glyph is baked into a fixed-width cell, so a
+// row ending in a narrow letter measures wider than the ink you can see. Ask
+// the children how much of them is actually inked and center THAT.
+export function centerRow(node: Container, x: number, y: number) {
+  let right = 0;
+  for (const c of node.children) {
+    right = Math.max(right, c.position.x + (c instanceof PixelText ? c.textWidth : c.width));
+  }
+  node.position.set(Math.round(x - right / 2), Math.round(y));
+}
+
+// A link out of the game, and there is only one of these in the whole shell:
+// gold word, gold rule under it, brightens under the cursor, clicks like a
+// card. Learn it on the front door and it is the same thing everywhere.
+export function externalLink(assets: GameAssets, label: string, url: string): Container {
+  const row = new Container();
+  const word = new PixelText(assets, 2, GOLD);
+  word.text = label;
+  const rule = new Graphics().rect(0, word.textHeight + 2, word.textWidth, 2).fill({ color: GOLD, alpha: 0.55 });
+  row.addChild(rule, word);
+  row.eventMode = 'static';
+  row.cursor = 'pointer';
+  row.on('pointerover', () => { word.tint = GOLD_LIT; rule.alpha = 1; audio.ui('move', 0.3); });
+  row.on('pointerout', () => { word.tint = GOLD; rule.alpha = 0.55; });
+  row.on('pointertap', () => { audio.ui('card', 0.5); window.open(url, '_blank'); });
+  return row;
+}
+
 export function panel(w: number, h: number): Graphics {
   const g = new Graphics();
   g.rect(0, 0, w, h).fill({ color: 0x10141c, alpha: 0.92 });
@@ -54,17 +107,6 @@ export function pillarBounds(w: number, pillarW = 620) {
   return { x0, x1: x0 + Math.round(coreW), coreW: Math.round(coreW) };
 }
 
-// The screens' shared backdrop: a woven dark column off the left touchline,
-// dithering away into the live pitch, plus a low strip for the footer line
-export function stepShade(g: Graphics, w: number, h: number) {
-  g.clear();
-  const spanW = Math.round(w * 0.46);
-  g.rect(0, 0, spanW, h).fill({ color: SHADE, alpha: 0.9 });
-  weave(g, 0, 0, spanW, h);
-  ditherEdge(g, spanW, h, 1, 0.9);
-  g.rect(0, h - 64, w, 64).fill({ color: SHADE, alpha: 0.55 });
-}
-
 // The centered stage: a full dim over the live pitch and a slab of dark
 // GLASS down the middle — the match ghosts through it, its edges dissolve in
 // a smooth gradient, a cold highlight rims each side. Light moves through
@@ -74,6 +116,7 @@ export function centerShade(g: Graphics, w: number, h: number, pillarW = 620) {
   g.rect(0, 0, w, h).fill({ color: SHADE, alpha: 0.58 });
   const { x0, coreW } = pillarBounds(w, pillarW);
   g.rect(x0, 0, coreW, h).fill({ color: SHADE, alpha: 0.84 });
+  weave(g, x0, 0, coreW, h); // the pane is cloth, not paint
   // the pane lets go of the pitch the pixel way — checkered, not blurred
   ditherEdge(g, x0, h, -1, 0.84);
   ditherEdge(g, x0 + coreW, h, 1, 0.84);
@@ -509,7 +552,13 @@ export interface ListRow {
   value?: string; // the adjustable part — drawn gold in < > at the value column
   enabled: boolean;
   gapBefore?: boolean; // BACK rows drop a step below the pack — an obvious exit
+  slider?: { value: number; max: number }; // trades the < > brackets for a track
 }
+
+// A slider's track measured in label columns, so it lands on the same grid the
+// letters do — and the gap the numeral waits in on its right
+const TRACK_COLS = 5;
+const TRACK_GAP = 10;
 
 // Keyboard/mouse row list: gold chevron marks the pick, LABELS stay quiet
 // while VALUES wear gold selector brackets, disabled rows grey out, long
@@ -520,8 +569,9 @@ export class PixelList {
   sel = 0;
   onPick: (index: number) => void = () => {};
   onSelect: () => void = () => {}; // fires whenever the highlight moves
+  onAdjust: (index: number, value: number) => void = () => {}; // a slider moved
   private rows: ListRow[] = [];
-  private views: { box: Container; label: PixelText; value: PixelText | null }[] = [];
+  private views: { box: Container; label: PixelText; value: PixelText | null; track: Graphics | null }[] = [];
   private marker: PixelText;
   private selBar = new Graphics();
   private scroll = 0;
@@ -529,6 +579,7 @@ export class PixelList {
   private blockX = 16;
   private reveal = new Reveal();
   private markerGlideY: number | null = null;
+  private dragRow: number | null = null;
 
   constructor(
     private assets: GameAssets,
@@ -555,10 +606,16 @@ export class PixelList {
       const label = new PixelText(this.assets, this.scale);
       label.text = row.label;
       let value: PixelText | null = null;
+      let track: Graphics | null = null;
+      if (row.slider) {
+        track = new Graphics();
+        track.position.set(this.trackX(), 0);
+        box.addChild(track);
+      }
       if (row.value !== undefined) {
         value = new PixelText(this.assets, this.scale);
-        value.text = `< ${row.value} >`;
-        value.position.set(this.valueCol * 6 * this.scale, 0);
+        value.text = track ? row.value : `< ${row.value} >`;
+        value.position.set(this.valueCol * 6 * this.scale + (track ? this.trackW() + TRACK_GAP : 0), 0);
         box.addChild(value);
       }
       box.addChild(label);
@@ -567,6 +624,7 @@ export class PixelList {
       box.eventMode = 'static';
       box.cursor = 'pointer';
       box.on('pointerover', () => {
+        if (this.dragRow !== null) return; // a hand on a slider owns the list
         if (!this.rows[i].enabled || this.sel === i) return;
         this.sel = i;
         audio.ui('move');
@@ -574,13 +632,33 @@ export class PixelList {
       });
       box.on('pointertap', () => {
         if (!this.rows[i].enabled) return audio.ui('denied');
+        if (this.rows[i].slider) return; // the pointer already set it on the way down
         this.sel = i;
         this.layout();
         audio.ui(this.backish(i) ? 'back' : 'select');
         this.onPick(i);
       });
+      // a slider answers the hand directly: grab anywhere on the row and the
+      // notch follows until you let go, anywhere on screen. A button that came
+      // up off-window never sends an up event — the buttons check catches it.
+      if (row.slider) {
+        box.on('pointerdown', (e) => {
+          if (!this.rows[i].enabled) return;
+          this.sel = i;
+          this.dragRow = i;
+          this.layout();
+          this.setFromPointer(i, e.getLocalPosition(box).x);
+        });
+        box.on('globalpointermove', (e) => {
+          if (this.dragRow !== i) return;
+          if (e.buttons === 0) this.dragRow = null;
+          else this.setFromPointer(i, e.getLocalPosition(box).x);
+        });
+        box.on('pointerup', () => { this.dragRow = null; });
+        box.on('pointerupoutside', () => { this.dragRow = null; });
+      }
       this.root.addChild(box);
-      this.views.push({ box, label, value });
+      this.views.push({ box, label, value, track });
       if (animate) this.reveal.add(box, stagger + i * 0.035);
     });
     // One shared left edge: the widest row sets the block, center plants it
@@ -603,10 +681,51 @@ export class PixelList {
     this.layout();
   }
 
+  // A screen can park the keyboard walk somewhere else of its own (the front
+  // door's plaque). The list keeps its place and stops claiming the eye.
+  setActive(on: boolean) {
+    this.marker.alpha = on ? 1 : 0.22;
+    this.selBar.alpha = on ? 1 : 0.22;
+  }
+
   activate() {
     if (!this.rows[this.sel]?.enabled) return;
+    if (this.rows[this.sel].slider) return this.adjust(1); // nothing to confirm — it nudges
     audio.ui(this.backish(this.sel) ? 'back' : 'select');
     this.onPick(this.sel);
+  }
+
+  // Left/right on a slider row. Ends of the track are walls, not wraps: a
+  // volume that jumps from 10 to 0 under your thumb is a jump scare.
+  adjust(dir: 1 | -1) {
+    const row = this.rows[this.sel];
+    if (!row?.slider || !row.enabled) return;
+    this.bump(this.sel, row.slider.value + dir);
+  }
+
+  private trackW() {
+    return TRACK_COLS * 6 * this.scale;
+  }
+  private trackX() {
+    return this.valueCol * 6 * this.scale;
+  }
+
+  // Where the hand landed on the track, in steps — grabbing the row anywhere
+  // left of the track reads as 0, anywhere right of it as full
+  private setFromPointer(i: number, localX: number) {
+    const s = this.rows[i].slider!;
+    this.bump(i, Math.round(((localX - this.trackX()) / this.trackW()) * s.max));
+  }
+
+  private bump(i: number, value: number) {
+    const s = this.rows[i].slider!;
+    const next = Math.max(0, Math.min(s.max, value));
+    if (next === s.value) return;
+    s.value = next;
+    const v = this.views[i];
+    if (v?.value) v.value.text = String(next);
+    this.layout();
+    this.onAdjust(i, next);
   }
 
   // Every retreat sounds the same everywhere: BACK rows speak the back pluck,
@@ -665,6 +784,7 @@ export class PixelList {
         : v.value ? (active ? 0xdfe4ee : 0x8f97a8)  // a setting: the label stays quiet
         : (active ? 0xffffff : 0xe8ecf4);           // an action: the label IS the thing
       if (v.value) v.value.tint = !row.enabled ? 0x5a6070 : active ? 0xffe98f : 0xd8ab3c;
+      if (v.track && row.slider) this.drawTrack(v.track, row.slider, !row.enabled ? 0x5a6070 : active ? 0xffe98f : 0xd8ab3c);
     });
     const selY = rowYs[this.sel] ?? 0;
     const selV = this.views[this.sel];
@@ -692,5 +812,26 @@ export class PixelList {
       this.selBar.rect(bx, by + bh - 1, bw, 1).fill({ color: 0x000000, alpha: 0.45 });
     }
     this.onSelect();
+  }
+
+  // The track wears the menu box's clothes: a sunken chalk groove scored with
+  // one hairline per step, gold filled to where you are, and a notch standing
+  // proud of the rail so the eye finds the value without reading the numeral.
+  private drawTrack(g: Graphics, s: { value: number; max: number }, tone: number) {
+    const u = this.scale;
+    const w = this.trackW();
+    const h = u * 3;
+    const y = u * 3; // the rail centers on the letters, not on the font cell
+    const fill = Math.round((s.value / s.max) * w);
+    const nx = Math.min(w - u * 2, Math.max(0, fill - u));
+    g.clear();
+    g.rect(0, y, w, h).fill({ color: 0x05070b, alpha: 0.55 });
+    if (fill > 0) g.rect(0, y, fill, h).fill({ color: tone, alpha: 0.5 });
+    for (let i = 1; i < s.max; i++) { // scored across the fill too — a rail, not a meter
+      g.rect(Math.round((i / s.max) * w), y, 1, h).fill({ color: 0xfff8e0, alpha: 0.16 });
+    }
+    g.rect(0, y, w, 1).fill({ color: 0x000000, alpha: 0.5 });
+    g.rect(0, y + h - 1, w, 1).fill({ color: 0xfff8e0, alpha: 0.12 });
+    g.rect(nx, y - u, u * 2, h + u * 2).fill({ color: tone });
   }
 }
