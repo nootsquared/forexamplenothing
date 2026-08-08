@@ -1,6 +1,7 @@
 import { Application, Container, Graphics, Sprite } from 'pixi.js';
 import { GameLoop } from '../core/loop';
-import { Vec2, vec, clamp, rotate } from '../core/math';
+import { Vec2, vec, add, sub, scale, clamp, clampLen, rotate } from '../core/math';
+import { director, tackleWindow } from '../director';
 import { PITCH } from '../sim/constants';
 import { World } from '../sim/world';
 import { SimEvent } from '../sim/events';
@@ -15,6 +16,14 @@ import { Hud } from './hud';
 import { KeeperAim, KeeperAimState } from './keeperAim';
 import { project, pxPerMeter, squash } from './projection';
 import { MOODS, VariantMood } from './variants';
+
+// A dead ball is a composed beat, not a survey of the formation: the lens sits
+// at playing size on the restart and keeps holding a while into live football,
+// so the hand-back is a drift and never a lurch wide.
+const RESTART_ZOOM = 2.55;
+const RESTART_SETTLE = 2;
+const HERO_PULL = 6;        // metres the man you hold may drag the restart shot off the ball
+const CELEBRATE_PUSH = 4;   // seconds the goal shot takes to creep all the way in
 
 // Owns the display tree; reads sim state, never writes it
 export class Scene {
@@ -34,20 +43,41 @@ export class Scene {
   private switchTargetIdx = -1;
   private keeperAim: KeeperAim;
   private keeperAimState: KeeperAimState | null = null;
-  private lawRing = new Graphics(); // the restart exclusion, painted on the turf
+  private lawRing = new Graphics();   // the restart exclusion, painted on the turf
+  private offsideG = new Graphics();  // the flag's line, chalked when it matters
+  private offsideFlash = 0;
+  private tackleG = new Graphics();   // the red diamond: a lunge would land NOW
+  private tackleFade = 0;
+  private tacklePulse = 0;
+  private hoverG = new Graphics();  // the click-to-switch ring, chalked under a body
+  private hoverIdx = -1;
+  private hoverAt: Vec2 = vec(0, 0);
+  private hoverFade = 0;
+  private hoverPulse = 0;
   private dragG = new Graphics();   // the slingshot pass sight (chalk dots)
   private wedgeG = new Graphics();  // the honesty wedge, painted INTO the turf under the bodies
   private clampG = new Graphics();  // the clamp's jaws closing around a contested ball
+  private cometG = new Graphics();  // the smoke a struck ball drags through a replay
+  private comet: { x: number; y: number; z: number; a: number; wx: number; wy: number }[] | null = null;
+  private replayOn = false;         // the truck has the room: every live aid steps off
+  private hudWanted = true;         // ...and the HUD comes back only if it was wanted
   private dragHead: Sprite;         // baked chalk arrowhead, tinted by power
   private kickDrag: { from: Vec2; dir: Vec2; power: number; theta?: number } | null = null;
-  // "The ball is YOURS": a gold pixel frame breathing at the screen edge
+  // "The ball is YOURS": a gold pixel frame breathing at the screen edge, and
+  // under it the red one that only shows up when the match has real teeth
   private possessionGlow = new Graphics();
+  private tensionEdge = new Graphics();
+  private beatSerial = director.beat.serial;
   private glowOn = false;
   private glowFade = 0;
   private glowPulse = 0;
   private glowW = 0;
   private glowH = 0;
   private mood: VariantMood = MOODS[0];
+  // The ceremony's own lens: the shot a goal or a dead ball is being played on
+  private staged: { center: Vec2; zoom: number } | null = null;
+  private restartHold = 0;
+  private celebT = 0;
 
   constructor(private app: Application, private assets: GameAssets, private world: World, loop: GameLoop) {
     this.hud = new Hud(assets);
@@ -58,13 +88,13 @@ export class Scene {
     this.dragHead = new Sprite(assets.aimFrames[0]);
     this.dragHead.anchor.set(0.5, 0.5);
     this.dragHead.visible = false;
-    this.viewport.addChild(this.pitchLayer.ground, this.lawRing, this.wedgeG, this.clampG, this.keeperAim.rings, this.worldSorted, this.keeperAim.top, this.dragG, this.dragHead);
+    this.viewport.addChild(this.pitchLayer.ground, this.lawRing, this.offsideG, this.hoverG, this.wedgeG, this.clampG, this.keeperAim.rings, this.cometG, this.worldSorted, this.keeperAim.top, this.dragG, this.dragHead, this.tackleG);
 
     this.ballView = new BallView(assets, this.worldSorted);
     this.worldSorted.addChild(this.ballView.root);
     this.effects = new Effects(assets, this.worldSorted, this.pitchLayer.groundFx, loop);
 
-    app.stage.addChild(this.viewport, this.overlay, this.flash, this.possessionGlow, this.hud.root);
+    app.stage.addChild(this.viewport, this.overlay, this.flash, this.tensionEdge, this.possessionGlow, this.hud.root);
   }
 
   addPlayer(sheet: string, name = '', number = 0): PlayerView {
@@ -88,13 +118,9 @@ export class Scene {
   }
 
   // Keeper distribution sight — non-null while the human is aiming
-  setKeeperAim(state: KeeperAimState | null) {
+  setKeeperAim(state: KeeperAimState | null, hands: 'keeper' | 'throwin' = 'keeper') {
     this.keeperAimState = state;
-  }
-
-  // Penalty sight — non-null while the human shooter picks his bin
-  setPenaltyAim(state: { col: number; row: number } | null) {
-    this.hud.setPenaltyAim(state);
+    this.hud.setAimHint(hands, state !== null);
   }
 
   // A pad is driving — hint text speaks its buttons instead of the keys
@@ -114,7 +140,7 @@ export class Scene {
 
   // Tear the whole display tree off the stage between matches
   destroy() {
-    for (const r of [this.viewport, this.overlay, this.flash, this.possessionGlow, this.hud.root]) {
+    for (const r of [this.viewport, this.overlay, this.flash, this.tensionEdge, this.possessionGlow, this.hud.root]) {
       r.destroy({ children: true });
     }
   }
@@ -136,12 +162,25 @@ export class Scene {
 
   // The attract match behind the menu plays with a clean frame — no HUD
   setHudVisible(on: boolean) {
-    this.hud.root.visible = on;
+    this.hudWanted = on;
+    this.hud.root.visible = on && !this.replayOn;
   }
 
   // On while the controlled player owns the ball — the frame fades with it
   setBallGlow(on: boolean) {
     this.glowOn = on;
+  }
+
+  // The replay takes the room: nothing on screen but football and the truck's
+  // own dress — every sight, ring and meter that speaks to live hands is out
+  setReplay(on: boolean) {
+    this.replayOn = on;
+    this.hud.root.visible = this.hudWanted && !on;
+  }
+
+  // The struck ball's smoke, owned and aged by the truck; null clears the air
+  setBallComet(points: { x: number; y: number; z: number; a: number; wx: number; wy: number }[] | null) {
+    this.comet = points;
   }
 
   // The frame itself: a warm glow BLEEDING in from the edges — three thin
@@ -173,6 +212,20 @@ export class Scene {
       const vy = cy + (dy < 0 ? -L : 0);
       g.rect(vx, vy, t, L).fill({ color: 0xfff3c4, alpha: 0.75 });
     }
+
+    // The nerve frame shares the geometry and none of the confidence: deeper,
+    // darker bands of red that never reach the crispness of the gold
+    const n = this.tensionEdge;
+    n.clear();
+    const band = (inset: number, thick: number, alpha: number) => {
+      n.rect(0, inset, w, thick).fill({ color: 0xff3b2f, alpha });
+      n.rect(0, h - inset - thick, w, thick).fill({ color: 0xff3b2f, alpha });
+      n.rect(inset, 0, thick, h).fill({ color: 0xff3b2f, alpha });
+      n.rect(w - inset - thick, 0, thick, h).fill({ color: 0xff3b2f, alpha });
+    };
+    band(0, q * 3, 0.5);
+    band(q * 3, q * 4, 0.26);
+    band(q * 7, q * 6, 0.12);
   }
 
   // Screen pixels → pitch meters on the ground plane (mouse targeting)
@@ -181,7 +234,7 @@ export class Scene {
     return vec(local.x / pxPerMeter(), local.y / (pxPerMeter() * squash()));
   }
 
-  // Pitch meters → screen pixels (speech bubbles that follow a body)
+  // Pitch meters → screen pixels (picking a body out from under the pointer)
   worldToScreen(x: number, y: number, z = 0): Vec2 {
     const p = project(x, y, z);
     const g = this.viewport.toGlobal({ x: p.sx, y: p.sy });
@@ -194,10 +247,70 @@ export class Scene {
     this.camOverride = o;
   }
 
+  // The composed shot the ceremony is already playing on — the goal's two-shot
+  // while the party runs, the restart's hold after it. Whoever stages the rest
+  // beats sits on THIS instead of cutting to the centre circle and back; null
+  // means the lens is live football and nobody should hold it.
+  ceremonyFrame(): { center: Vec2; zoom: number } | null {
+    const s = this.staged;
+    return s ? { center: vec(s.center.x, s.center.y), zoom: s.zoom } : null;
+  }
+
+  // Which lens the moment asks for: a goal gets its own framing, and any dead
+  // ball — the walk home included — gets held at playing size until the
+  // football is genuinely moving again
+  private stageCeremony(dt: number, viewW: number, viewH: number) {
+    const cel = this.world.celebration;
+    this.celebT = cel ? this.celebT + dt : 0;
+    const beat = this.world.ceremony === 'walkback' || this.world.restartLock > 0.25;
+    // a struck ball spends the hold twice over — the eye is on it already
+    this.restartHold = beat
+      ? RESTART_SETTLE
+      : Math.max(0, this.restartHold - dt * (this.world.ball.speed() > 4 ? 2 : 1));
+    if (cel) return this.celebrationShot(cel.team, cel.scorer, viewW, viewH);
+    if (this.restartHold <= 0) return null;
+    // the ball owns the restart; the man you hold is allowed to tug the frame
+    const b = this.world.ball.pos;
+    const hero = this.world.players[this.controlledIdx]?.pos;
+    const center = hero ? add(b, clampLen(scale(sub(hero, b), 0.34), HERO_PULL)) : vec(b.x, b.y);
+    return { center, zoom: RESTART_ZOOM };
+  }
+
+  // The shot a goal deserves: the mouth that was just beaten held at one edge
+  // of the frame, the man who beat it at the other, creeping tighter as the
+  // party runs. THEIR goal is framed on the net alone — the lens has no
+  // business chasing an opponent's scorer around your half.
+  private celebrationShot(team: 0 | 1, scorer: number, viewW: number, viewH: number) {
+    const mouth = vec(this.world.attackSign(team) < 0 ? 0 : PITCH.length, PITCH.width / 2);
+    const man = this.world.players[scorer];
+    const ours = !!man && man.id.team === this.world.players[this.controlledIdx]?.id.team;
+    const subject = ours ? man.pos : this.world.ball.pos;
+    const M = pxPerMeter();
+    const spanX = Math.abs(subject.x - mouth.x) / 2 + 11;
+    const spanY = Math.abs(subject.y - mouth.y) / 2 + 8;
+    const fit = Math.min(viewW / (2 * spanX * M), viewH / (2 * spanY * M * squash()));
+    const creep = 1 + 0.07 * clamp(this.celebT / CELEBRATE_PUSH, 0, 1);
+    return {
+      center: vec((mouth.x + subject.x) / 2, (mouth.y + subject.y) / 2),
+      zoom: clamp(fit, 2.1, 3.0) * creep,
+    };
+  }
+
   // The tutorial benches bodies entirely — off the stage until they're needed
   setPlayerHidden(idx: number, hidden: boolean) {
     const v = this.playerViews[idx];
     if (v) v.root.visible = !hidden;
+  }
+
+  // The mouse is resting on a teammate you could take — -1 clears it. Who is
+  // a legal target stays the caller's call; this only whispers "clickable"
+  setHoverTarget(idx: number) {
+    this.hoverIdx = idx;
+  }
+
+  // The establishing shot the tutorial tours on: the whole field, no void
+  fitFieldZoom(): number {
+    return this.camera.fitFieldZoom(this.app.renderer.width, this.app.renderer.height);
   }
 
   // The white chevron: who E switches you into
@@ -228,17 +341,35 @@ export class Scene {
       if (e.kind === 'kickoff') this.hud.announce('KICK OFF');
       if (e.kind === 'half') this.hud.announce('HALF TIME');
       if (e.kind === 'fulltime') this.hud.announce('FULL TIME');
-      if (e.kind === 'foul') this.hud.announce(e.penalty ? 'PENALTY!' : 'FOUL!');
+      if (e.kind === 'foul') this.hud.announce('FOUL!');
+      // The flag and its free kick can land on the same tick — both say the
+      // one word that matters, so the call survives whichever lands last
+      if (e.kind === 'offside') {
+        this.hud.announce('OFFSIDE');
+        this.offsideFlash = 1.4; // the chalk that was already there turns red
+      }
+      // The keeper's stretch with the sprites we have; the sim's own lunge
+      // frame outranks it whenever he truly leaves his feet
+      if (e.kind === 'gkDive') this.playerViews[e.idx]?.triggerKick();
       if (e.kind === 'restart') {
         this.hud.announce(
           e.restart === 'corner' ? 'CORNER KICK' :
-          e.restart === 'goalkick' ? 'GOAL KICK' : 'THROW IN',
+          e.restart === 'goalkick' ? 'GOAL KICK' :
+          e.restart === 'offside' ? 'OFFSIDE' : 'THROW IN',
         );
       }
       if (e.kind === 'goal') {
+        // How good was it? A finish squeezed high into a corner buys the
+        // freeze frame and a stand full of shutters; a tap-in gets the roar.
+        const b = this.world.ball;
+        const edge = Math.abs(b.pos.y - PITCH.width / 2) / (PITCH.goalWidth / 2);
+        const corner = clamp(Math.min(edge, clamp(b.z / PITCH.goalHeight, 0, 1)) * 1.5, 0, 1);
         this.hud.goalFlash();
-        this.flashAlpha = 0.5; // full-screen white pop on the moment
-        this.pitchLayer.rippleGoal(e.side); // and the net takes the hit
+        this.flashAlpha = 0.55 + corner * 0.4; // full-screen white pop on the moment
+        this.pitchLayer.rippleGoal(e.side);    // and the net takes the hit
+        this.effects.goalMoment(e.side, corner, director.level);
+        // The one that levels it in the closing minutes: not a punch, a swell
+        if (this.world.score.left === this.world.score.right && director.level > 0.7) this.effects.surge(1.4, 4);
       }
     }
   }
@@ -246,6 +377,8 @@ export class Scene {
   render(alpha: number, dt: number, aim: AimState) {
     const w = this.app.renderer.width;
     const h = this.app.renderer.height;
+
+    this.staged = this.stageCeremony(dt, w, h);
 
     // A keeper lining up his ball sees the field FROM HIS GOAL LINE out to
     // the punt's reach — never the dead half-circle behind the net
@@ -257,21 +390,23 @@ export class Scene {
       const x1 = left ? s.puntR + 10 : PITCH.length + 4;
       const zoom = clamp(Math.min(w / ((x1 - x0) * M), h / (2 * 38 * M * squash())), 0.7, 2.2);
       this.camera.override = { center: vec((x0 + x1) / 2, PITCH.width / 2), zoom };
-    } else if (this.world.celebration && this.world.players[this.world.celebration.scorer]) {
-      // The broadcast finds the man of the moment and stays with him
-      this.camera.override = { center: this.world.players[this.world.celebration.scorer].pos, zoom: 3.4 };
+    } else if (this.camOverride) {
+      // A directed shot is somebody's deliberate choice — the coach's drill or
+      // a rest beat — and it outranks the broadcast director every time
+      this.camera.override = this.camOverride;
     } else {
-      this.camera.override = this.camOverride; // the tutorial's hand on the lens, or nothing
+      this.camera.override = this.staged;
     }
     this.keeperAim.update(dt, this.keeperAimState);
 
     // The slingshot sight, in the game's own chalk: a trail of pixel dots
     // that grows longer AND chunkier with the pull, capped by the baked
     // chalk arrowhead. Small pull, small arrow — the arrow IS the meter.
+    const live = !this.replayOn;
     this.dragG.clear();
     this.wedgeG.clear();
-    this.dragHead.visible = !!this.kickDrag;
-    if (this.kickDrag) {
+    this.dragHead.visible = live && !!this.kickDrag;
+    if (live && this.kickDrag) {
       const kd = this.kickDrag;
       const color = kd.power > 0.72 ? 0xff5340 : kd.power > 0.38 ? 0xffd95e : 0x9ff0b8;
       const reach = 1.4 + kd.power * 5.6;      // meters of arrow
@@ -328,7 +463,7 @@ export class Scene {
     // into the turf like every other law of this game.
     this.clampG.clear();
     const cl = this.world.clamp;
-    if (cl && cl.close > 0.03 && this.world.players[cl.idx]) {
+    if (live && cl && cl.close > 0.03 && this.world.players[cl.idx]) {
       const defP = this.world.players[cl.idx].pos;
       const b = this.world.ball.pos;
       const jawColor = cl.close > 0.8 ? 0xff5340 : cl.close > 0.45 ? 0xffd95e : 0x9ff0b8;
@@ -344,17 +479,115 @@ export class Scene {
       }
     }
 
+    // The offside line, chalked into the turf like every other law of this
+    // game — but only when a runner is actually flirting with it, and it turns
+    // red for a beat when the flag finally goes up
+    this.offsideG.clear();
+    this.offsideFlash = Math.max(0, this.offsideFlash - dt);
+    const atkTeam = this.world.carrier
+      ? this.world.players[this.world.carrier.idx]?.id.team
+      : this.world.lastTouch?.team;
+    if (live && atkTeam !== undefined && this.world.offsideEnabled && !this.world.practice && this.world.restartLock <= 0) {
+      const lineX = this.world.offsideLineX(atkTeam);
+      const sign = this.world.attackSign(atkTeam);
+      let daylight = Infinity;
+      for (const p of this.world.players) {
+        if (p.id.team !== atkTeam || p.id.role === 'GK') continue;
+        daylight = Math.min(daylight, (lineX - p.pos.x) * sign);
+      }
+      if (daylight < 2.2) {
+        const heat = clamp(1 - daylight / 2.2, 0, 1);
+        const color = this.offsideFlash > 0 ? 0xff5340 : 0xf2f5fa;
+        const alpha = (0.16 + heat * 0.3) * (this.offsideFlash > 0 ? 1 : 0.85) + this.offsideFlash * 0.25;
+        for (let y = 1; y < PITCH.width; y += 2.4) {
+          const p = project(lineX, y, 0);
+          this.offsideG.rect(Math.round(p.sx) - 1, Math.round(p.sy), 2, 3).fill({ color, alpha });
+        }
+      }
+    }
+
     // The law, visible: a restart's mandated space is chalked around the ball
     this.lawRing.clear();
-    if (this.world.restartLock > 0 && this.world.restartExclusion > 0) {
+    if (live && this.world.restartLock > 0 && this.world.restartExclusion > 0) {
       const b = project(this.world.ball.pos.x, this.world.ball.pos.y, 0);
       const M = pxPerMeter();
       this.lawRing.ellipse(b.sx, b.sy, this.world.restartExclusion * M, this.world.restartExclusion * M * squash())
         .stroke({ width: 1.2, color: 0xffffff, alpha: 0.28 });
     }
 
-    this.camera.update(dt, this.world.ball.pos, this.world.ball.vel, this.world.players.map((p) => p.pos), w, h);
+    // The hover ring: a wide dashed circle of mint chalk crawling around the
+    // body under the mouse. It sits ON the turf, dimmer and slower than the
+    // gold chevron overhead — an invitation, never a claim
+    this.hoverG.clear();
+    const hovered = live && this.playerViews[this.hoverIdx]?.root.visible ? this.world.players[this.hoverIdx] : null;
+    if (hovered) this.hoverAt = hovered.pos; // a benched body never wears one
+    this.hoverFade = clamp(this.hoverFade + (hovered ? dt * 7 : -dt * 9), 0, 1);
+    if (this.hoverFade > 0.02) {
+      this.hoverPulse += dt * 3.2;
+      const r = 1.02 + 0.06 * Math.sin(this.hoverPulse);
+      const dotAlpha = this.hoverFade * (0.42 + 0.1 * Math.sin(this.hoverPulse));
+      const dots = 14;
+      for (let i = 0; i < dots; i++) {
+        const th = (i / dots) * Math.PI * 2 + this.hoverPulse * 0.15; // the chalk crawls
+        const p = project(this.hoverAt.x + Math.cos(th) * r, this.hoverAt.y + Math.sin(th) * r, 0);
+        this.hoverG.rect(Math.round(p.sx) - 1, Math.round(p.sy) - 1, 2, 2).fill({ color: 0x9ff0b8, alpha: dotAlpha });
+      }
+    }
+
+    // The tackle window, made honest: while an opponent's ball is loose of him
+    // and your legs are free, a red diamond sits over it. It is a beat long on
+    // purpose — defending should be a rhythm you learn, never a button you hold.
+    const lunge = live ? tackleWindow(this.world, this.controlledIdx) : 0;
+    this.tackleFade = clamp(this.tackleFade + (lunge > 0 ? dt * 18 : -dt * 14), 0, 1);
+    this.tackleG.clear();
+    if (this.tackleFade > 0.02) {
+      this.tacklePulse += dt * 13;
+      const b = this.world.ball;
+      const foot = project(b.pos.x, b.pos.y, b.z);
+      const p = project(b.pos.x, b.pos.y, b.z + 1.35); // it floats clear of the ball, never over it
+      const cx = Math.round(p.sx);
+      const cy = Math.round(p.sy);
+      const r = Math.round(4 + lunge * 2 + Math.sin(this.tacklePulse));
+      const ink = 0.55 * this.tackleFade;
+      const red = (0.6 + 0.4 * lunge) * this.tackleFade;
+      this.tackleG.rect(cx - 1, cy, 3, Math.round(foot.sy - p.sy)).fill({ color: 0x05070b, alpha: ink * 0.6 });
+      this.tackleG.rect(cx, cy, 1, Math.round(foot.sy - p.sy)).fill({ color: 0xff5340, alpha: red * 0.55 });
+      for (let dy = -r - 1; dy <= r + 1; dy++) {
+        const half = r + 1 - Math.abs(dy);
+        if (half >= 0) this.tackleG.rect(cx - half, cy + dy, half * 2 + 1, 1).fill({ color: 0x05070b, alpha: ink });
+      }
+      for (let dy = -r; dy <= r; dy++) {
+        const half = r - Math.abs(dy);
+        this.tackleG.rect(cx - half, cy + dy, half * 2 + 1, 1).fill({ color: 0xff5340, alpha: red });
+      }
+    }
+
+    // The replay's smoke: the hot line the ball actually took, and the puffs
+    // lifting off it as they cool — the whole reason a strike reads FAST
+    this.cometG.clear();
+    if (this.replayOn && this.comet) {
+      for (const c of this.comet) {
+        const a = clamp(c.a, 0, 1);
+        const cool = 1 - a;
+        const puff = project(c.x + c.wx * cool * 0.9, c.y + c.wy * cool * 0.6, c.z + cool * 1.2);
+        const q = 2 + Math.round(cool * 3);
+        this.cometG.rect(Math.round(puff.sx - q / 2), Math.round(puff.sy - q / 2), q, q)
+          .fill({ color: 0xdfe4ee, alpha: a * 0.32 });
+        const hot = project(c.x, c.y, c.z);
+        this.cometG.rect(Math.round(hot.sx) - 1, Math.round(hot.sy) - 1, 2, 2)
+          .fill({ color: 0xfff3c4, alpha: a * a * 0.85 });
+      }
+    }
+
+    const heroPos = this.world.players[this.controlledIdx]?.pos ?? null;
+    this.camera.update(dt, this.world.ball.pos, this.world.ball.vel, this.world.players.map((p) => p.pos), w, h, heroPos);
+    // Who gets a name over his boots: the man you hold, the man E would hand
+    // you, and whoever has the ball. Twenty-two labels is not identity, it is
+    // static — and they punch straight through every shade the shell draws.
+    const carrierIdx = this.world.carrier?.idx ?? -1;
+    const labels = this.hud.root.visible;
     this.world.players.forEach((p, i) => {
+      this.playerViews[i]?.setNamed(labels && (i === this.controlledIdx || i === this.switchTargetIdx || i === carrierIdx));
       this.playerViews[i]?.update(p, dt, alpha, i === this.controlledIdx ? aim : null);
       this.effects.sprintDust(p, dt);
     });
@@ -371,7 +604,14 @@ export class Scene {
     this.grass.update(dt, actors);
     this.pitchLayer.update(dt);
     this.effects.update(dt);
+    // The lens breathes with the match: a hair tighter on every heartbeat, a
+    // real shove in when a keeper claws one away. Only ever INWARD — the
+    // camera law's floor is never crossed from here, and the push is handed
+    // back so it can't compound across frames.
+    const zoomWas = this.camera.zoom;
+    this.camera.zoom *= 1 + 0.012 * director.level * director.heart + 0.09 * director.punch * director.punch;
     this.camera.applyTo(this.viewport, w, h, this.effects.shakeX, this.effects.shakeY);
+    this.camera.zoom = zoomWas;
 
     this.overlay.clear();
     if (this.mood.overlayAlpha > 0) {
@@ -387,8 +627,22 @@ export class Scene {
     if (w !== this.glowW || h !== this.glowH) this.buildGlow(w, h);
     this.glowFade = clamp(this.glowFade + (this.glowOn ? dt * 5 : -dt * 3.5), 0, 1);
     this.glowPulse += dt * 2.6;
-    this.possessionGlow.visible = this.glowFade > 0.01;
+    this.possessionGlow.visible = live && this.glowFade > 0.01;
     this.possessionGlow.alpha = this.glowFade * (0.8 + 0.2 * Math.sin(this.glowPulse));
+    // And under it, the nerves: a red bleed that only exists when it is late
+    // and close, thumping on the same pulse the crowd can hear
+    const nerve = Math.max(0, (director.level - 0.72) / 0.28);
+    this.tensionEdge.visible = live && nerve > 0.02;
+    this.tensionEdge.alpha = nerve * (0.1 + 0.35 * director.heart);
+
+    // The moment worth a word lands in the eyes and the hands on the same frame
+    if (director.beat.serial !== this.beatSerial) {
+      this.beatSerial = director.beat.serial;
+      this.hud.showCallout(director.beat.text, director.beat.tone);
+      this.effects.felt(director.beat.kick);
+    }
+    this.hud.setChain(director.chain);
+    this.hud.setTension(director.level, director.heart);
     const hero = this.world.players[this.controlledIdx];
     if (hero) this.hud.setSprint(hero.stamina, hero.isSprinting);
     this.hud.layout(w, h, this.world.score);

@@ -3,6 +3,9 @@ import { GameAssets } from './assets';
 
 // Bitmap text from the baked proportional font — every word stays on the
 // pixel grid. 'main' is the 7px voice, 'micro' the 5px whisper for the pitch.
+
+const warned = new Set<string>(); // one dev warning per missing glyph, not per frame
+
 export class PixelText extends Container {
   private glyphSprites: Sprite[] = [];
   private textValue = '';
@@ -34,12 +37,23 @@ export class PixelText extends Container {
       if (tex) {
         const sprite = new Sprite(tex);
         sprite.scale.set(this.pxScale);
-        sprite.position.set(x, 0);
+        // Every glyph cell carries a 1px outline column before its ink. Pull
+        // the sprites back by it so this container's origin is where the INK
+        // starts — otherwise every centered word in the game sits one scaled
+        // pixel right of the thing it was asked to center on.
+        sprite.position.set(x - this.pxScale, 0);
         this.addChild(sprite);
         this.glyphSprites.push(sprite);
         x += (metrics[ch] + 1) * this.pxScale;
       } else {
-        x += 3 * this.pxScale; // unknown glyphs render as a breath of space
+        // A character the bake never cut leaves a hole in the copy — a space
+        // is the one that means it. The player gets air rather than a crash;
+        // the author gets told, once.
+        if (import.meta.env.DEV && ch !== ' ' && !warned.has(ch)) {
+          warned.add(ch);
+          console.warn(`pixel font has no glyph for "${ch}" — cut it in tools/texgen/font.mjs`);
+        }
+        x += 3 * this.pxScale;
       }
     }
     this.widthValue = Math.max(0, x - this.pxScale);

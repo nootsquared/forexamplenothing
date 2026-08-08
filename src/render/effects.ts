@@ -5,6 +5,7 @@ import { SimEvent } from '../sim/events';
 import { Ball } from '../sim/ball';
 import { PlayerBody } from '../sim/player';
 import { PITCH } from '../sim/constants';
+import { pads } from '../input/gamepad';
 import { GameAssets } from './assets';
 import { project, squash } from './projection';
 
@@ -35,19 +36,42 @@ interface Confetto {
   life: number;
 }
 
+// A camera going off in the stand — the crowd's own shutter, not a light show
+interface Bulb {
+  x: number; y: number;
+  at: number;
+  life: number;
+}
+
 const MAX_DECALS = 90;
 const CONFETTI_COLORS = [0xffd95e, 0xfff8e0, 0x9ff0b8, 0xff6a55, 0x5b98cf];
+const MAX_SHAKE = 10; // px at full trauma; the fence pad swallows every one
+
+// Value noise, not dice: a frame-to-frame random reads as jitter, a smooth
+// lattice reads as a force pushing the lens around
+const hash = (i: number) => {
+  const s = Math.sin(i * 127.1) * 43758.5453;
+  return (s - Math.floor(s)) * 2 - 1;
+};
+function noise(t: number): number {
+  const i = Math.floor(t);
+  const f = t - i;
+  return hash(i) + (hash(i + 1) - hash(i)) * (f * f * (3 - 2 * f));
+}
 
 // All the juice: dust, torn grass, kick rings, turf skids that linger where
-// play happened, screen kick, hitstop
+// play happened, trauma shake, hitstop, and the moments worth the whole stack
 export class Effects {
   shakeX = 0;
   shakeY = 0;
   private particles: Particle[] = [];
   private decals: Decal[] = [];
   private confetti: Confetto[] = [];
-  private confettiG = new Graphics();
-  private shakeAmp = 0;
+  private bulbs: Bulb[] = [];
+  private skyG = new Graphics(); // everything that happens above the turf
+  private trauma = 0;
+  private surgeT = 0;
+  private surgeAmp = 0;
   private shakeT = 0;
   private sprintDustTimer = 0;
   private sprintScuffTimer = 0;
@@ -60,8 +84,8 @@ export class Effects {
     private groundFx: Container,
     private loop: GameLoop,
   ) {
-    this.confettiG.zIndex = 1e6; // joy falls in front of everything on the pitch
-    worldSorted.addChild(this.confettiG);
+    this.skyG.zIndex = 1e6; // joy falls in front of everything on the pitch
+    worldSorted.addChild(this.skyG);
   }
 
   consume(events: SimEvent[]) {
@@ -71,7 +95,7 @@ export class Effects {
           this.spawn(this.assets.ringFrames, e.x, e.y, { life: 0.22, fade: 0 });
           this.spawn(this.assets.dustFrames, e.x, e.y, { life: 0.3, vx: -14, vy: -6 });
           this.spawn(this.assets.grassFrames, e.x, e.y, { life: 0.34, vx: this.rng.range(-6, 6) });
-          if (e.power > 0.5) this.kickShake(1.5 + e.power * 4);
+          if (e.power > 0.5) this.jolt(0.06 + e.power * 0.14);
           // Hitstop is reserved for true screamers so shooting never feels laggy
           if (e.power > 0.85) this.loop.hitstop(50, 0.3);
           break;
@@ -101,7 +125,8 @@ export class Effects {
           break;
         case 'steal':
           this.spawn(this.assets.ringFrames, e.x, e.y, { life: 0.18, fade: 0 });
-          this.kickShake(1.6);
+          this.jolt(0.2);
+          pads.rumble(0.35, 90);
           break;
         case 'feint':
           // The escape cut: dust kicked off the plant, thrown against the cut
@@ -114,42 +139,78 @@ export class Effects {
         case 'shrug':
           // Bounced off the shield — the ground takes the hit, not the ball
           this.spawn(this.assets.dustFrames, e.x, e.y, { life: 0.34, vx: this.rng.range(-12, 12), vy: -4 });
-          this.kickShake(2.2);
+          this.jolt(0.24);
           this.loop.hitstop(30, 0.35);
+          pads.rumble(0.45, 110);
+          break;
+        case 'save':
+          // Gloves on it: the ring, four frames of held breath, a punch in the
+          // hands — no turf torn, because nothing hit the ground
+          this.spawn(this.assets.ringFrames, e.x, e.y, { life: 0.2, fade: 0 });
+          this.jolt(0.22);
+          this.loop.hitstop(60, 0.3);
+          pads.rumble(0.5, 130);
           break;
         case 'bounce':
           this.spawn(this.assets.dustFrames, e.x, e.y, { life: 0.28, vx: this.rng.range(-8, 8) });
           this.spawn(this.assets.grassFrames, e.x, e.y, { life: 0.3, vx: this.rng.range(-4, 4) });
           break;
         case 'post':
-          // The woodwork says no — the whole ground feels that one
+          // The woodwork says no — the most valuable non-goal in the game, and
+          // the only near-miss that gets the slow-motion treatment
           this.spawn(this.assets.ringFrames, e.x, e.y, { life: 0.2, fade: 0 });
-          this.kickShake(3 + e.impact * 0.3);
-          this.loop.hitstop(40, 0.35);
+          this.jolt(0.42 + e.impact * 0.02);
+          this.loop.hitstop(90, 0.25);
+          pads.rumble(0.75, 180);
           break;
-        case 'goal': {
-          this.loop.hitstop(130, 0.08);
-          this.kickShake(9);
-          // Confetti rains from the stands over the goal that just happened
-          const gx = e.side === 'left' ? 2 : PITCH.length - 2;
-          for (let i = 0; i < 110; i++) {
-            this.confetti.push({
-              x: gx + this.rng.range(-16, 16),
-              y: this.rng.range(-2, PITCH.width * 0.55),
-              z: this.rng.range(7, 13),
-              vx: this.rng.range(-2.5, 2.5),
-              vy: this.rng.range(-0.5, 2),
-              vz: this.rng.range(-0.5, 0.8),
-              phase: this.rng.range(0, Math.PI * 2),
-              color: CONFETTI_COLORS[Math.floor(this.rng.next() * CONFETTI_COLORS.length)],
-              age: 0,
-              life: this.rng.range(2.6, 4.4),
-            });
-          }
-          break;
-        }
       }
     }
+  }
+
+  // THE GOAL: the whole stack at once, and bigger the more the match had
+  // riding on it. A finish tucked into the top corner buys the freeze frame
+  // and a stand full of shutters going off.
+  goalMoment(side: 'left' | 'right', corner: number, tension: number) {
+    this.loop.hitstop(160 + corner * 90, corner > 0.55 ? 0.04 : 0.07);
+    this.jolt(0.6 + tension * 0.35);
+    pads.rumble(1, 350 + corner * 250);
+    const gx = side === 'left' ? 2 : PITCH.length - 2;
+    const count = Math.round(90 + tension * 90);
+    for (let i = 0; i < count; i++) {
+      this.confetti.push({
+        x: gx + this.rng.range(-16, 16),
+        y: this.rng.range(-2, PITCH.width * 0.55),
+        z: this.rng.range(7, 13),
+        vx: this.rng.range(-2.5, 2.5),
+        vy: this.rng.range(-0.5, 2),
+        vz: this.rng.range(-0.5, 0.8),
+        phase: this.rng.range(0, Math.PI * 2),
+        color: CONFETTI_COLORS[Math.floor(this.rng.next() * CONFETTI_COLORS.length)],
+        age: 0,
+        life: this.rng.range(2.6, 4.4),
+      });
+    }
+    if (corner <= 0.55) return;
+    for (let i = 0; i < 14; i++) {
+      this.bulbs.push({
+        x: gx + this.rng.range(-30, 30),
+        y: this.rng.range(-7.5, -2.6),
+        at: this.rng.range(0.1, 1.5),
+        life: 0.09,
+      });
+    }
+  }
+
+  // A goal that levels it in the closing minutes: not a punch but a swell —
+  // the whole ground on its feet, shaking the lens for a full second
+  surge(seconds: number, amp: number) {
+    this.surgeT = seconds;
+    this.surgeAmp = amp;
+  }
+
+  // The hands feel what the eyes just read — every callout lands three ways
+  felt(kick: number) {
+    pads.rumble(0.2 + kick * 0.5, 60 + kick * 70);
   }
 
   // Sprint feet drum up dust and leave faint scuffs pressed into the turf
@@ -243,7 +304,7 @@ export class Effects {
 
     // Confetti flutters down: light gravity, a side-to-side sway, and a
     // wink out on the grass — every square an honest 2px of pixel joy
-    this.confettiG.clear();
+    this.skyG.clear();
     for (let i = this.confetti.length - 1; i >= 0; i--) {
       const c = this.confetti[i];
       c.age += dt;
@@ -261,16 +322,38 @@ export class Effects {
       const p = project(c.x, c.y, c.z);
       const alpha = c.age > c.life - 0.5 ? (c.life - c.age) / 0.5 : 1;
       const w = Math.sin(c.phase * 1.7) > 0 ? 3 : 2; // the tumble
-      this.confettiG.rect(Math.round(p.sx), Math.round(p.sy), w, 2).fill({ color: c.color, alpha });
+      this.skyG.rect(Math.round(p.sx), Math.round(p.sy), w, 2).fill({ color: c.color, alpha });
     }
 
-    this.shakeT += dt * 55;
-    this.shakeAmp = Math.max(0, this.shakeAmp - dt * 26);
-    this.shakeX = Math.sin(this.shakeT) * this.shakeAmp;
-    this.shakeY = Math.cos(this.shakeT * 1.3) * this.shakeAmp * 0.6;
+    // Shutters in the stand: a hard white pinprick with a soft halo, gone in
+    // five frames. Fourteen of them across a minute-and-a-half of madness.
+    for (let i = this.bulbs.length - 1; i >= 0; i--) {
+      const b = this.bulbs[i];
+      b.at -= dt;
+      if (b.at < -b.life) {
+        this.bulbs.splice(i, 1);
+        continue;
+      }
+      if (b.at > 0) continue;
+      const p = project(b.x, b.y, 0);
+      const fade = 1 + b.at / b.life;
+      this.skyG.rect(Math.round(p.sx) - 3, Math.round(p.sy) - 3, 7, 7).fill({ color: 0xfff8e0, alpha: 0.22 * fade });
+      this.skyG.rect(Math.round(p.sx) - 1, Math.round(p.sy) - 1, 3, 3).fill({ color: 0xffffff, alpha: fade });
+    }
+
+    // Trauma, not a sine: impacts add to one pot, it drains in half a second,
+    // and the lens rides smooth noise at 19Hz — snapped to whole pixels so the
+    // sprite grid never shimmers
+    this.shakeT += dt;
+    this.trauma = Math.max(0, this.trauma - dt * 2.2);
+    this.surgeT = Math.max(0, this.surgeT - dt);
+    const amp = this.trauma * this.trauma * MAX_SHAKE + this.surgeAmp * Math.min(1, this.surgeT);
+    this.shakeX = Math.round(noise(this.shakeT * 19) * amp);
+    this.shakeY = Math.round(noise(this.shakeT * 19 + 37) * amp * 0.6);
   }
 
-  private kickShake(amp: number) {
-    this.shakeAmp = Math.max(this.shakeAmp, amp);
+  // One pot, clamped: two hits in a frame never stack into an earthquake
+  private jolt(amount: number) {
+    this.trauma = Math.min(1, this.trauma + amount);
   }
 }
