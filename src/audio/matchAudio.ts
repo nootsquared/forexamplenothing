@@ -2,12 +2,17 @@ import { clamp } from '../core/math';
 import { Match } from '../match';
 import { director, tackleWindow } from '../director';
 import { audio } from './engine';
+import { announcer, Call } from './announcer';
 import { BIRDS } from './ambience';
 
 // The match's sound director: turns sim events into thumps, whistles and crowd
 // moods, and rides the tension director's number so the ground breathes with
 // the game — murmur in midfield, chants in the final third, a held breath the
 // instant a shot leaves a boot, then the roar or the groan.
+
+// The PA is off: a synthesised announcer sounds like a toy, and a toy voice
+// over a real moment cheapens it. Everything behind it is intact and waiting.
+const PA_VOICE = false;
 
 // The ears sit where the LENS does, and the lens is glued to the ball — so a
 // pan is measured from the ball, not from the halfway line. Panning in pitch
@@ -32,6 +37,19 @@ export class MatchAudio {
   private musicQuietT = 0;
   private musicHold = 0;  // seconds the ambient cue must stay out of the way
   private listenerX = 0;  // where the frame is looking, smoothed like the lens
+  private lateCalled = false; // the run-in warning belongs to one half, once
+  private kickoffCall = false; // the greeting waits for the first tick to know where it is
+  private quiet = true;   // no clock, no PA: drills and the attract game hear nothing
+
+  // Everything the announcer is offered comes through here, because a ground
+  // announcer at a training session is a joke, and the coach's tutorial has a
+  // voice of its own that nothing may talk over.
+  // SHELVED: the synthesised voice reads as a novelty, not a broadcast. The
+  // lines, the bake and the priority rules all stay — flip this back on when
+  // there is a voice worth listening to.
+  private pa(call: Call, delay = 0) {
+    if (PA_VOICE && !this.quiet) announcer.say(call, delay);
+  }
 
   // A stand is thousands of people and it never makes the same noise twice.
   // Every crowd one-shot goes through here, so the pitch and level spread that
@@ -47,11 +65,17 @@ export class MatchAudio {
     this.musicOn = true;
     this.musicHold = 0;
     this.listenerX = 0;
+    this.lateCalled = false;
+    this.kickoffCall = true;
+    this.quiet = true;
+    announcer.reset();
     // the ambient bed arrives over five seconds and sits UNDER the crowd —
     // play should never be silent, and it should never sound accompanied
     audio.music('music-calm', 5, 0.35);
     audio.ambient('crowd-bed', true, 2);
-    audio.ambient('wind', true, 3);
+    // no wind under a full stadium: two rushing beds stacked was the "grass or
+    // wind or something" the ear kept hearing instead of people. It belongs to
+    // the quiet places — the menu keeps it.
     // The sim queues its opening kickoff before the first tick and clears the
     // buffer on that tick, so the one whistle every player expects to hear
     // never reached the ear. It is spoken here instead; the engine's debounce
@@ -60,6 +84,7 @@ export class MatchAudio {
   }
 
   end() {
+    announcer.reset();
     audio.music(null, 2);
     audio.ambient('crowd-bed', false, 0.8);
     audio.ambient('wind', false, 0.8);
@@ -76,6 +101,12 @@ export class MatchAudio {
   // drained from snapshots instead — its own world never steps or clears
   tick(match: Match, heroIdx: number, dt: number, events = match.world.events) {
     const world = match.world;
+    // a clock is what makes it a match; drills and the attract game have none
+    this.quiet = match.halfLength <= 0;
+    if (this.kickoffCall) {
+      this.kickoffCall = false;
+      this.pa('kickoff', 1.2);
+    }
     director.update(match, heroIdx, events, dt);
     // at the break the half whistle speaks and the countdown owns the restart
     const atTheBreak = events.some((e) => e.kind === 'half');
@@ -98,6 +129,7 @@ export class MatchAudio {
         case 'post':
           audio.play('post-clank', { vol: Math.min(1, 0.5 + e.impact / 20), pan: panOf(e.x) });
           this.crowd('crowd-ooh', 0.85, 0.18);
+          this.pa('post', 0.62);
           break;
         case 'tackle':
           audio.play('tackle-slide', { pan: panOf(e.x), jitter: 0.06 });
@@ -108,6 +140,7 @@ export class MatchAudio {
         case 'save':
           audio.play('gk-catch', { pan: panOf(e.x) });
           this.crowd('crowd-cheer', 0.75, 0.15);
+          this.pa('save', 0.55);
           break;
         case 'foul':
           audio.play('whistle-short');
@@ -130,24 +163,31 @@ export class MatchAudio {
         case 'goal': {
           const scoringTeam: 0 | 1 = (e.side === 'left') === (world.attackSign(0) < 0) ? 0 : 1;
           audio.play('net-swish', { vol: 1, pan: panOf(world.ball.pos.x) });
+          // the PA waits for the roar to come off its plateau and the brass to
+          // finish — measured, not felt: the roar holds full for 1.75s
           if (heroTeam === undefined || scoringTeam === heroTeam) {
             this.crowd('crowd-roar', 1, 0.12);
             audio.play('goal-fanfare', { delay: 0.35 });
+            this.pa('goal', 2.2);
           } else {
             this.crowd('crowd-roar', 0.5, 0.5, 0.55);
             this.crowd('crowd-groan', 0.85, 0.16);
             audio.play('goal-conceded', { delay: 0.5 });
+            this.pa('conceded', 1.9);
           }
           this.musicHold = 14; // the stadium owns the next quarter-minute
           break;
         }
         case 'half':
           audio.play('whistle-half');
+          this.pa('half', 1.1);
+          this.lateCalled = false; // the second half gets its own run-in
           break;
         case 'fulltime':
           audio.play('whistle-full');
           audio.play('fulltime-fanfare', { delay: 0.9 });
           this.crowd('crowd-roar', 0.8, 0.6);
+          this.pa('full', 2.4);
           break;
       }
     }
@@ -159,13 +199,28 @@ export class MatchAudio {
       const shotNew = match.stats.shots[t] > this.prevShots[t];
       const onNew = match.stats.onTarget[t] > this.prevOnTarget[t];
       if (shotNew && !onNew) {
-        if (heroTeam === undefined || t === heroTeam) this.crowd('crowd-groan', 0.55, 0.5);
-        else this.crowd('crowd-cheer', 0.4, 0.45);
+        if (heroTeam === undefined || t === heroTeam) {
+          this.crowd('crowd-groan', 0.55, 0.5);
+          this.pa('miss', 0.8);
+        } else this.crowd('crowd-cheer', 0.4, 0.45);
       }
       this.prevShots[t] = match.stats.shots[t];
       this.prevOnTarget[t] = match.stats.onTarget[t];
     }
 
+    // The run-in: once, in the half that decides it, and only while the ball
+    // is live — nobody announces the closing minute over a goal kick. The
+    // clock on screen is real seconds and a half is two minutes, so the last
+    // minute is capped at a share of the half rather than a flat number,
+    // or a short half would hear it moments after the restart.
+    const runIn = Math.min(55, match.halfLength * 0.45);
+    if (!this.lateCalled && match.halfLength > 0 && match.half === 2 && match.halfLive
+      && match.halfLength - match.clock < runIn) {
+      this.lateCalled = true;
+      this.pa('late');
+    }
+
+    announcer.update(dt);
     this.rideCrowd(dt);
     this.rideMusic(dt);
 
@@ -213,8 +268,13 @@ export class MatchAudio {
           audio.play('crowd-heart', { vol: pulseVol });
           this.heartDub = 0.17;
           break;
+        // small talk hangs off a pass worth admiring rather than a timer, so
+        // the one time a minute he says something it is about football you
+        // just played. His own cooldown makes it rare; the lull test keeps him
+        // out of the moments the crowd should own alone.
         case 'through':
           this.crowd('crowd-pat', 0.62, 0.06);
+          if (director.level < 0.66) this.pa('colour', 0.5);
           break;
         case 'clean':
           this.crowd('crowd-pat', 0.34, 0.05);
@@ -238,7 +298,9 @@ export class MatchAudio {
 
   // The bed, the chants and the held breath — one arc, all from one number
   private rideCrowd(dt: number) {
-    const breath = 1 - 0.72 * director.hush; // silence is the loudest tool there is
+    // silence is the loudest tool there is — and the ground steps back a
+    // couple of dB behind the microphone, the way a mixer rides a PA feed
+    const breath = (1 - 0.72 * director.hush) * announcer.duck;
     const target = (0.45 + director.level * 1.2) * breath;
     this.bed += (target - this.bed) * Math.min(1, dt * (target < this.bed ? 9 : 2.5));
     audio.ambientLevel('crowd-bed', this.bed, director.hush > 0.02 ? 0.08 : 0.45);

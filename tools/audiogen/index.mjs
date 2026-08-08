@@ -2,9 +2,11 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { SR, writeWav } from './lib.mjs';
 import { bakeSfx } from './sfx.mjs';
 import { bakeMusic } from './music.mjs';
+import { bakeAnnouncer } from './announcer.mjs';
 
-// Bakes the game's whole voice — SFX, ambience, music — into public/assets/audio
-// plus a manifest of loop flags and default mix gains the runtime trusts.
+// Bakes the game's whole voice — SFX, ambience, announcer, music — into
+// public/assets/audio plus a manifest of loop flags and default mix gains the
+// runtime trusts.
 
 const OUT = new URL('../../public/assets/audio/', import.meta.url).pathname;
 mkdirSync(OUT, { recursive: true });
@@ -20,7 +22,7 @@ const write = (file, data, rate = SR) => {
   stats.push({ file, secs: (n / rate).toFixed(2), kHz: rate / 1000, peak: peak.toFixed(2), rms: Math.sqrt(sum / (n * chs.length)).toFixed(3) });
 };
 
-const entries = [...bakeSfx(write), ...bakeMusic(write)];
+const entries = [...bakeSfx(write), ...bakeAnnouncer(write), ...bakeMusic(write)];
 writeFileSync(`${OUT}audio-manifest.json`, JSON.stringify({ sounds: entries }, null, 2));
 
 console.table(stats);

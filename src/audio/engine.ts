@@ -99,6 +99,18 @@ class AudioEngine {
     this.play(`ui-${name}`, { vol });
   }
 
+  // How long this one holds the room. The announcer needs it to know when he
+  // is allowed to open his mouth again; 0 for anything that never loaded.
+  duration(name: string) {
+    return this.buffers.get(name)?.duration ?? 0;
+  }
+
+  // Every baked take sharing a prefix — how a pool of alternate lines is found
+  // without a second list to keep in step with the bake
+  variants(prefix: string) {
+    return [...this.buffers.keys()].filter((n) => n.startsWith(prefix)).sort();
+  }
+
   // Crossfade to a looping track — or to silence with music(null)
   music(name: string | null, fade = 0.8, vol = 1) {
     if (!this.ready || !this.ctx) return;
