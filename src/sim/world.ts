@@ -4,7 +4,10 @@ import { GRAVITY, PITCH, SURFACES, Surface } from './constants';
 import { Ball } from './ball';
 import { PlayerBody, PlayerInput } from './player';
 import { SimEvent } from './events';
-import { CLAMP, clampCloseRate, coneHalfAngle, duelScores, goalness, keeperCentering, kickAccuracy } from './tuning';
+import {
+  CLAMP, clampCloseRate, coneHalfAngle, duelScores, goalness, keeperCentering, kickAccuracy,
+  lungeReach, lungeWindowReach,
+} from './tuning';
 
 const KICK_RANGE = 2.0;
 const KICK_BUFFER = 0.28;    // released kick fires as soon as the ball is in reach
@@ -30,8 +33,20 @@ const ATTEND_RANGE = 25;     // how far a human's eyes stay on the ball at a wal
 const OFFSIDE_GRACE = 0.35;  // level is onside — the flag needs daylight
 export const DIVE_TIME = 0.42; // the keeper's beat in the air — his brain times the leap against it
 const RESTART_PATIENCE = 5;  // seconds a placed ball may sit before the referee gets on with it
-// The goal ceremony: the party, then the long walk back. Nothing teleports.
-const CEREMONY = { celebrate: 4.2, walk: 6, grace: 2.5, ball: [9, 18] as const };
+// The goal, chapter by chapter: the party, the truck's cut, the long walk home.
+// Nothing here teleports, and the caps mean nothing here can hang either.
+const CEREMONY = {
+  celebrate: 5,     // the scorers own this window outright
+  claim: 0.5,       // the truck's beat to say "I have a replay" before we walk on
+  replayCap: 30,    // ...and the outside edge of one, so a silent shell never freezes a match
+  walk: 5,          // everyone paced to reach his mark at the same moment
+  grace: 5,         // ...and the corner-flag mob's allowance to hustle in behind them
+  breather: 0.3,    // a goal is a rest: legs come back on the walk, per second
+  arrive: 0.08,     // near enough his mark that standing him on it is invisible
+  ballEase: 2.2,    // the roll home slows into the spot instead of stopping dead
+  ballCap: 18,      // ...but leaves the net at a pace worth watching
+  ballFloor: 1.2,
+};
 
 // How often the gloves beat the strike. Hands first — slower, closer, more
 // agile is safer — then the thing that makes football football: he has to have
@@ -97,8 +112,11 @@ export class World {
   // it may borrow for the walk back.
   humanIdxs = new Set<number>();
   // A goal is a chapter, not a cut: 'celebrate' is the window the scorers own,
-  // 'walkback' walks all 22 to the kickoff arrangement on their own legs.
-  ceremony: 'live' | 'celebrate' | 'walkback' = 'live';
+  // 'replay' is the doorway the truck parks in, and 'walkback' walks all 22 to
+  // the kickoff arrangement on their own legs.
+  ceremony: 'live' | 'celebrate' | 'replay' | 'walkback' = 'live';
+  // Seconds inside the current chapter — the shell's clock for lens and cards
+  ceremonyT = 0;
   // Who is turning his back on whom right now — the FX read it, the clamp and
   // the lunge both pay for it
   shielding: { idx: number; from: number } | null = null;
@@ -124,14 +142,12 @@ export class World {
   holdingGk = -1;
   private holdT = 0;
   private rng: Rng;
-  private goalScored = false;
-  private goalResetT = 0;
   // A goal buys the scorers a window to lose their minds before the spot
   celebration: { team: 0 | 1; scorer: number; t: number } | null = null;
-  private foulCooldown = 0;      // the whistle stays occasional, never a fest
-  private foulPending: { spot: Vec2; team: 0 | 1 } | null = null; // awarded at tick's end
-  private lungeRolled = new Set<number>(); // one foul roll per lunge, not per tick
-  private walkT = 0;             // how long the walk home has been going
+  private replayClaimed = false; // the truck has asked to park at the replay beat
+  private foulPending: { spot: Vec2; team: 0 | 1; by: number } | null = null; // awarded at tick's end
+  // Lunges that left AFTER the window shut. Human legs only ever land in here.
+  private lateLunge = new Set<number>();
   private walkTaker = -1;        // he walks to the SPOT instead of his slot
   // The flag, latched at the kick and only read by the FIRST touch of the flight
   private offsideLatch: { team: 0 | 1; kicker: number; flagged: { idx: number; x: number; y: number }[] } | null = null;
@@ -145,7 +161,6 @@ export class World {
 
   step(dt: number, inputs: PlayerInput[]) {
     this.events.length = 0;
-    this.foulCooldown = Math.max(0, this.foulCooldown - dt);
     this.ball.savePrev();
     for (const p of this.players) p.savePrev();
 
@@ -171,20 +186,30 @@ export class World {
         if (d < bestD) { bestD = d; this.looseClaimIdx = i; }
       });
     }
+    // What each body ACTUALLY played this tick, press and all — the jaws read
+    // this, never the raw sheet, or every automatic press is dressed and dropped
+    const played: PlayerInput[] = [];
     this.players.forEach((p, i) => {
       const raw = inputs[i] ?? { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
       const input = this.ceremony === 'walkback' ? this.walkHomeInput(p, i, raw) : this.attended(raw, p, i);
+      played[i] = input;
       // The leap is committed before the legs run, so the burst rides this tick
       if (ballLive && input.dive && p.id.role === 'GK') this.commitDive(p, i, input.dive);
+      // The verdict is taken BEFORE the legs move: a lunge that leaves after
+      // the diamond has gone out is late however it lands. Brains never qualify
+      // — nobody's foul is ever handed to them by the computer.
+      const late = !!input.tackle && p.lungeTimer <= 0 && p.id.role !== 'GK' &&
+        this.humanIdxs.has(i) && this.tackleWindow(i) <= 0;
       p.update(dt, input, this.events);
-      if (p.lungeTimer <= 0) this.lungeRolled.delete(i);
+      if (p.lungeTimer <= 0) this.lateLunge.delete(i);
+      else if (late) this.lateLunge.add(i);
       if (!ballLive) return;
       this.handleKick(p, input, dt, i);
       this.resolveLunge(p, i);
       this.handleDribble(p, input, i);
       this.collideBall(p, i);
     });
-    if (ballLive) this.updateClamp(dt, inputs);
+    if (ballLive) this.updateClamp(dt, played);
     this.resolveBodies();
     this.updateShield();
 
@@ -220,7 +245,7 @@ export class World {
       this.ball.savePrev();
     }
     // After the dead-ball beat has saved its frame, so the roll home renders
-    if (this.ceremony === 'walkback') this.updateWalkback(dt);
+    this.updateCeremony(dt);
     // The restart law holds until the ball is PLAYED, not just until the
     // beat ends — the taker owns his space for as long as he stands over it
     if (ballLive && this.restartExclusion > 0 && this.ball.speed() > 2) this.restartExclusion = 0;
@@ -254,7 +279,7 @@ export class World {
     this.collideGoalFrames();
     this.settleFoul();   // the referee waits for the tick to finish moving
     this.checkOffside(); // the flag is raised BEFORE the net is credited
-    this.handleGoalsAndBounds(dt);
+    this.handleGoalsAndBounds();
   }
 
   // Human eyes: at a walk you watch the ball without turning your feet toward
@@ -267,14 +292,31 @@ export class World {
     return { ...dressed, attend: this.ball.pos };
   }
 
-  // Standing over a carrier's ball IS the clamp — nobody holds a button to do
-  // what proximity already means. Everyone gets it, human and brain alike, so
+  // Standing over a man's ball IS the clamp — nobody holds a button to do what
+  // proximity already means. Everyone gets it, human and brain alike, so
   // pressing stays symmetric; the button is left with one honest job, the lunge.
+  // Next to the ball OR next to the man both count: no version of standing on
+  // top of him is allowed to quietly do nothing.
   private pressing(input: PlayerInput, p: PlayerBody): PlayerInput {
-    const latch = this.carrier;
-    if (input.clamp || !latch || this.players[latch.idx].id.team === p.id.team) return input;
-    if (dist(p.pos, this.ball.pos) > CLAMP.press) return input;
+    if (input.clamp) return input;
+    const man = this.pressedMan();
+    if (man === null) return input;
+    const cb = this.players[man];
+    if (cb.id.team === p.id.team) return input;
+    if (dist(p.pos, this.ball.pos) > CLAMP.press && dist(p.pos, cb.pos) > CLAMP.pressMan) return input;
     return { ...input, clamp: true };
+  }
+
+  // Who the press is aimed at: the latched carrier, or — in the gaps between
+  // his touches, where the latch quietly lapses — the man the ball is still
+  // plainly running with. The latch is a possession rule; this is the honest
+  // eye test, and standing beside him has to mean the same thing either way.
+  private pressedMan(): number | null {
+    if (this.carrier) return this.carrier.idx;
+    const lt = this.lastTouch;
+    if (!lt || this.ball.z > 0.8) return null;
+    const man = this.players[lt.idx];
+    return man && dist(man.pos, this.ball.pos) <= CLAMP.carry ? lt.idx : null;
   }
 
   // A placed ball nobody has played yet — the clock owes these seconds back,
@@ -402,12 +444,13 @@ export class World {
     const gk = p.id.role === 'GK';
     const ceiling = gk ? (p.diveTimer > 0 && p.diveHeight === 1 ? 2.4 : 1.6) : 0.8;
     if (p.lungeTimer <= 0 || this.ball.z > ceiling) return;
+    if (this.lateChallenge(p, idx)) return; // the whistle outranks every other outcome
     // Reach is the trade: agile hands for keepers, real DEFENDING for the rest.
     // A keeper standing on his feet covers his own body and nothing more — the
     // mouth of the goal is bought with the dive, and only with the dive.
     const reach = gk
       ? keeperStandingReach(p.stats.agility) + (p.diveTimer > 0 ? 0.75 + p.stats.dive * 0.75 : 0)
-      : 0.8 + p.stats.defend * 0.45;
+      : lungeReach(p.stats.defend);
     const handsD = dist(p.pos, this.ball.pos);
     if (handsD > reach) {
       // Reaching the MAN but not his shielded ball IS the shoulder duel, and
@@ -416,11 +459,8 @@ export class World {
       const shieldMan = latch && latch.idx !== idx && !gk ? this.players[latch.idx] : null;
       if (shieldMan && shieldMan.id.team !== p.id.team && dist(p.pos, shieldMan.pos) < SHOULDER_RANGE &&
           dist(this.ball.pos, shieldMan.pos) <= CLAMP.protect && this.shieldsBallFrom(shieldMan, p)) {
-        this.maybeFoul(p, idx); // going through the man in the box still risks the spot
         this.bounceOffShield(p, shieldMan);
-        return;
       }
-      this.maybeFoul(p, idx); // flew past the ball — did he catch the man?
       return;
     }
     // A keeper's lunge is a CONTEST: hands versus pace. A slow ball at his
@@ -520,22 +560,22 @@ export class World {
     this.events.push({ kind: 'steal', x: this.ball.pos.x, y: this.ball.pos.y });
   }
 
-  // THE CLAMP: hold the tackle button near a latched carrier and chalk jaws
-  // close around his ball — DEF+PHY squeezing against DRI+PHY+shielding. When
-  // they meet, the take is clean; break the engagement and they fall open; a
-  // skilled carrier FEINTS as they near closing and knocks them back. This is
-  // defending as an intention: you are never stealing by accident.
+  // THE CLAMP: stand on the man with the ball and chalk jaws close around it —
+  // DEF+PHY squeezing against DRI+PHY+shielding. When they meet, the take is
+  // clean; break off and they fall open; a skilled carrier FEINTS as they near
+  // closing and knocks them back. Being there is the whole intention — you are
+  // never stealing by accident, and never failing to try by accident either.
   private updateClamp(dt: number, inputs: PlayerInput[]) {
-    const latch = this.carrier;
-    const cb = latch ? this.players[latch.idx] : null;
-    const eligible = !!cb && dist(this.ball.pos, cb.pos) <= CLAMP.protect + 0.35 && this.ball.z <= 0.8;
+    const man = this.pressedMan();
+    const cb = man === null ? null : this.players[man];
+    const eligible = !!cb && dist(this.ball.pos, cb.pos) <= CLAMP.carry && this.ball.z <= 0.8;
     const engagedBy = (i: number) => {
       const p = this.players[i];
       return !!inputs[i]?.clamp && p.lungeTimer <= 0 && p.recoverTimer <= 0 &&
         dist(p.pos, this.ball.pos) <= CLAMP.engage + (this.clamp?.idx === i ? 0.4 : 0);
     };
-    if (!this.clamp) {
-      if (!eligible) return;
+    // Whoever is genuinely on him, nearest the ball first
+    const claimant = () => {
       let best = -1;
       let bestD = Infinity;
       this.players.forEach((p, i) => {
@@ -543,12 +583,27 @@ export class World {
         const d = dist(p.pos, this.ball.pos);
         if (d < bestD) { bestD = d; best = i; }
       });
-      if (best < 0) return;
-      this.clamp = { idx: best, close: 0, graceT: CLAMP.grace, feintRolled: false };
+      return best;
+    };
+    if (!this.clamp) {
+      if (!eligible) return;
+      const first = claimant();
+      if (first < 0) return;
+      this.clamp = { idx: first, close: 0, graceT: CLAMP.grace, feintRolled: false };
     }
     const cl = this.clamp;
-    const def = this.players[cl.idx];
-    const holding = eligible && def.id.team !== cb!.id.team && engagedBy(cl.idx);
+    let holding = eligible && this.players[cl.idx].id.team !== cb!.id.team && engagedBy(cl.idx);
+    // The relief: a man who has broken off never keeps the job open while a
+    // mate is stood on the carrier. New jaws, and they start from nothing.
+    if (!holding && eligible) {
+      const relief = claimant();
+      if (relief >= 0 && relief !== cl.idx) {
+        cl.idx = relief;
+        cl.close = 0;
+        cl.feintRolled = false;
+        holding = true;
+      }
+    }
     if (!holding) {
       cl.graceT -= dt;
       if (cl.graceT <= 0) {
@@ -557,6 +612,7 @@ export class World {
       }
       return;
     }
+    const def = this.players[cl.idx];
     cl.graceT = CLAMP.grace;
     cl.close += clampCloseRate(def.stats, cb!.stats, this.shieldsBallFrom(cb!, def)) * dt;
     if (cl.close >= CLAMP.feintAt && !cl.feintRolled && cb!.feintCooldown <= 0) {
@@ -613,14 +669,63 @@ export class World {
     this.clearCeremony();
   }
 
+  // The truck's claim on the replay beat: say this any time before the party
+  // ends and the ceremony parks at 'replay' instead of walking straight home
+  holdCeremony() {
+    this.replayClaimed = true;
+  }
+
+  // ...and the truck letting go. The walk starts the moment it does.
+  resumeCeremony() {
+    this.replayClaimed = false;
+    if (this.ceremony === 'replay') this.beginWalkback();
+  }
+
+  // True while the ceremony is parked waiting on somebody else's beat
+  get ceremonyHeld(): boolean {
+    return this.ceremony === 'replay' && this.replayClaimed;
+  }
+
+  // How far through the current chapter, 0-1. A held replay reports 0: that
+  // clock belongs to the truck, and the sim refuses to invent one for it.
+  get ceremonyProgress(): number {
+    if (this.ceremony === 'celebrate') return clamp(this.ceremonyT / CEREMONY.celebrate, 0, 1);
+    if (this.ceremony === 'walkback') return clamp(this.ceremonyT / CEREMONY.walk, 0, 1);
+    return 0;
+  }
+
   // Every path that re-stages the game ends the ceremony where it stands
   private clearCeremony() {
-    this.goalScored = false;
-    this.goalResetT = 0;
     this.celebration = null;
     this.ceremony = 'live';
-    this.walkT = 0;
+    this.ceremonyT = 0;
+    this.replayClaimed = false;
     this.walkTaker = -1;
+  }
+
+  // The chapter clock. Each beat runs itself out and hands over; the only one
+  // that waits is the replay, and even that waits against a cap — a shell that
+  // never speaks again can delay a kickoff, never cancel one.
+  private updateCeremony(dt: number) {
+    if (this.ceremony === 'live') return;
+    this.ceremonyT += dt;
+    if (this.ceremony === 'walkback') return this.walkHome(dt);
+    this.ball.vel = scale(this.ball.vel, 0.82); // the net rigging drinks it
+    if (this.ceremony === 'celebrate') {
+      if (this.celebration) this.celebration.t = Math.max(0, CEREMONY.celebrate - this.ceremonyT);
+      // the ball has to stop rattling the netting before anyone cuts away
+      if (this.ceremonyT >= CEREMONY.celebrate && this.ball.speed() < 2) {
+        this.enterCeremony('replay');
+      }
+      return;
+    }
+    if (this.ceremonyT > (this.replayClaimed ? CEREMONY.replayCap : CEREMONY.claim)) this.beginWalkback();
+  }
+
+  // One door into every chapter, so the state and its clock can never disagree
+  private enterCeremony(next: World['ceremony']) {
+    this.ceremony = next;
+    this.ceremonyT = 0;
   }
 
   // Where the flag falls for this team's runs right now: the second-last
@@ -682,36 +787,52 @@ export class World {
     return dist(this.ball.pos, this.players[this.carrier.idx].pos) > CLAMP.protect;
   }
 
-  // A lunge that misses the ball but arrives through the carrier is a foul.
-  // Outside the box the referee waves play on — the arcade never stops
-  // mid-pitch — and inside it the victim gets a free kick off the spot he was
-  // felled on. No penalties. Keepers contest with hands and stay out of this.
-  private maybeFoul(p: PlayerBody, idx: number, chance = 0.16) {
-    if (!this.foulsEnabled || p.id.role === 'GK' || this.foulCooldown > 0) return;
-    if (this.lungeRolled.has(idx)) return;
-    const carrierIdx = this.possessor();
-    if (carrierIdx === null) return;
-    const carrier = this.players[carrierIdx];
-    if (carrier.id.team === p.id.team || dist(p.pos, carrier.pos) > SHOULDER_RANGE) return;
-    const defSign = this.attackSign(p.id.team);
-    const boxDeep = defSign > 0 ? carrier.pos.x < 16.5 : carrier.pos.x > PITCH.length - 16.5;
-    const inBox = boxDeep && Math.abs(carrier.pos.y - PITCH.width / 2) < 20.16;
-    if (!inBox) return; // play on — no mid-pitch ceremony
-    this.lungeRolled.add(idx);
-    if (this.rng.next() > chance) return; // almost every late arrival gets away with it
+  // THE WINDOW, and the only clock a challenge is ever judged against: an
+  // opponent's ball, loose of him, low, with your legs free to go. The red
+  // diamond is this number drawn — so the diamond can never lie about what the
+  // referee is about to think. 0 means shut: go now and you go through the man.
+  tackleWindow(idx: number): number {
+    const me = this.players[idx];
+    const latch = this.carrier;
+    if (!me || !latch || me.id.role === 'GK') return 0;
+    if (this.restartLock > 0 || this.ceremony !== 'live') return 0;
+    const carrier = this.players[latch.idx];
+    if (!carrier || carrier.id.team === me.id.team) return 0;
+    if (!this.ballExposed() || this.ball.z > 0.8) return 0;
+    if (me.tackleCooldown > 0 || me.lungeTimer > 0 || me.recoverTimer > 0) return 0;
+    const reach = lungeWindowReach(me.stats.defend);
+    const d = dist(me.pos, this.ball.pos);
+    return d > reach ? 0 : 0.35 + 0.65 * (1 - d / reach);
+  }
+
+  // THE WHOLE OF THE REFEREE: a lunge that left after the window shut, landing
+  // on the man who still has the ball. No dice, no cooldown, no brain ever in
+  // the frame — a foul is something you DID, on a tick you can name. Keepers
+  // contest with hands and stay out of it, and if the carrier lost the ball in
+  // the meantime there was nothing left to protect: play on.
+  private lateChallenge(p: PlayerBody, idx: number): boolean {
+    if (!this.foulsEnabled || this.ceremony !== 'live' || !this.lateLunge.has(idx)) return false;
+    const latch = this.carrier;
+    if (!latch || latch.idx === idx) return false;
+    const victim = this.players[latch.idx];
+    if (victim.id.team === p.id.team || dist(p.pos, victim.pos) > SHOULDER_RANGE) return false;
+    if (dist(this.ball.pos, victim.pos) > CLAMP.protect) return false;
+    this.lateLunge.delete(idx);
     p.lungeTimer = 0;
     p.tackleCooldown = Math.max(p.tackleCooldown, 1.2);
-    this.foulCooldown = 25; // the whistle is an event, not a rhythm
     // the victim goes DOWN — sprawled, shoved, and briefly out of the game.
     // Half theater, half truth: it sells the whistle and it's funny to watch.
-    carrier.lungeTimer = Math.max(carrier.lungeTimer, 0.9);
-    carrier.vel = add(carrier.vel, scale(norm(sub(carrier.pos, p.pos)), 3.6));
-    carrier.touchCooldown = Math.max(carrier.touchCooldown, 0.8);
-    this.events.push({ kind: 'tackle', x: carrier.pos.x, y: carrier.pos.y });
+    const away = sub(victim.pos, p.pos);
+    victim.lungeTimer = Math.max(victim.lungeTimer, 0.9);
+    victim.vel = add(victim.vel, scale(len(away) > 1e-6 ? norm(away) : vec(1, 0), 3.6));
+    victim.touchCooldown = Math.max(victim.touchCooldown, 0.8);
+    this.events.push({ kind: 'tackle', x: victim.pos.x, y: victim.pos.y });
     this.foulPending = {
-      spot: vec(clamp(carrier.pos.x, 1, PITCH.length - 1), clamp(carrier.pos.y, 1, PITCH.width - 1)),
-      team: carrier.id.team,
+      spot: vec(clamp(victim.pos.x, 1, PITCH.length - 1), clamp(victim.pos.y, 1, PITCH.width - 1)),
+      team: victim.id.team,
+      by: idx,
     };
+    return true;
   }
 
   // The whistle lands at the END of the tick, once bodies and ball have had
@@ -723,7 +844,7 @@ export class World {
     this.foulPending = null;
     this.awardRestart(call.spot, call.team, 'freekick');
     // the restart speaks first and the whistle last, so the banner keeps 'FOUL'
-    this.events.push({ kind: 'foul', x: call.spot.x, y: call.spot.y });
+    this.events.push({ kind: 'foul', x: call.spot.x, y: call.spot.y, by: call.by });
   }
 
   // Bodies are BOUNDARIES: nobody runs through a defender. Whoever is DRIVING
@@ -760,24 +881,8 @@ export class World {
         const kill = -closing * BODY_DAMP;
         a.vel = sub(a.vel, scale(n, kill * aShare));
         b.vel = add(b.vel, scale(n, kill * (1 - aShare)));
-        this.rollShoulderFoul(a, i, b, j);
       }
     }
-  }
-
-  // Arriving at sprint pace into the back of a man shielding his ball is not
-  // defending, it is a challenge — and inside the box the referee is watching
-  private rollShoulderFoul(a: PlayerBody, ai: number, b: PlayerBody, bi: number) {
-    const latch = this.carrier;
-    if (!latch || (latch.idx !== ai && latch.idx !== bi)) return;
-    const cb = latch.idx === ai ? a : b;
-    const man = latch.idx === ai ? b : a;
-    const idx = latch.idx === ai ? bi : ai;
-    if (man.id.team === cb.id.team || man.bargeCooldown > 0) return;
-    if (!man.isSprinting || man.speed() < cb.speed() + 1.5) return;
-    if (!this.shieldsBallFrom(cb, man)) return;
-    man.bargeCooldown = 1.2;
-    this.maybeFoul(man, idx, 0.7);
   }
 
   // The turned back: the carrier's body sits between this man and the ball, so
@@ -1100,35 +1205,23 @@ export class World {
     return true;
   }
 
-  private handleGoalsAndBounds(dt: number) {
-    if (this.ceremony === 'walkback') return; // the ball is being walked home; nothing is in play
+  private handleGoalsAndBounds() {
+    if (this.ceremony !== 'live') return; // the chapter owns the ball; nothing is in play
     const b = this.ball;
     const halfMouth = PITCH.goalWidth / 2;
     const inMouth = Math.abs(b.pos.y - PITCH.width / 2) < halfMouth && b.z < PITCH.goalHeight;
 
-    if (!this.goalScored && inMouth && (b.pos.x < 0 || b.pos.x > PITCH.length)) {
+    if (inMouth && (b.pos.x < 0 || b.pos.x > PITCH.length)) {
       const side = b.pos.x < 0 ? 'left' : 'right';
       // whichever team ATTACKS the crossed line owns the goal — sides may swap
       const scoringTeam: 0 | 1 = (side === 'left') === (this.attackSign(0) < 0) ? 0 : 1;
       this.score[scoringTeam === 0 ? 'left' : 'right']++;
-      this.goalScored = true;
-      this.ceremony = 'celebrate';
-      this.goalResetT = CEREMONY.celebrate; // the party owns this window before the walk
+      this.enterCeremony('celebrate'); // the party owns this window before the walk
       const scorer = this.lastTouch?.idx ?? -1;
-      this.celebration = { team: scoringTeam, scorer, t: this.goalResetT };
+      this.celebration = { team: scoringTeam, scorer, t: CEREMONY.celebrate };
       this.kickoffTeam = scoringTeam === 0 ? 1 : 0; // the conceder restarts the game
       this.offsideLatch = null; // the flight ended in the net; no flag chases it
       this.events.push({ kind: 'goal', side, scorer });
-      return;
-    }
-
-    if (this.goalScored) {
-      // The net rigging catches it; the ball just dies in there while the
-      // scorers wheel away — then everybody starts the walk home
-      b.vel = scale(b.vel, 0.82);
-      this.goalResetT -= dt;
-      if (this.celebration) this.celebration.t = this.goalResetT;
-      if (this.goalResetT <= 0 && b.speed() < 2) this.beginWalkback();
       return;
     }
 
@@ -1209,10 +1302,9 @@ export class World {
   // to the circle, and all 22 take themselves to their kickoff marks on their
   // own legs. The taker walks to the SPOT, so the restart lands on nobody.
   private beginWalkback() {
-    this.goalScored = false;
     this.celebration = null;
-    this.ceremony = 'walkback';
-    this.walkT = 0;
+    this.replayClaimed = false;
+    this.enterCeremony('walkback');
     if (this.practice) this.kickoffTeam = 0;
     this.walkTaker = this.kickoffTakerIdx();
   }
@@ -1223,33 +1315,42 @@ export class World {
     return idx === this.walkTaker ? this.kickoffSpot() : vec(p.home.x, p.home.y);
   }
 
-  // The world borrows the legs during the walk: brains are ignored, and a
-  // human who isn't pressing anything drifts home with everyone else. Past the
-  // cap the referee is waiting, so the stragglers hustle — and nobody, human
-  // included, gets to hold the restart hostage.
+  // The world borrows the legs during the walk: brains are ignored, and every
+  // man is paced to reach his mark at the same MOMENT — the corner-flag mob
+  // hustles, the men already home amble in, and the team lands together
+  // instead of trickling for ten seconds. A human who is pressing something
+  // keeps his own legs until the referee is waiting on him.
   private walkHomeInput(p: PlayerBody, idx: number, raw: PlayerInput): PlayerInput {
-    const late = this.walkT > CEREMONY.walk;
+    const late = this.ceremonyT > CEREMONY.walk;
     if (!late && this.humanIdxs.has(idx) && len(raw.move) > 0.2) return raw;
     const to = sub(this.walkTargetOf(idx), p.pos);
     const d = len(to);
-    // the last meters ease off, so nobody arrives by slamming into his mark
+    const needed = d / Math.max(0.45, CEREMONY.walk - this.ceremonyT);
+    // the last stride eases off, so nobody arrives by slamming into his mark
+    const pace = clamp(needed / p.stats.topSpeed, 0.45, 1) * Math.min(1, 0.4 + d / 1.5);
     return {
-      move: d < 0.05 ? vec() : scale(to, Math.min(1, d / 1.4) / d),
-      sprint: late,
+      move: d < 0.03 ? vec() : scale(to, pace / d),
+      sprint: needed > p.stats.topSpeed,
       kickCharging: false,
       kickReleased: null,
     };
   }
 
-  private updateWalkback(dt: number) {
-    this.walkT += dt;
+  // The ball is ROLLED onto the centre spot and eased into it — it is never
+  // placed there, and the whistle waits for it as much as for the men
+  private walkHome(dt: number) {
     const spot = vec(PITCH.length / 2, PITCH.width / 2);
     const ballD = dist(this.ball.pos, spot);
-    this.ball.pos = moveToward(this.ball.pos, spot, clamp(ballD / 2, CEREMONY.ball[0], CEREMONY.ball[1]) * dt);
+    const roll = clamp(ballD * CEREMONY.ballEase, CEREMONY.ballFloor, CEREMONY.ballCap);
+    this.ball.pos = moveToward(this.ball.pos, spot, roll * dt);
     this.ball.z = Math.max(0, this.ball.z - 3 * dt);
     let farthest = 0;
-    this.players.forEach((p, i) => { farthest = Math.max(farthest, dist(p.pos, this.walkTargetOf(i))); });
-    if ((farthest < 0.12 && ballD < 0.05) || this.walkT > CEREMONY.walk + CEREMONY.grace) this.kickoffReset();
+    this.players.forEach((p, i) => {
+      // and the whole point of a goal: everybody gets their wind back on it
+      p.stamina = Math.min(1, p.stamina + CEREMONY.breather * dt);
+      farthest = Math.max(farthest, dist(p.pos, this.walkTargetOf(i)));
+    });
+    if ((farthest < CEREMONY.arrive && ballD < 0.05) || this.ceremonyT > CEREMONY.walk + CEREMONY.grace) this.kickoffReset();
   }
 
   // The most central forward of the kickoff team stands over the ball

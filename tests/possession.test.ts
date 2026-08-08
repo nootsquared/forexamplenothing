@@ -87,6 +87,37 @@ describe('the possession war', () => {
     expect(world.players[world.carrier!.idx].id.team).toBe(0);
   });
 
+  it('standing beside the man IS the press — nobody holds a button for it', () => {
+    // Off his boot by more than the old ball-radius, but right on his shoulder
+    const { world } = latchedStage(mk({}), mk({ defend: 0.6, phys: 0.6 }), vec(50.8, 34));
+    world.step(1 / 60, [idle, idle]);
+    expect(world.clamp?.idx).toBe(1);
+  });
+
+  it('the press does not quit in the gap between his touches', () => {
+    const { world, carrier } = latchedStage(mk({}), mk({ defend: 0.6, phys: 0.6 }), vec(51.2, 34));
+    // He knocks it ahead: the latch lapses, but the ball is plainly still his
+    world.carrier = null;
+    world.clamp = null;
+    world.ball.pos = vec(53.4, 34);
+    world.ball.vel = vec();
+    carrier.touchCooldown = 0.5;
+    world.step(1 / 60, [idle, idle]);
+    expect(world.carrier).toBeNull();
+    expect(world.clamp?.idx).toBe(1);
+  });
+
+  it('a man who breaks off hands the jaws to the mate stood on the carrier', () => {
+    const { world, other } = latchedStage(mk({}), mk({ defend: 0.6, phys: 0.6 }), vec(51.1, 34));
+    const relief = new PlayerBody(vec(52, 32.8), mk({ defend: 0.6, phys: 0.6 }), id(1));
+    world.players.push(relief);
+    world.step(1 / 60, [idle, idle, idle]);
+    expect(world.clamp?.idx).toBe(1);
+    other.pos = vec(30, 34); // he's gone — and the jaws go with the man who stayed
+    world.step(1 / 60, [idle, idle, idle]);
+    expect(world.clamp?.idx).toBe(2);
+  });
+
   it('the clamp bit rides the wire', () => {
     const round = unpackInput(packInput({ ...idle, clamp: true, tackle: false }, false));
     expect(round.clamp).toBe(true);

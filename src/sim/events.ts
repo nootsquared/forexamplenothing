@@ -14,8 +14,9 @@ export type SimEvent =
   | { kind: 'restart'; taker: number; team: 0 | 1; restart: 'throwin' | 'corner' | 'goalkick' | 'offside' | 'freekick' }
   | { kind: 'offside'; x: number; y: number; idx: number } // the flag: caught beyond the line at the kick
   | { kind: 'gkDive'; idx: number; dirY: -1 | 1; height: 0 | 1 } // the keeper leaves his feet
-  // the whistle: a tackle caught the man, and the free kick is already staged
-  | { kind: 'foul'; x: number; y: number }
+  // the whistle: a late lunge caught the man, and the free kick is already
+  // staged. `by` is the body that went in — a foul always has a name on it.
+  | { kind: 'foul'; x: number; y: number; by: number }
   | { kind: 'kickoff'; team: 0 | 1; taker: number } // whose ball starts the play
   | { kind: 'goal'; side: 'left' | 'right'; scorer: number } // last touch owns it
   | { kind: 'half' }      // pushed by the match clock at the break

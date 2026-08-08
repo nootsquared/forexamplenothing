@@ -68,9 +68,14 @@ export function keeperCentering(control: number): number {
 // when they meet, the take is clean. Stealing is a DUEL now, never osmosis.
 export const CLAMP = {
   engage: 2.6,     // how close the squeezing defender must stay to the ball
-  press: 1.6,      // ...and how close he must be for the jaws to close on their
+  press: 1.9,      // ...and how close he must be for the jaws to close on their
                    // own. Tighter than engage on purpose: brushing past a man
                    // is not pressing him, or every loose 7v7 seizes up
+  pressMan: 1.8,   // being next to the MAN arms them too — his touch running
+                   // ahead of him is not an excuse to stop pressing him
+  carry: 2.0,      // how far his ball may run and still be his to squeeze. A
+                   // sprint knocks it past the protect ring every touch; the
+                   // jaws holding only inside that ring is why they kept quitting
 
   protect: 1.1,    // the carrier's controlled bubble — beyond it the ball is honest prey
   decay: 1.5,      // jaws fall open per second once the engagement breaks
@@ -82,6 +87,20 @@ export const CLAMP = {
 // A back turned into the challenge is worth more than any stat: the jaws
 // crawl, and a lunge from that side never finds the ball at all.
 export const SHIELD_CLAMP = 0.45;
+
+// Ground the committed burst covers before the boot ever arrives
+const LUNGE_TRAVEL = 1.25;
+
+// How far a lunging boot reaches — the only ruler a challenge is measured with
+export function lungeReach(defend: number): number {
+  return 0.8 + defend * 0.45;
+}
+
+// ...and how far the burst carries it: the window the red diamond paints, and
+// the same number the referee judges a late arrival against
+export function lungeWindowReach(defend: number): number {
+  return lungeReach(defend) + LUNGE_TRAVEL;
+}
 
 // How fast the jaws close: the defender's trade against the carrier's hold.
 // A striker's clamp barely moves; gold DF on a gray carrier snaps shut in ~1s.
