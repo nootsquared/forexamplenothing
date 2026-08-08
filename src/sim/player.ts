@@ -1,5 +1,18 @@
-import { Vec2, vec, len, norm, scale, add, expDecayVec, angleBetween, clamp } from '../core/math';
+import { Vec2, vec, len, norm, scale, add, sub, rotate, signedAngle, expDecayVec, angleBetween, clamp } from '../core/math';
 import { SimEvent } from './events';
+
+// The strafe is a LOOK, never a physics input: a jog is still walking pace, so
+// the eyes stay on the ball that far up — but the legs always obey the keys.
+const ATTEND_PACE = 1.05;
+const FACE_TURN = 7;        // rad/s — a full about-face takes ~0.45s, never a snap
+const FACE_DEADBAND = 0.07; // the eyes stop hunting once they are basically there
+const ATTEND_NEAR = 1.6;    // a ball at your own feet never yanks the shoulders
+
+// The plant: past this much of a turn the foot goes down and the run is
+// re-pointed. CUT_BITE is what a full about-face costs — everything short of
+// that pays a share, so weight is a curve you feel, not a wall you hit.
+const CUT_ANGLE = 1.15;
+const CUT_BITE = 0.62;
 
 // Stats are the ONLY thing that differs between players — no personality sliders.
 // Positions are exclusive by construction: a role's off-stats are authored so
@@ -30,6 +43,8 @@ export interface PlayerInput {
   kickReleased: { power: number; aimOffset?: number; aimAt?: Vec2 } | null;
   tackle?: boolean;    // lunge-poke at the ball — win it clean or eat the recovery
   clamp?: boolean;     // held: engage the clamp on a nearby carrier's ball
+  attend?: Vec2;       // where the body FACES at walking pace (ball, mark) — sprint overrides
+  dive?: { dirY: -1 | 1; height: 0 | 1 }; // keeper only: commit the leap the brain chose
 }
 
 // Which side a body plays for and where it lives in the team's shape
@@ -43,6 +58,8 @@ export interface PlayerIdentity {
 export class PlayerBody {
   vel: Vec2 = vec();
   facing: Vec2 = vec(1, 0);
+  // Where the shoulders point for the eye only — never read by the sim
+  look: Vec2 = vec(1, 0);
   home: Vec2; // kickoff spot; play returns here after every goal
   stamina = 1;
   touchCooldown = 0;
@@ -65,6 +82,12 @@ export class PlayerBody {
   recoverTimer = 0;
   // The escape cut can't chain — one feint, then the carrier is honest again
   feintCooldown = 0;
+  // Keeper only, committed by the world: the beat spent in the air, where the
+  // leap is a decision you live with — no steering, no second thoughts
+  diveTimer = 0;
+  diveHeight: 0 | 1 = 0;
+  // A shoulder charge is a challenge, not a rhythm — one roll per contact
+  bargeCooldown = 0;
   isSprinting = false;
   isCharging = false;
   prev = { x: 0, y: 0 };
@@ -97,6 +120,9 @@ export class PlayerBody {
     this.tackleCooldown = Math.max(0, this.tackleCooldown - dt);
     this.recoverTimer = Math.max(0, this.recoverTimer - dt);
     this.feintCooldown = Math.max(0, this.feintCooldown - dt);
+    this.bargeCooldown = Math.max(0, this.bargeCooldown - dt);
+    this.diveTimer = Math.max(0, this.diveTimer - dt);
+    const airborne = this.diveTimer > 0;
     // The lunge: a committed burst toward the point of attack. Miss and the
     // recovery leaves you beaten — tackling is a bet, not a spam button.
     if (input.tackle && this.tackleCooldown <= 0 && this.lungeTimer <= 0 && this.recoverTimer <= 0) {
@@ -113,23 +139,33 @@ export class PlayerBody {
     if (input.clamp) maxSpeed *= 0.85;     // squeezing costs a step — attach with your legs first
     if (this.recoverTimer > 0) maxSpeed *= 0.45; // beaten after a whiffed lunge
 
-    // A hard cut plants the foot: brief speed cost, big visual payoff
+    // A hard cut plants the foot, and the plant costs exactly as much as the
+    // turn asks for: a shoulder-drop barely registers, a full reversal takes
+    // nearly everything. No cliff at the threshold — the toll is the angle.
     this.cutTimer = Math.max(0, this.cutTimer - dt);
-    if (wantDir && this.speed() > 4.2 && this.cutTimer === 0 && angleBetween(this.vel, wantDir) > 1.15) {
+    const turning = wantDir ? angleBetween(this.vel, wantDir) : 0;
+    // A man off the ground has no foot to plant with — the leap is a decision
+    // he lives with all the way to the grass
+    if (wantDir && !airborne && this.speed() > 4.2 && this.cutTimer === 0 && turning > CUT_ANGLE) {
       this.cutTimer = 0.35;
       const planted = norm(this.vel);
-      this.vel = scale(this.vel, 0.6);
+      this.vel = scale(this.vel, 1 - CUT_BITE * clamp((turning - CUT_ANGLE) / (Math.PI - CUT_ANGLE), 0, 1));
       this.justCut = true;
       this.cutDir = wantDir;
       events.push({ kind: 'cut', x: this.pos.x, y: this.pos.y, dx: planted.x, dy: planted.y });
     }
 
-    const desired = wantDir ? scale(wantDir, maxSpeed * moveLen) : vec();
-    const turning = wantDir ? angleBetween(this.vel, wantDir) : 0;
-    // Agility governs how fast you can bend your run; stopping is always quick
-    const rate = wantDir
-      ? this.stats.accel * (turning > 0.6 ? 0.55 + 0.45 * this.stats.agility : 1)
-      : this.stats.accel * 1.6;
+    const desired = wantDir && !airborne ? scale(wantDir, maxSpeed * moveLen) : vec();
+    // Agility governs how fast you can bend your run — smoothly, so a 46°
+    // change never feels like a different game to a 44° one. Stopping is
+    // always quick. Mid-flight there is no rate at all: the keeper glides
+    // exactly where he threw himself.
+    const bend = clamp((turning - 0.35) / 1.2, 0, 1);
+    const rate = airborne
+      ? 0.8
+      : wantDir
+        ? this.stats.accel * (1 - bend * 0.45 * (1 - this.stats.agility))
+        : this.stats.accel * 1.6;
     this.vel = expDecayVec(this.vel, desired, rate, dt);
 
     // Heading follows the body, not the keys: velocity bends smoothly through
@@ -137,6 +173,20 @@ export class PlayerBody {
     // between key directions. Standing still, you aim with the stick directly.
     if (this.speed() > 0.6) this.facing = norm(this.vel);
     else if (wantDir) this.facing = wantDir;
+
+    // The eyes are their own thing. At walking pace they hold an ATTEND point
+    // — the ball, a mark — so the sprite backpedals and sidesteps with open
+    // shoulders instead of turning its back. Sprint and they snap to the run.
+    // This is what the SPRITE wears; the feet never answer to it, which is why
+    // dribbling a ball at your toes still steers exactly where you point.
+    const eyes = input.attend && !this.isSprinting && this.speed() < this.stats.topSpeed * ATTEND_PACE
+      ? sub(input.attend, this.pos)
+      : null;
+    const want = eyes && len(eyes) > ATTEND_NEAR ? norm(eyes) : this.facing;
+    const off = signedAngle(this.look, want);
+    this.look = Math.abs(off) > FACE_DEADBAND
+      ? rotate(this.look, clamp(off, -FACE_TURN * dt, FACE_TURN * dt))
+      : want;
 
     // Sprint is a rhythm, not a one-shot: ~13s of burn from full, and jogging
     // earns it back fast enough that the burst is always in the tank
@@ -153,4 +203,5 @@ export class PlayerBody {
     this.pos.x += this.vel.x * dt;
     this.pos.y += this.vel.y * dt;
   }
+
 }

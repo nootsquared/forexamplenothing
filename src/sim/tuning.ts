@@ -49,10 +49,29 @@ export function kickSight(stats: PlayerStats, ballPos: Vec2, aimDir: Vec2, input
   return { theta: coneHalfAngle(acc, inputPower), acc, shotness };
 }
 
+// The keeper's hands are the ACCURATE option — a throw is near-laser, a punt
+// drops close. The sight that chalks the zone and the sim that rolls the ball
+// read the SAME two numbers here: a keeper launched over the wire must scatter
+// exactly like the cone his captain was shown.
+export function keeperScatter(kind: 'throw' | 'punt', d: number, control: number): number {
+  return kind === 'throw'
+    ? (0.15 + d * 0.012) * (1.2 - control * 0.55)
+    : (0.7 + d * 0.028) * (1.3 - control * 0.55);
+}
+
+// How hard those misses hug the target — higher is tighter
+export function keeperCentering(control: number): number {
+  return 0.5 + 0.6 * control;
+}
+
 // The clamp: hold-to-take. Chalk jaws close around a latched carrier's ball;
 // when they meet, the take is clean. Stealing is a DUEL now, never osmosis.
 export const CLAMP = {
   engage: 2.6,     // how close the squeezing defender must stay to the ball
+  press: 1.6,      // ...and how close he must be for the jaws to close on their
+                   // own. Tighter than engage on purpose: brushing past a man
+                   // is not pressing him, or every loose 7v7 seizes up
+
   protect: 1.1,    // the carrier's controlled bubble — beyond it the ball is honest prey
   decay: 1.5,      // jaws fall open per second once the engagement breaks
   grace: 0.35,     // beat of forgiveness before a broken engagement decays
@@ -60,19 +79,24 @@ export const CLAMP = {
   feintReset: 0.5, // dropping back under here re-arms the roll
 };
 
+// A back turned into the challenge is worth more than any stat: the jaws
+// crawl, and a lunge from that side never finds the ball at all.
+export const SHIELD_CLAMP = 0.45;
+
 // How fast the jaws close: the defender's trade against the carrier's hold.
 // A striker's clamp barely moves; gold DF on a gray carrier snaps shut in ~1s.
 export function clampCloseRate(defender: PlayerStats, carrier: PlayerStats, shielded: boolean): number {
   const squeeze = 0.22 + defender.defend * 1.35 * INTENSITY;
-  const resist = 0.55 + carrier.control * 0.55 + carrier.phys * 0.5 + (shielded ? 0.5 : 0);
-  return squeeze / resist;
+  const resist = 0.55 + carrier.control * 0.55 + carrier.phys * 0.5;
+  return (squeeze / resist) * (shielded ? SHIELD_CLAMP : 1);
 }
 
-// The shoulder duel a lunge buys against a latched carrier: attack beats hold
-// and the poke is clean; near-even pokes it loose; lose big and you bounce off
-export function duelScores(defender: PlayerStats, carrier: PlayerStats, shielded: boolean) {
+// The shoulder duel a lunge buys against a latched carrier's OPEN side:
+// attack beats hold and the poke is clean; near-even pokes it loose; lose big
+// and you bounce off. The shielded side is not a duel — it is a wall.
+export function duelScores(defender: PlayerStats, carrier: PlayerStats) {
   return {
     atk: defender.defend * 0.5 + defender.phys * 0.3,
-    hold: carrier.control * 0.35 + carrier.phys * 0.45 + (shielded ? 0.2 : 0),
+    hold: carrier.control * 0.35 + carrier.phys * 0.45,
   };
 }

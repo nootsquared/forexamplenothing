@@ -2,6 +2,7 @@ import { vec, dist, clamp, Vec2 } from './core/math';
 import { World } from './sim/world';
 import { PlayerBody, PlayerInput } from './sim/player';
 import { PITCH } from './sim/constants';
+import { keeperScatter } from './sim/tuning';
 import { FORMATIONS, Formation } from './data/formations';
 import { buildSquad, SquadPlayer } from './data/roster';
 import { AiProfile, TeamBrain } from './ai/blackboard';
@@ -9,6 +10,9 @@ import { Brain } from './ai/brain';
 
 // A full 11v11: bodies, team blackboards, and a brain for every body.
 // The browser and the headless tests assemble the exact same match.
+
+// However ragged the half, the referee never hands back more than this
+export const MAX_STOPPAGE = 45;
 
 export interface MatchConfig {
   homeShape?: string;
@@ -42,6 +46,10 @@ export interface Match {
   names: string[]; // per body — HUD, scorers, the stats screen
   half: 1 | 2;
   clock: number;
+  // Dead-ball seconds owed back at the end of this half, and whether the ball
+  // has been played yet — the opening beat is ceremony, not time lost
+  stoppage: number;
+  halfLive: boolean;
   halfLength: number;
   practice: boolean;
   finished: boolean;
@@ -51,11 +59,6 @@ export interface Match {
   pendingPass: { team: 0 | 1; idx: number } | null;
   // a keeper reading the field before his distribution
   gkHold: { idx: number; t: number };
-  // a CPU shooter composing himself over the spot
-  penaltyT: number;
-  // online: teams whose penalties auto-take (their humans sit on other tabs
-  // with no aim UI here) — empty for local play
-  autoPenaltyTeams: Set<0 | 1>;
 }
 
 export function createMatch(config: MatchConfig = {}): Match {
@@ -80,6 +83,8 @@ export function createMatch(config: MatchConfig = {}): Match {
     names: [...homeSquad.map((s) => s.name), ...(config.practice ? [] : awaySquad.map((s) => s.name))],
     half: 1,
     clock: 0,
+    stoppage: 0,
+    halfLive: false,
     halfLength: config.halfLength ?? 0,
     practice: !!config.practice,
     kickoffFirst: config.kickoffFirst ?? 0,
@@ -91,8 +96,6 @@ export function createMatch(config: MatchConfig = {}): Match {
     },
     pendingPass: null,
     gkHold: { idx: -1, t: 0 },
-    penaltyT: 0,
-    autoPenaltyTeams: new Set(),
   };
 }
 
@@ -130,12 +133,7 @@ export function pickDistribution(world: World, gkIdx: number): { target: Vec2; k
   );
   const d = dist(gk.pos, target);
   const kind: 'throw' | 'punt' = d <= throwR ? 'throw' : 'punt';
-  // Hands are the ACCURATE option — a throw is near-laser, a punt drops close.
-  // (Formula lives in three places: here, readKeeperSight, and the throw-in — keep in sync.)
-  const scatter = kind === 'throw'
-    ? (0.15 + d * 0.012) * (1.2 - gk.stats.control * 0.55)
-    : (0.7 + d * 0.028) * (1.3 - gk.stats.control * 0.55);
-  return { target, kind, scatter };
+  return { target, kind, scatter: keeperScatter(kind, d, gk.stats.control) };
 }
 
 // Was that kick a strike at goal, and would it have gone in? Read the ball's
@@ -158,10 +156,13 @@ export function advanceMatch(match: Match, dt: number, overrides: Record<number,
   // The sheet knows which body a human is wearing — teammates favor that ball
   match.teamBrains[0].humanIdx = -1;
   match.teamBrains[1].humanIdx = -1;
+  match.world.humanIdxs.clear();
   for (const key of Object.keys(overrides)) {
     const i = Number(key);
     const p = match.world.players[i];
-    if (p) match.teamBrains[p.id.team].humanIdx = i;
+    if (!p) continue;
+    match.teamBrains[p.id.team].humanIdx = i;
+    match.world.humanIdxs.add(i); // the sim dresses these eyes and never walks these legs
   }
   match.teamBrains[0].update(match.world, dt);
   match.teamBrains[1].update(match.world, dt);
@@ -190,35 +191,31 @@ export function advanceMatch(match: Match, dt: number, overrides: Record<number,
     match.gkHold = { idx: -1, t: 0 };
   }
 
-  // A CPU penalty takes itself after a breath — corners preferred, the odd
-  // panenka down the middle. A human shooter aims through the UI instead.
-  if (match.world.penalty?.phase === 'aiming') {
-    const pen = match.world.penalty;
-    const humanHasIt = !match.autoPenaltyTeams.has(pen.team) &&
-      Object.keys(overrides).some((k) => match.world.players[Number(k)]?.id.team === pen.team);
-    if (!humanHasIt) {
-      match.penaltyT += dt;
-      if (match.penaltyT > 1.5) {
-        const r = Math.random();
-        match.world.takePenalty(r < 0.44 ? -1 : r < 0.88 ? 1 : 0, Math.random() < 0.35);
-        match.penaltyT = 0;
-      }
-    }
-  } else {
-    match.penaltyT = 0;
-  }
-
   // The clock: two halves, a break at the turn, a whistle at the end.
-  // The referee holds his whistle while the ball lives in either attacking
-  // quarter — a promising move gets up to 30 seconds to resolve.
+  // Every second the ball spends dead — restarts, a goal's whole ceremony — is
+  // owed back before the whistle. The referee also holds it while the ball
+  // lives in either attacking quarter: a promising move gets up to 30 seconds
+  // to resolve.
   if (match.halfLength > 0 && !match.finished) {
-    match.clock += dt;
-    const bx = match.world.ball.pos.x;
+    const w = match.world;
+    const dead = w.restartLock > 0 || w.ceremony !== 'live' || w.awaitingRestart;
+    if (!dead) match.halfLive = true;
+    // A half begins when the ball is PLAYED — a kickoff nobody has taken yet is
+    // ceremony, not time. After that the clock never stops, but every dead
+    // second is owed back before the whistle.
+    if (match.halfLive) {
+      match.clock += dt;
+      if (dead) match.stoppage += dt;
+    }
+    const full = match.halfLength + Math.min(match.stoppage, MAX_STOPPAGE);
+    const bx = w.ball.pos.x;
     const dangerZone = bx < PITCH.length * 0.25 || bx > PITCH.length * 0.75;
-    if (match.clock >= match.halfLength && (!dangerZone || match.clock >= match.halfLength + 30)) {
+    if (match.clock >= full && (!dangerZone || match.clock >= full + 30)) {
       if (match.half === 1) {
         match.half = 2;
         match.clock = 0;
+        match.stoppage = 0;
+        match.halfLive = false;
         // ends swap at the break — fair light, fair wind — and the other
         // side opens the second half
         match.world.swapSides();

@@ -11,6 +11,10 @@ export class Ball {
   // A punted ball drops STEEP and dies where it lands instead of skidding on —
   // set for the flight, consumed by the first touchdown
   deadenOnLand = false;
+  // Seconds this ball has been running on its current line. Every touch
+  // restarts the clock, and the keeper reads it: it is the difference between
+  // a shot he watched all the way and one that was past him before he moved.
+  flight = 0;
   // Previous-step state for render interpolation
   prev = { x: 52.5, y: 34, z: 0 };
 
@@ -25,6 +29,7 @@ export class Ball {
   }
 
   update(dt: number, surface: Surface, events: SimEvent[]) {
+    this.flight += dt;
     // Magnus curl: sidespin bends the path while the ball carries real pace,
     // washing out as the spin scrubs off
     if (this.spin !== 0) {

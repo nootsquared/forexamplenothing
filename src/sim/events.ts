@@ -11,8 +11,11 @@ export type SimEvent =
   | { kind: 'shrug'; x: number; y: number } // a lunge bounced off the shield — physicality said no
   | { kind: 'save'; x: number; y: number }  // the keeper killed it in his gloves
   | { kind: 'parry'; x: number; y: number } // strong hands turned it away, ball live
-  | { kind: 'restart'; taker: number; team: 0 | 1; restart: 'throwin' | 'corner' | 'goalkick' }
-  | { kind: 'foul'; x: number; y: number; penalty: boolean } // the whistle: a tackle caught the man
+  | { kind: 'restart'; taker: number; team: 0 | 1; restart: 'throwin' | 'corner' | 'goalkick' | 'offside' | 'freekick' }
+  | { kind: 'offside'; x: number; y: number; idx: number } // the flag: caught beyond the line at the kick
+  | { kind: 'gkDive'; idx: number; dirY: -1 | 1; height: 0 | 1 } // the keeper leaves his feet
+  // the whistle: a tackle caught the man, and the free kick is already staged
+  | { kind: 'foul'; x: number; y: number }
   | { kind: 'kickoff'; team: 0 | 1; taker: number } // whose ball starts the play
   | { kind: 'goal'; side: 'left' | 'right'; scorer: number } // last touch owns it
   | { kind: 'half' }      // pushed by the match clock at the break
