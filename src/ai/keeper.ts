@@ -1,4 +1,4 @@
-import { Vec2, add, clamp, dist, len, norm, scale, sub } from '../core/math';
+import { Vec2, add, clamp, dist, len, norm, scale, sub, vec } from '../core/math';
 import { GRAVITY, PITCH } from '../sim/constants';
 import { PlayerBody, PlayerInput } from '../sim/player';
 import { DIVE_TIME, World, keeperStandingReach } from '../sim/world';
@@ -74,6 +74,16 @@ export class KeeperMind {
       input.move = norm(sub(ball, me.pos));
       input.sprint = true;
       if (dist(me.pos, ball) < 1.35 && !theirs && me.tackleCooldown <= 0) input.tackle = true;
+      return;
+    }
+
+    // A corner against him is not an angle to cut: he sets in the middle of
+    // his mouth, a step off the line, and waits for the ball to come to him
+    const corner = bb.corner;
+    if (corner && corner.team !== bb.team && !corner.struck) {
+      const set = vec(goal.x + (goal.x < PITCH.length / 2 ? 1.5 : -1.5), mid + (ball.y < mid ? -0.9 : 0.9));
+      const step = sub(set, me.pos);
+      if (len(step) > 0.5) input.move = scale(norm(step), 0.55);
       return;
     }
 

@@ -29,6 +29,79 @@ export const AI_PROFILES: [AiProfile, AiProfile, AiProfile] = [
 const MARK_TICKS = 6;      // the marking auction re-reads at the brains' own 10Hz
 const MARK_ZONE = 19;      // a runner further than this from my slot belongs to somebody else
 const FLIGHT_OWNS = 1.2;   // seconds a ball in the air still counts as its kicker's
+const CORNER_TTL = 13;     // a corner nobody takes is not a deadlock
+const CORNER_AFTER = 2.4;  // seconds the box keeps attacking a delivery already struck
+const CORNER_BLOCK = 24;   // how far up our axis a corner drags the whole team back
+
+// The five jobs a corner is worth taking with: four bodies in the box on
+// staggered runs, one showing short at the flag.
+export type CornerJob = 'cornerNear' | 'cornerFar' | 'cornerSpot' | 'cornerTop' | 'cornerShort';
+export const CORNER_JOBS: CornerJob[] = ['cornerNear', 'cornerFar', 'cornerSpot', 'cornerTop', 'cornerShort'];
+// ...and the three a delivery is actually aimed at. The man at the top is
+// waiting for the cutback, not for the corner.
+export const CORNER_TARGETS: CornerJob[] = ['cornerNear', 'cornerFar', 'cornerSpot'];
+
+// Where a job ARRIVES and where he starts from. A near-post man launching off
+// the spot while the far-post man peels back across him is the crossing
+// pattern that reads as a rehearsed corner instead of four men jogging goalward.
+export interface CornerMark { at: Vec2; launch: Vec2 }
+export type CornerMarks = Record<CornerJob, CornerMark>;
+
+// One corner, from the whistle to the delivery: who stands over it, where the
+// bodies are going, where the ball is going, and how long ago it was struck.
+export interface CornerCall {
+  team: 0 | 1;
+  taker: number;
+  from: Vec2;                     // the arc it is taken from
+  aim: Vec2;                      // where the delivery is going — the ring moves this
+  aimed: boolean;                 // ...and whether anyone has actually aimed it
+  marks: CornerMarks;
+  men: Record<CornerJob, number>; // who was handed each job, -1 for nobody
+  t: number;                      // seconds since the whistle
+  struck: boolean;                // the ball has been hit
+  since: number;                  // ...this long ago
+}
+
+// Every mark a corner needs, worked out once from the arc it is taken at:
+// which goal it swings toward, which post is the near one, which way is infield
+export function cornerMarksAt(from: Vec2): CornerMarks {
+  const goalX = from.x < PITCH.length / 2 ? 0 : PITCH.length;
+  const in_ = goalX === 0 ? 1 : -1;      // out of the goal, into the field
+  const mid = PITCH.width / 2;
+  const near = from.y < mid ? -1 : 1;    // the touchline the flag stands on
+  const at = (deep: number, across: number) => vec(goalX + in_ * deep, mid + near * across);
+  return {
+    // he starts central and attacks the front of the six
+    cornerNear: { at: at(5.2, 4.2), launch: at(12.5, -0.5) },
+    // ...while the far-post man peels the other way, off the back stick
+    cornerFar: { at: at(6.4, -5.6), launch: at(10.5, 2.5) },
+    // the spot, attacked from the far corner of the D
+    cornerSpot: { at: at(11, 0.6), launch: at(17.5, -4.5) },
+    // and the late one, hanging outside it all for the cutback
+    cornerTop: { at: at(18.5, 2.2), launch: at(22, 2.2) },
+    cornerShort: { at: vec(goalX + in_ * 7, from.y - near * 7), launch: vec(goalX + in_ * 7, from.y - near * 7) },
+  };
+}
+
+// The reverse of the deal: which job, if any, this body was handed
+export function cornerJobOf(call: CornerCall, idx: number): CornerJob | null {
+  for (const job of CORNER_JOBS) if (call.men[job] === idx) return job;
+  return null;
+}
+
+// Their corner, from our side of it: the nearest spare man closes the short
+// ball, the next two stand on the posts, the rest fill the mouth across the six
+export function cornerGuard(from: Vec2, rank: number): Vec2 {
+  const goalX = from.x < PITCH.length / 2 ? 0 : PITCH.length;
+  const in_ = goalX === 0 ? 1 : -1;
+  const mid = PITCH.width / 2;
+  const near = from.y < mid ? -1 : 1;
+  if (rank <= 0) return vec(goalX + in_ * 8.5, from.y - near * 5.5);
+  if (rank === 1) return vec(goalX + in_ * 0.9, mid + near * 4.2);
+  if (rank === 2) return vec(goalX + in_ * 0.9, mid - near * 4.2);
+  const step = rank - 3;
+  return vec(goalX + in_ * (5.5 + step * 2.2), mid + near * (3.6 - step * 3.4));
+}
 
 export class TeamBrain {
   phase: Phase = 'loose';
@@ -60,6 +133,10 @@ export class TeamBrain {
   // The carrier with his head up: settled, unhurried, pointed forward. The
   // line-breaking runners wait for exactly this beat before they go.
   carrierLoaded = false;
+  // The live corner, whoever's it is — armed by the whistle, aimed by whoever
+  // takes it, and always on a clock so a delivery that never comes cannot
+  // freeze eleven men in the six-yard box.
+  corner: CornerCall | null = null;
   private calledFor = 0;
   private anchors: Vec2[] = [];
   private myIdxs: number[] = [];
@@ -113,6 +190,27 @@ export class TeamBrain {
     return this.anchors[idx] ?? vec(PITCH.length / 2, PITCH.width / 2);
   }
 
+  // The taker's ring: where this corner is going. Whoever aims it — a human
+  // dragging the shell's ring, or the taker's own head — moves it here, and
+  // the delivery follows. The runs are timed to the box either way.
+  aimCorner(at: Vec2) {
+    const call = this.corner;
+    if (!call) return;
+    call.aim.x = clamp(at.x, 1, PITCH.length - 1); // nobody aims a corner at the stands
+    call.aim.y = clamp(at.y, 1, PITCH.width - 1);
+    call.aimed = true;
+  }
+
+  // The job this body was handed in the box, if the corner is ours
+  cornerJob(idx: number): CornerJob | null {
+    return this.corner ? cornerJobOf(this.corner, idx) : null;
+  }
+
+  // A placed corner nobody has hit yet — the beat the box arranges itself in
+  cornerPending(): boolean {
+    return this.corner !== null && !this.corner.struck;
+  }
+
   update(world: World, dt: number) {
     this.sign = world.attackSign(this.team);
     if (this.myIdxs.length === 0) {
@@ -134,6 +232,7 @@ export class TeamBrain {
     this.offsideAxis = Math.max(PITCH.length / 2, second === -Infinity ? PITCH.length : second);
     this.safeAxis = Math.max(this.offsideAxis, this.axisOf(world.ball.pos.x), PITCH.length / 2);
 
+    this.updateCorner(world, dt);
     this.updateCalledPass(world, dt);
     this.updateAnchors(world, dt);
     this.updatePressAuction(world);
@@ -223,6 +322,71 @@ export class TeamBrain {
     if (depth < 0) depth = fallbackDepth;
     this.supportNearIdx = near;
     this.supportDepthIdx = depth === near ? -1 : depth;
+  }
+
+  // The whistle arms the corner, the strike spends it, and the clock kills it
+  // whatever happened. The training ground keeps its own choreography.
+  private updateCorner(world: World, dt: number) {
+    for (const e of world.events) {
+      if (e.kind !== 'restart') continue;
+      this.corner = e.restart === 'corner' && !world.practice ? this.armCorner(world, e.team, e.taker) : null;
+    }
+    const call = this.corner;
+    if (!call) return;
+    call.t += dt;
+    if (call.struck) call.since += dt;
+    else if (this.cornerHit(world, call)) call.struck = true;
+    if (call.t > CORNER_TTL || call.since > CORNER_AFTER || world.ceremony !== 'live') this.corner = null;
+  }
+
+  // He has hit it — or scuffed it, or had it nicked off his laces. A ball that
+  // has left the arc is a corner taken, however it left.
+  private cornerHit(world: World, call: CornerCall): boolean {
+    for (const e of world.events) {
+      if (e.kind === 'kick' && world.players[e.idx]?.id.team === call.team) return true;
+    }
+    return dist(world.ball.pos, call.from) > 4;
+  }
+
+  private armCorner(world: World, team: 0 | 1, taker: number): CornerCall {
+    const from = vec(world.ball.pos.x, world.ball.pos.y);
+    const marks = cornerMarksAt(from);
+    const call: CornerCall = {
+      team,
+      taker,
+      from,
+      aim: vec(marks.cornerSpot.at.x, marks.cornerSpot.at.y),
+      aimed: false,
+      marks,
+      men: { cornerNear: -1, cornerFar: -1, cornerSpot: -1, cornerTop: -1, cornerShort: -1 },
+      t: 0,
+      struck: false,
+      since: 0,
+    };
+    if (team === this.team) this.dealCornerJobs(world, call);
+    return call;
+  }
+
+  // Five jobs, dealt ONCE: the box gets the bodies that suit it, the flag gets
+  // whoever is nearest, and the back line stays home — unless it owns the one
+  // head worth aiming at. Re-dealing mid-corner is how a box becomes a huddle.
+  private dealCornerJobs(world: World, call: CornerCall) {
+    for (const job of CORNER_JOBS) {
+      const mark = call.marks[job];
+      const box = job !== 'cornerTop' && job !== 'cornerShort';
+      let best = -1;
+      let bestCost = Infinity;
+      for (const i of this.myIdxs) {
+        const p = world.players[i];
+        if (i === call.taker || p.id.role === 'GK' || cornerJobOf(call, i) !== null) continue;
+        let cost = dist(p.pos, mark.launch);
+        if (p.id.role === 'DF') cost += box ? 20 - p.stats.phys * 16 : 30; // the big man goes up, the rest hold
+        if (p.id.role === 'FW' && !box) cost += 7;                          // strikers belong in the six
+        if (cost < bestCost) { bestCost = cost; best = i; }
+      }
+      if (best < 0) return;
+      call.men[job] = best;
+    }
   }
 
   // The moment one of ours kicks it, name the teammate closest to the ball's
@@ -321,8 +485,10 @@ export class TeamBrain {
   // 20% so two defenders never flicker over the job.
   private updatePressAuction(world: World) {
     // The training ground: the ball is the HUMAN's errand — nobody is
-    // elected to hunt it, so every shirt stays a passing option, not a swarm
-    if (world.practice || this.phase === 'attack') {
+    // elected to hunt it, so every shirt stays a passing option, not a swarm.
+    // A placed corner has no press either: you don't hunt a ball on the arc,
+    // you pick up the men who are about to attack it.
+    if (world.practice || this.phase === 'attack' || this.cornerPending()) {
       this.presserIdx = -1;
       this.coverIdx = -1;
       this.chaserIdxs = [];
@@ -347,8 +513,13 @@ export class TeamBrain {
   private updateMarks(world: World) {
     for (let i = 0; i < this.markOf.length; i++) this.markOf[i] = -1;
     if (this.phase === 'attack' || world.practice) return;
+    // Their corner drags the whole team back: the block widens to swallow the
+    // man at the top of the box, and nobody hands a runner on for straying out
+    // of a zone. Two stay up — the counter is half the point of surviving one.
+    const theirCorner = this.corner !== null && this.corner.team !== this.team;
     const ballAxis = this.axisOf(world.ball.pos.x);
-    const blockLimit = Math.min(ballAxis + 16, 62);
+    const blockLimit = theirCorner ? CORNER_BLOCK : Math.min(ballAxis + 16, 62);
+    const zone = theirCorner ? PITCH.length : MARK_ZONE;
     this.threats.length = 0;
     world.players.forEach((p, i) => {
       if (p.id.team === this.team || p.id.role === 'GK') return;
@@ -361,6 +532,7 @@ export class TeamBrain {
       const p = world.players[i];
       if (p.id.role === 'GK' || i === this.presserIdx || i === this.coverIdx || i === this.humanIdx) continue;
       if (this.chaserIdxs.includes(i)) continue;
+      if (theirCorner && p.id.role === 'FW') continue;
       this.markers.push(i);
     }
     for (const t of this.threats) {
@@ -371,7 +543,7 @@ export class TeamBrain {
         if (this.markOf[i] >= 0) continue;
         const p = world.players[i];
         const anchor = this.anchorOf(i);
-        if (dist(anchor, man.pos) > MARK_ZONE) continue; // not my zone — hand him on
+        if (dist(anchor, man.pos) > zone) continue; // not my zone — hand him on
         const role = p.id.role === 'DF' ? 0 : p.id.role === 'MF' ? 3 : 9;
         const cost = dist(p.pos, man.pos) + role - (this.markOf[i] === t ? 4 : 0);
         if (cost < bestCost) { bestCost = cost; best = i; }

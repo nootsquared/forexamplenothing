@@ -1,12 +1,12 @@
 import { Vec2, vec, len, dist, norm, sub, add, scale, clamp, angleBetween, signedAngle, rotate, perpRight } from '../core/math';
 import { Rng } from '../core/rng';
-import { PITCH } from '../sim/constants';
+import { GRAVITY, PITCH } from '../sim/constants';
 import { World } from '../sim/world';
 import { PlayerBody, PlayerInput } from '../sim/player';
-import { TeamBrain } from './blackboard';
+import { CORNER_TARGETS, CornerCall, TeamBrain, cornerGuard } from './blackboard';
 import { KeeperMind } from './keeper';
 import { leadTarget, passMargin } from './intercept';
-import { RunCtx, RunKind, pickRun, runCommit, runSprints, runTarget } from './runs';
+import { RunCtx, RunPlan, cornerBreaking, isCornerJob, pickRun, runCommit, runSprints, runTarget } from './runs';
 import { clampPitch, laneOpen, pressureAt, spaceAt } from './space';
 
 // One brain per body. Thinks at ~10Hz (staggered so ~4 brains think per frame),
@@ -33,6 +33,9 @@ const VISION_HALF_ANGLE = 1.92; // ~110° each side
 const BELIEF_MAX_AGE = 2.5;
 const PARK_BAND = 1.5;    // close enough IS arrived — the deadband that killed the shuffle
 const KICK_LEAD = 0.25;   // seconds of windup a pass decision has to see through
+const RUN_PACE = 6.5;     // meters a second a runner honestly averages, arriving
+const CROSS_PACE = 14;    // ...and what a whipped delivery averages over its whole flight
+const CORNER_PATIENCE = 4.2; // seconds a taker waits for the box before taking it short
 
 type Intent =
   | { kind: 'run' }                                              // the committed idea, target recomputed live
@@ -41,7 +44,7 @@ type Intent =
   | { kind: 'receive' }                                          // cut to where the pass and I can MEET
   | { kind: 'mark'; man: number }                                // he is MINE: goal-side and ball-side of him
   | { kind: 'cover'; man: number }                               // stand on the pass that would hurt us
-  | { kind: 'stand' };                                           // the keeper's feet belong to KeeperMind
+  | { kind: 'stand' };                                           // no legs this beat: the keeper's, the taker's over a dead ball
 
 interface Belief {
   pos: Vec2;
@@ -65,7 +68,7 @@ export class Brain {
   private lastPhase = 'loose';
   private wanderSeed: number;
   private daring: number;   // personal appetite for the ambitious run
-  private run: RunKind = 'hold';
+  private run: RunPlan = 'hold';
   private runFree = 0;      // seconds the offside line stops holding my run back
   private parked = false;   // arrived and standing — the anti-jitter latch
   private escapeT = 0;      // beat before this carrier may plant another cut
@@ -179,6 +182,16 @@ export class Brain {
       this.goto(add(world.ball.pos, scale(out2, world.restartExclusion + 2.5)), false, 1);
       return;
     }
+    // A corner is a rehearsed move, not a scramble: our four break into the
+    // box on staggered runs while theirs pick them up goal-side. It outranks
+    // dead-ball etiquette, and for the defenders it ends at the strike — after
+    // that they are plain defenders again.
+    const corner = this.bb.corner;
+    if (corner && me.id.role !== 'GK' && this.bb.possessorIdx !== this.idx &&
+        this.bb.calledReceiver !== this.idx && (corner.team === me.id.team || !corner.struck)) {
+      return this.decideCorner(world, me, corner);
+    }
+
     // Dead-ball etiquette: the taker walks on, everyone else holds shape —
     // and the OTHER team gives the ball its mandated space. Nobody jumps a
     // goal kick off the keeper's laces.
@@ -256,10 +269,49 @@ export class Brain {
         this.commit = runCommit('burst', this.rng);
       }
     } else if (this.commit <= 0 || this.run === 'burst') {
-      this.run = pickRun(this.runContext(world, me), this.run);
-      this.commit = runCommit(this.run, this.rng);
+      const next = pickRun(this.runContext(world, me), this.run);
+      this.run = next;
+      this.commit = runCommit(next, this.rng);
     }
     this.intent = { kind: 'run' };
+  }
+
+  // The corner, from whichever side of it I stand on. Attacking: the job the
+  // sheet dealt me, run on the box's shared clock. Defending: my man if I have
+  // one, the mouth if I don't — and the strikers stay up for the counter.
+  private decideCorner(world: World, me: PlayerBody, call: CornerCall) {
+    this.commit = 0; // whatever happens next, the old idea died at the whistle
+    if (call.team === me.id.team) {
+      if (this.idx === call.taker) return this.deliverCorner(world, me, call);
+      const job = this.bb.cornerJob(this.idx);
+      if (!job) return this.goto(this.wanderedAnchor(), false, PARK_BAND);
+      this.run = job;
+      this.intent = { kind: 'run' };
+      return;
+    }
+    const man = this.bb.markOf[this.idx] ?? -1;
+    if (man >= 0) {
+      this.intent = { kind: 'mark', man };
+      return;
+    }
+    if (me.id.role === 'FW') return this.goto(this.wanderedAnchor(), false, PARK_BAND);
+    const spot = cornerGuard(call.from, this.spareRank(world, me, call.from));
+    this.goto(spot, dist(me.pos, spot) > 10, 0.9);
+  }
+
+  // My place in the queue of spare defenders, nearest the flag first. Every
+  // one of them counts the same queue off the same ground truth, so no two
+  // men ever take the same post.
+  private spareRank(world: World, me: PlayerBody, from: Vec2): number {
+    const mine = dist(me.pos, from);
+    let rank = 0;
+    world.players.forEach((p, i) => {
+      if (i === this.idx || p.id.team !== me.id.team || p.id.role === 'GK' || p.id.role === 'FW') return;
+      if ((this.bb.markOf[i] ?? -1) >= 0) return;
+      const d = dist(p.pos, from);
+      if (d < mine || (d === mine && i < this.idx)) rank++;
+    });
+    return rank;
   }
 
   private decideDefending(world: World, me: PlayerBody) {
@@ -291,6 +343,10 @@ export class Brain {
   // only boot it blind as the last resort
   private decideOnBall(world: World, me: PlayerBody) {
     if (this.kickPlan) return; // committed to the strike
+    const corner = this.bb.corner;
+    if (corner && !corner.struck && corner.team === me.id.team && corner.taker === this.idx) {
+      return this.deliverCorner(world, me, corner);
+    }
     const goal = this.bb.goalWeAttack();
     const goalDist = dist(me.pos, goal);
     const opps = this.believedOpponents();
@@ -438,6 +494,48 @@ export class Brain {
     }
   }
 
+  // The delivery. It goes where the ring says, or — with nobody aiming it —
+  // at the post whose runner is arriving best. Either way the boot does not
+  // swing until that man's legs can genuinely beat the ball there: a corner
+  // hit at an empty six-yard box is a corner wasted.
+  private deliverCorner(world: World, me: PlayerBody, call: CornerCall) {
+    // He has to be over it before anything else: a taker shoved off the arc
+    // walks back onto it instead of aiming from three meters away
+    if (dist(me.pos, world.ball.pos) > 1.6) {
+      this.intent = { kind: 'chase', sprint: false };
+      return;
+    }
+    const opps = this.believedOpponents();
+    // Every man in the box gets asked one question: can your legs beat this
+    // ball to that grass? The ring point when somebody aimed it, your own post
+    // when nobody did. Whoever answers yes best is who the corner is for.
+    let aim: Vec2 | null = null;
+    let best = -Infinity;
+    for (const job of CORNER_TARGETS) {
+      const i = call.men[job];
+      if (i < 0 || !cornerBreaking(this.bb, job)) continue; // only a man actually going
+      const at = call.aimed ? call.aim : call.marks[job].at;
+      const flight = dist(me.pos, at) / CROSS_PACE;
+      if (dist(world.players[i].pos, at) / RUN_PACE > flight + KICK_LEAD) continue;
+      const s = spaceAt(at, opps) * 0.06 - flight;
+      if (s > best) { best = s; aim = at; }
+    }
+    if (!aim) {
+      // Nobody can get on the end of it yet. Standing over it IS the decision —
+      // until the referee starts looking over, and then it goes SHORT rather
+      // than get hoofed at an empty six-yard box.
+      if (call.t < CORNER_PATIENCE) {
+        this.intent = { kind: 'stand' };
+        return;
+      }
+      aim = call.men.cornerShort >= 0 ? call.marks.cornerShort.at : call.marks.cornerSpot.at;
+    }
+    // Weighted by the same sum a pass is: enough on it to arrive, not so much
+    // that it clears the stand behind the goal
+    const speed = clamp(10 + dist(me.pos, aim) * 0.5, 12, 26);
+    this.planKick(norm(sub(aim, me.pos)), clamp((speed - 10) / 14 / (0.75 + 0.25 * me.stats.power), 0.2, 1));
+  }
+
   private decideKeeper(world: World) {
     const me = world.players[this.idx];
     if (this.bb.possessorIdx !== this.idx) {
@@ -500,9 +598,11 @@ export class Brain {
 
     if (this.kickPlan) {
       const plan = this.kickPlan;
-      // The stick sets the sight. Keepers PLANT while they wind up — striding
-      // through a windup is how a clearance walks itself to death.
-      input.move = me.id.role === 'GK' ? scale(plan.aim, 0.3) : plan.aim;
+      // The stick sets the sight. Keepers and dead-ball takers PLANT while
+      // they wind up — striding through a windup is how a clearance walks
+      // itself to death, and how a corner gets dribbled off its own arc.
+      const planted = me.id.role === 'GK' || this.bb.corner?.taker === this.idx;
+      input.move = planted ? scale(plan.aim, 0.3) : plan.aim;
       input.kickCharging = true;
       if (dist(me.pos, world.ball.pos) > 2.2) this.kickPlan = null; // lost it mid-windup
       else if (--plan.windup <= 0) {
@@ -544,8 +644,11 @@ export class Brain {
           const holdAt = this.bb.offsideSafeAxis() - 0.6;
           if (this.bb.axisOf(target.x) > holdAt) target = vec(this.bb.xAtAxis(holdAt), target.y);
         }
-        sprint = runSprints(this.run) &&
+        sprint = runSprints(this.run, this.bb) &&
           (this.run !== 'linebreak' || this.runFree > 0 || this.bb.carrierLoaded);
+        // A corner gives him about five seconds: getting INTO the box is every
+        // bit as urgent as the break itself
+        if (!sprint && isCornerJob(this.run)) sprint = dist(me.pos, target) > 8;
         break;
       }
       case 'chase': {
@@ -728,24 +831,37 @@ export class Brain {
   }
 
   // Roll the ball forward in the head (same friction the pitch applies) and
-  // find the earliest point I can beat it to — receiving is an intercept
+  // find the earliest point I can beat it to — receiving is an intercept. In
+  // the air the pitch has no say, so a cross is met where it LANDS and not
+  // where a ball rolling that fast would have died.
   private meetPoint(world: World, me: PlayerBody): Vec2 {
     const b = world.ball;
     let px = b.pos.x;
     let py = b.pos.y;
     let vx = b.vel.x;
     let vy = b.vel.y;
+    let z = b.z;
+    let vz = b.vz;
     const mySpeed = Math.max(4.5, me.stats.sprintSpeed * 0.9);
     const step = 0.12;
     for (let t = step; t <= 1.8; t += step) {
-      const sp = Math.hypot(vx, vy);
-      if (sp > 0.3) {
-        const k = (sp - Math.min(sp, (2.4 + 0.35 * sp) * step)) / sp;
-        vx *= k;
-        vy *= k;
-        px += vx * step;
-        py += vy * step;
+      if (z > 0.02 || vz > 0.05) {
+        vz -= GRAVITY * step;
+        z += vz * step;
+        if (z <= 0) {
+          z = 0;
+          vz = -vz * world.surface.bounce;
+        }
+      } else {
+        const sp = Math.hypot(vx, vy);
+        if (sp > 0.3) {
+          const k = (sp - Math.min(sp, (2.4 + 0.35 * sp) * step)) / sp;
+          vx *= k;
+          vy *= k;
+        }
       }
+      px += vx * step;
+      py += vy * step;
       if (dist(me.pos, vec(px, py)) / mySpeed <= t) break;
     }
     return clampPitch(vec(px, py));

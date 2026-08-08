@@ -4,7 +4,7 @@ import { PITCH } from '../sim/constants';
 import { kickAccuracy } from '../sim/tuning';
 import { PlayerBody } from '../sim/player';
 import { World } from '../sim/world';
-import { TeamBrain } from './blackboard';
+import { CornerJob, TeamBrain } from './blackboard';
 import { passMargin } from './intercept';
 import { clampPitch, laneOpen, spaceAt } from './space';
 
@@ -14,6 +14,10 @@ import { clampPitch, laneOpen, spaceAt } from './space';
 // is the idea, never a point on the grass: the target is recomputed live, so
 // a committed run tracks the play instead of steering at a place the ball
 // left ages ago. Re-deciding every beat is exactly what reads as robotic.
+//
+// A corner switches the same engine into SET-PIECE mode: the ideas stop being
+// auctioned and start being dealt, and each one runs on the clock the whole
+// box shares — so a delivery has something to be timed to.
 
 export type RunKind =
   | 'hold'       // your slot in the breathing shape — holding it is a job too
@@ -25,6 +29,22 @@ export type RunKind =
   | 'nearPost'   // attack the front of the six
   | 'farPost'    // the other end of the cutback
   | 'burst';     // the second half of a one-two, after my own pass
+
+// A run is either one the man chose or one the set piece dealt him
+export type RunPlan = RunKind | CornerJob;
+
+const CORNER_SET = 1.9;    // seconds the box takes to arrange itself before anyone moves
+const CORNER_CYCLE = 3.2;  // ...and then it keeps re-making its runs, forever
+const CORNER_BREAK = 1.5;  // how long one break lasts before he resets and waits again
+// Each job goes on its own beat, so four men never arrive as one wall. The two
+// who hold their mark (the late one, the short one) simply never leave it.
+const CORNER_DELAY: Record<CornerJob, number> = {
+  cornerNear: 0,
+  cornerFar: 0.45,
+  cornerSpot: 0.85,
+  cornerTop: 1.15,
+  cornerShort: 0,
+};
 
 // Everything a run needs to know, filled in place each think — the engine
 // allocates nothing per tick beyond the target it hands back
@@ -42,9 +62,44 @@ export interface RunCtx {
 
 const AUCTION: RunKind[] = ['hold', 'check', 'channel', 'driftWide', 'overlap', 'linebreak', 'nearPost', 'farPost'];
 
+// Was this idea dealt by a set piece, or chosen off the auction?
+export function isCornerJob(plan: RunPlan): plan is CornerJob {
+  switch (plan) {
+    case 'cornerNear':
+    case 'cornerFar':
+    case 'cornerSpot':
+    case 'cornerTop':
+    case 'cornerShort':
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Is he going RIGHT NOW? Each corner job breaks on its own beat and resets
+// between breaks, so the box keeps re-making its runs instead of standing
+// still — and a struck ball sends everyone at once, whatever beat it caught.
+export function cornerBreaking(bb: TeamBrain, job: CornerJob): boolean {
+  const call = bb.corner;
+  if (!call) return false;
+  if (call.struck) return true;
+  const wave = call.t - CORNER_SET;
+  if (wave <= 0) return false;
+  const beat = (wave % CORNER_CYCLE) - CORNER_DELAY[job];
+  return beat >= 0 && beat < CORNER_BREAK;
+}
+
+// The box on a beat: his launch mark between breaks, his post while he goes
+function cornerTarget(c: RunCtx, job: CornerJob): Vec2 {
+  const call = c.bb.corner;
+  if (!call) return c.anchor;
+  const mark = call.marks[job];
+  return cornerBreaking(c.bb, job) ? mark.at : mark.launch;
+}
+
 // Where this idea puts him RIGHT NOW — every kind reads the live ball, the
 // live carrier and the live offside line
-export function runTarget(c: RunCtx, kind: RunKind): Vec2 {
+export function runTarget(c: RunCtx, plan: RunPlan): Vec2 {
   const { bb, me, world } = c;
   const ball = world.ball.pos;
   const sgn = bb.attackSign();
@@ -53,7 +108,7 @@ export function runTarget(c: RunCtx, kind: RunKind): Vec2 {
   const chalk = c.side < 0 ? 4.5 : PITCH.width - 4.5;
   const carrier = carrierOf(c);
   const ballSide = ball.y >= mid ? 1 : -1;
-  switch (kind) {
+  switch (plan) {
     case 'hold':
       return c.anchor;
     case 'check': {
@@ -81,13 +136,29 @@ export function runTarget(c: RunCtx, kind: RunKind): Vec2 {
       if (marker) dir = norm(add(dir, scale(norm(sub(me.pos, marker)), 0.7)));
       return clampPitch(add(me.pos, scale(dir, 9)));
     }
+    case 'cornerNear':
+    case 'cornerFar':
+    case 'cornerSpot':
+    case 'cornerTop':
+    case 'cornerShort':
+      return cornerTarget(c, plan);
   }
 }
 
-// Runs that are worth burning legs on — the rest are walked into
-export function runSprints(kind: RunKind): boolean {
-  return kind === 'linebreak' || kind === 'burst' || kind === 'overlap' ||
-    kind === 'nearPost' || kind === 'farPost';
+// Runs that are worth burning legs on — the rest are walked into, and a corner
+// job burns them only on his beat
+export function runSprints(plan: RunPlan, bb: TeamBrain): boolean {
+  switch (plan) {
+    case 'cornerNear':
+    case 'cornerFar':
+    case 'cornerSpot':
+    case 'cornerTop':
+    case 'cornerShort':
+      return cornerBreaking(bb, plan);
+    default:
+      return plan === 'linebreak' || plan === 'burst' || plan === 'overlap' ||
+        plan === 'nearPost' || plan === 'farPost';
+  }
 }
 
 // Seconds a chosen run is promised for. Long enough to read as intent, short
@@ -98,7 +169,7 @@ export function runCommit(kind: RunKind, rng: Rng): number {
 
 // The auction. The incumbent run carries a bonus — hysteresis, so nobody
 // abandons a good idea over a coin flip.
-export function pickRun(c: RunCtx, current: RunKind): RunKind {
+export function pickRun(c: RunCtx, current: RunPlan): RunKind {
   let best: RunKind = 'hold';
   let bestScore = -Infinity;
   for (const kind of AUCTION) {
