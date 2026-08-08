@@ -7,8 +7,9 @@ const CHARGE_TIME = 0.85;
 const AIM_RATE = 7.0;       // rad/s the J/L sweep steers the aim
 const AIM_MAX = 1.31;       // ~75° — you strike across your body, never backward
 const AIM_UNLOCK = AIM_MAX * 1.15; // running past this leaves the lock behind
-const FLICK_ARM = 0.3;      // right-stick throw that starts winding a pass
-const FLICK_KEEP = 0.2;     // falling back through this means you let go
+const FLICK_ARM = 0.38;     // right-stick throw that starts winding a pass
+const FLICK_KEEP = 0.16;    // falling back through this means you let go
+const FLICK_SNAP = 0.03;    // a wind of one single frame was a knuckle, not a pass
 // Even the softest flick is a real ball; a full throw is a full-blooded hit
 const flickPower = (peak: number) => 0.45 + clamp((peak - FLICK_ARM) / (1 - FLICK_ARM), 0, 1) * 0.55;
 
@@ -26,6 +27,7 @@ export class LocalControls {
   private wasTackle = false;
   private aimWorld: number | null = null; // the locked field angle
   private flickPeak = 0;
+  private flickT = 0;
   private flickScreenDir: Vec2 | null = null;
   private flickReleased: { dir: Vec2; power: number } | null = null;
   charge = 0;          // exposed for the charge bar UI
@@ -68,7 +70,7 @@ export class LocalControls {
       // The stick doesn't sweep — it points. Wherever you hold it, the shot
       // goes, snapped inside the strikeable cone so a wild point still plays
       // the nearest ball the body can hit instead of being ignored.
-      if (aim && aim.mag > 0.4) {
+      if (aim && aim.mag > 0.32) {
         const d = this.toField(aim.x, aim.y);
         const base = len(move) > 0.25 ? norm(move) : facing;
         const baseAng = Math.atan2(base.y, base.x);
@@ -93,13 +95,16 @@ export class LocalControls {
         // winding: power remembers the deepest throw, and the direction is
         // only trusted near it — the spring-back never steers the ball
         this.flickPeak = Math.max(this.flickPeak, mag);
+        this.flickT += dt;
         if (aim && mag >= this.flickPeak * 0.7) this.flickScreenDir = vec(aim.x, aim.y);
         this.flickAim = this.flickScreenDir
           ? { dir: this.toField(this.flickScreenDir.x, this.flickScreenDir.y), power: flickPower(this.flickPeak) }
           : null;
       } else if (this.flickPeak > 0) {
-        // let go — the pass fires at the peak throw
-        if (this.flickScreenDir) {
+        // let go — the pass fires at the peak throw. A wind that lasted a
+        // single frame was a knuckle brushing the stick, and nothing leaves
+        // your foot on a knuckle.
+        if (this.flickScreenDir && this.flickT >= FLICK_SNAP) {
           this.flickReleased = {
             dir: this.toField(this.flickScreenDir.x, this.flickScreenDir.y),
             power: flickPower(this.flickPeak),
@@ -144,6 +149,7 @@ export class LocalControls {
 
   private dropFlick() {
     this.flickPeak = 0;
+    this.flickT = 0;
     this.flickScreenDir = null;
     this.flickAim = null;
   }

@@ -2,7 +2,7 @@ import { Vec2 } from '../core/math';
 import { PlayerInput } from '../sim/player';
 import { LocalControls } from './controls';
 import { Keyboard } from './keyboard';
-import { pads } from './gamepad';
+import { PadButton, pads } from './gamepad';
 
 // The couch: who is actually sitting down. A seat is ONE device — a pad in a
 // named slot, or one pair of hands on the keyboard — plus the side it plays
@@ -38,6 +38,14 @@ const secondHands = (kb: Keyboard): Keyboard => {
   return front;
 };
 
+// A board with nobody at it. A pad seat has to be DEAF to the keyboard, or
+// the man typing on it walks every controller's player at once.
+const noHands = (kb: Keyboard): Keyboard => {
+  const front: Keyboard = Object.create(kb);
+  front.has = () => false;
+  return front;
+};
+
 export class Seat {
   readonly id: string;
   readonly label: string;
@@ -54,7 +62,8 @@ export class Seat {
   // its own half of the keyboard, never both
   sample(dt: number, kb: Keyboard, facing: Vec2): PlayerInput {
     if (this.device.kind === 'pad') {
-      return pads.drive(this.device.index, () => this.controls.sample(dt, kb, facing));
+      if (!this.front) this.front = noHands(kb);
+      return pads.drive(this.device.index, () => this.controls.sample(dt, this.front!, facing));
     }
     if (this.device.hands === 1 && !this.front) this.front = secondHands(kb);
     return pads.drive(null, () => this.controls.sample(dt, this.front ?? kb, facing));
@@ -63,6 +72,17 @@ export class Seat {
   // The pass this seat's right stick just fired, if any — consumed once
   takeFlick() {
     return this.controls.takeFlick();
+  }
+
+  // A button edge on THIS seat's pad. Verbs that belong to one man — switch
+  // me, auto-switch, cheer — ask here, so pad two never answers for pad one.
+  pressed(button: PadButton): boolean {
+    return this.device.kind === 'pad' && !!pads.device(this.device.index)?.pressed(button);
+  }
+
+  // A pad still on the table. Keyboard hands never walk off.
+  get live(): boolean {
+    return this.device.kind !== 'pad' || !!pads.device(this.device.index);
   }
 
   rumble(intensity: number, ms: number) {
@@ -83,6 +103,11 @@ export class SeatRoster {
     return this.seats.find((s) => s.id === id) ?? null;
   }
 
+  // Whose hands the shell itself wears — the couch's first chair
+  get primary(): Seat | null {
+    return this.seats[0] ?? null;
+  }
+
   has(device: SeatDevice): boolean {
     return !!this.seat(deviceId(device));
   }
@@ -97,6 +122,14 @@ export class SeatRoster {
 
   leave(id: string) {
     this.seats = this.seats.filter((s) => s.id !== id);
+  }
+
+  // A pad yanked out of the hub takes its chair with it — otherwise the room
+  // sits there waiting on a device nobody is holding. Names the empty chairs.
+  prune(): string[] {
+    const gone = this.seats.filter((s) => !s.live).map((s) => s.id);
+    if (gone.length) this.seats = this.seats.filter((s) => s.live);
+    return gone;
   }
 
   clear() {
