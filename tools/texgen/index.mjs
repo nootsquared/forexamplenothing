@@ -1,8 +1,9 @@
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { savePNG, makeCanvas } from './lib.mjs';
 import { VARIANTS, KITS, PX_PER_METER, ISO } from './palettes.mjs';
 import { generatePitchTexture, PITCH } from './pitch.mjs';
-import { generatePlayerSheet, FRAME_W, FRAME_H, BASELINE, DIRS, FRAMES } from './players.mjs';
+import { generatePlayerSheet, ANIMS, FRAME_W, FRAME_H, BASELINE, DIRS, FRAMES } from './players.mjs';
 import { generateBallSheet, BALL_SIZE, BALL_DIRS, BALL_PHASES, BALL_VISUAL_R } from './ball.mjs';
 import { generateDustSheet, generateGrassBitsSheet, generateRingSheet, generateShadow, generateSkid, generateBladeSheet, generateAimArrowSheet, generateSwitchChevrons, generateGoalBar, BLADE_W, BLADE_H, BLADE_FRAMES, AIM_SIZE, AIM_DIRS, CHEV_W, CHEV_H } from './fx.mjs';
 import { generateFontSheet, generateMicroFontSheet, generateTitleSheet, GLYPHS, CELL_W, CELL_H, WIDTHS, MICRO_GLYPHS, MICRO_CELL_W, MICRO_CELL_H, MICRO_WIDTHS, TITLE_W, TITLE_H } from './font.mjs';
@@ -24,21 +25,29 @@ for (const kit of KITS) {
   savePNG(generatePlayerSheet(kit), OUT + name);
   playerSheets.push(name);
 }
-// National wardrobes: 15 nations × home/away raytraces. Skipped when already
-// on disk — the full set costs ~8s and only needs baking once per art change.
+// National wardrobes: 15 nations × home/away raytraces. The full set costs
+// real minutes, so it stays on disk between bakes — but a cached sheet cut to
+// an old frame box slices into garbage and one posed to an old rig lies. The
+// rig's own source is the cache key: touch it, the whole wardrobe rebakes.
+const rigStamp = ['players.mjs', 'iso3d.mjs', 'nations.mjs']
+  .reduce((h, f) => h.update(readFileSync(new URL(f, import.meta.url))), createHash('sha1'))
+  .digest('hex').slice(0, 16);
+const stampFile = `${OUT}players-rig.txt`;
+const wardrobeStale = !existsSync(stampFile) || readFileSync(stampFile, 'utf8') !== rigStamp;
 savePNG(generateFlagSheet(), `${OUT}flags.png`);
 const nationEntries = [];
 for (const n of NATIONS) {
   const sheets = {};
   for (const half of ['home', 'away']) {
     const file = `players-${n.id}-${half === 'home' ? 'h' : 'a'}.png`;
-    if (!existsSync(OUT + file)) {
+    if (wardrobeStale || !existsSync(OUT + file)) {
       savePNG(generatePlayerSheet({ id: `${n.id}-${half}`, ...n[half] }), OUT + file);
     }
     sheets[half === 'home' ? 'h' : 'a'] = file;
   }
   nationEntries.push({ id: n.id, name: n.name, color: n.color, sheets });
 }
+writeFileSync(stampFile, rigStamp);
 savePNG(generateBallSheet(), `${OUT}ball.png`);
 savePNG(generateDustSheet(), `${OUT}fx-dust.png`);
 savePNG(generateGrassBitsSheet(), `${OUT}fx-grass.png`);
@@ -68,7 +77,7 @@ const manifest = {
   pitch: { length: PITCH.length, width: PITCH.width, apron: PITCH.apron },
   player: {
     frameW: FRAME_W, frameH: FRAME_H, baseline: BASELINE, dirs: DIRS, frames: FRAMES,
-    anims: { idleStart: 0, idleLen: 2, runStart: 2, runLen: 8, kickStart: 10, kickLen: 3, lunge: 13, recover: 14 },
+    anims: ANIMS,
   },
   ball: { size: BALL_SIZE, dirs: BALL_DIRS, phases: BALL_PHASES, worldR: BALL_VISUAL_R },
   fx: {
@@ -100,10 +109,12 @@ console.log(`assets generated in ${(performance.now() - t0).toFixed(0)}ms → pu
 // zoomed player directions and the ball's roll matrix
 async function buildPreview() {
   const { loadImage } = await import('@napi-rs/canvas');
-  const { canvas, ctx } = makeCanvas(1560, 1560);
+  const W = 1870;
+  const H = 1900;
+  const { canvas, ctx } = makeCanvas(W, H);
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = '#14181f';
-  ctx.fillRect(0, 0, 1560, 1560);
+  ctx.fillRect(0, 0, W, H);
 
   const [day, night, home, away, ball] = await Promise.all(
     ['pitch-day.png', 'pitch-night.png', 'players-home.png', 'players-away.png', 'ball.png']
@@ -119,17 +130,25 @@ async function buildPreview() {
   ctx.drawImage(day, ox - 3 * M, oy + (34 - 8) * M * ISO.squash, 22 * M, 16 * M, 10, 450, 22 * M * 2, 16 * M * 2);
   ctx.drawImage(day, ox + (52.5 - 11) * M, oy + (34 - 8) * M * ISO.squash, 22 * M, 16 * M, 760, 450, 22 * M * 2, 16 * M * 2);
 
-  // Every heading's run frame at 5× — omnidirectional readability check
-  for (let d = 0; d < DIRS; d++) {
-    const col = d % 8;
-    const row = Math.floor(d / 8);
-    ctx.drawImage(home, 4 * FRAME_W, d * FRAME_H, FRAME_W, FRAME_H,
-      10 + col * FRAME_W * 5, 980 + row * FRAME_H * 5, FRAME_W * 5, FRAME_H * 5);
+  // Every heading of the two poses that have to survive all 16 rows: the run,
+  // and the keeper at full stretch. 3× — the cell is big now.
+  const compass = (sheet, frame, top) => {
+    for (let d = 0; d < DIRS; d++) {
+      ctx.drawImage(sheet, frame * FRAME_W, d * FRAME_H, FRAME_W, FRAME_H,
+        10 + (d % 8) * FRAME_W * 3, top + Math.floor(d / 8) * FRAME_H * 3, FRAME_W * 3, FRAME_H * 3);
+    }
+  };
+  compass(home, ANIMS.runStart + 2, 980);
+  compass(away, ANIMS.diveStart + ANIMS.diveSideStride + ANIMS.diveStage.high, 1284);
+  // One direction's WHOLE strip at 2×, wrapped: idle, run, kick, lunge,
+  // recover, both shuffle sides, the celebration, both dive sides
+  const perLine = 13;
+  for (let i = 0; i < FRAMES; i += perLine) {
+    const n = Math.min(perLine, FRAMES - i);
+    ctx.drawImage(home, i * FRAME_W, 2 * FRAME_H, FRAME_W * n, FRAME_H,
+      10, 1590 + (i / perLine) * 100, FRAME_W * n * 2, FRAME_H * 2);
   }
-  // One direction's full frame strip: idle, run cycle, kick — home and away
-  ctx.drawImage(home, 0, 2 * FRAME_H, FRAME_W * FRAMES, FRAME_H, 10, 1290, FRAME_W * FRAMES * 3, FRAME_H * 3);
-  ctx.drawImage(away, 0, 10 * FRAME_H, FRAME_W * FRAMES, FRAME_H, 10, 1380, FRAME_W * FRAMES * 3, FRAME_H * 3);
   // Ball roll matrix at 4×
-  ctx.drawImage(ball, 0, 0, ball.width, ball.height, 1240, 980, ball.width * 4, ball.height * 4);
+  ctx.drawImage(ball, 0, 0, ball.width, ball.height, 1280, 980, ball.width * 4, ball.height * 4);
   savePNG(canvas, `${OUT}preview.png`);
 }

@@ -1,8 +1,9 @@
 import { Container, Sprite, Graphics } from 'pixi.js';
 import { lerp } from './interp';
-import { Vec2, len, norm } from '../core/math';
+import { Vec2, len, norm, signedAngle } from '../core/math';
+import { PITCH } from '../sim/constants';
 import { PlayerBody } from '../sim/player';
-import { GameAssets } from './assets';
+import { GameAssets, Manifest } from './assets';
 import { PixelText } from './pixelText';
 import { project, pxPerMeter, squash } from './projection';
 
@@ -13,6 +14,16 @@ export interface AimState {
   move: Vec2;
   dir: Vec2 | null;
 }
+
+// A run whose legs go this far off the shoulders is a sideways/backward
+// shuffle, not a run — past it the strafe cycle takes over
+const STRAFE_ANGLE = 1.0;
+// crown height in meters — the shirt number hangs from there down the back,
+// pinned to the RIG rather than to whatever the frame box happens to be
+const BACK_NUMBER_Z = 1.75;
+const LAUNCH_BEAT = 0.1;  // the push-off before he is truly flying
+const LAND_HOLD = 0.4;    // the crumple after he comes back down
+const SAVE_HOLD = 0.6;    // gloves latched on the ball for the rest of the flight
 
 export class PlayerView {
   root = new Container();
@@ -32,6 +43,13 @@ export class PlayerView {
   private hintPulse = 0;
   private chevPulse = 0;
   private aiCharge = 0; // estimated windup of an AI body, for the charge tell
+  private celebrating = false;
+  private diveClock = 0;  // seconds since the keeper left his feet
+  private landTimer = 0;
+  private saveStage: 'catch' | 'parry' | null = null;
+  private saveTimer = 0;
+  private diveSide = 0; // the flight's shoulder + compass row, held through the landing
+  private diveRow = 0;
   private sheet: string;
   private nameLabel: PixelText;
   private backNo: PixelText;
@@ -69,10 +87,12 @@ export class PlayerView {
       chev.scale.set(1.4);
     }
     // Who IS this body: a whisper of a name at the boots, the shirt number
-    // between the shoulders whenever the back is turned
+    // between the shoulders whenever the back is turned. The name is off by
+    // default — the scene lights it only for the bodies that matter.
     this.nameLabel = new PixelText(assets, 1, 0xdfe4ee, 'micro');
     this.nameLabel.text = name;
     this.nameLabel.alpha = 0.8;
+    this.nameLabel.visible = false;
     this.nameLabel.centerAt(0, 6);
     this.backNo = new PixelText(assets, 1, 0xf4f6fa, 'micro');
     this.backNo.text = number > 0 ? String(number) : '';
@@ -99,6 +119,11 @@ export class PlayerView {
     }
   }
 
+  // Worth naming this frame — your man, the switch target, whoever carries
+  setNamed(on: boolean) {
+    this.nameLabel.visible = on;
+  }
+
   setControlled(on: boolean) {
     this.marker.visible = on;
     this.youChev.visible = on;
@@ -116,6 +141,19 @@ export class PlayerView {
 
   triggerKick() {
     this.kickTimer = 0.26;
+  }
+
+  // The goal party: arms overhead for as long as the scoring team owns the
+  // screen. Off again the moment the ball is respotted.
+  setCelebrating(on: boolean) {
+    this.celebrating = on;
+  }
+
+  // How the flight ENDS — gloves wrapped around it, or a hand flung through
+  // it. Fired from the sim's save/parry, latched over the rest of the dive.
+  triggerSave(kind: 'catch' | 'parry') {
+    this.saveStage = kind;
+    this.saveTimer = SAVE_HOLD;
   }
 
   update(p: PlayerBody, dt: number, alpha: number, aim: AimState | null) {
@@ -154,10 +192,30 @@ export class PlayerView {
     const speed = p.speed();
     const anims = this.assets.manifest.player.anims;
     this.kickTimer = Math.max(0, this.kickTimer - dt);
+    this.saveTimer = Math.max(0, this.saveTimer - dt);
+    const airborne = p.id.role === 'GK' && p.diveTimer > 0;
+    if (airborne) {
+      this.diveClock += dt;
+      this.landTimer = LAND_HOLD;
+    } else {
+      this.diveClock = 0;
+      this.landTimer = Math.max(0, this.landTimer - dt);
+    }
+    // Sideways or backwards travel: the legs know it even though the eyes are
+    // still on the ball. Sign of the turn from facing to velocity picks which
+    // shoulder leads, and the shuffle replaces the run outright.
+    const strafe = speed > 0.7 ? signedAngle(p.look, p.vel) : 0;
 
     let frame: number;
-    if (p.lungeTimer > 0) {
-      frame = anims.lunge; // flying: the slide tackle and the keeper's dive
+    if (this.celebrating) {
+      this.animPhase += dt * (4.5 + speed * 1.2);
+      frame = anims.celebStart + (speed > 0.7 ? Math.floor(this.animPhase) % anims.celebLen : 0);
+    } else if (airborne) {
+      frame = this.diveFrame(p, anims);
+    } else if (this.landTimer > 0) {
+      frame = this.diveFrame(p, anims, anims.diveStage.land);
+    } else if (p.lungeTimer > 0) {
+      frame = anims.lunge; // flying: the outfielder's slide tackle
     } else if (p.recoverTimer > 0.15) {
       frame = anims.recover; // picking himself back up
     } else if (this.kickTimer > 0) {
@@ -165,6 +223,10 @@ export class PlayerView {
       frame = anims.kickStart + (this.kickTimer > 0.18 ? 0 : this.kickTimer > 0.09 ? 1 : 2);
     } else if (p.isCharging && speed < 0.7) {
       frame = anims.kickStart; // planted and wound up, ready to strike
+    } else if (Math.abs(strafe) > STRAFE_ANGLE) {
+      this.animPhase += dt * (4 + speed * 0.9);
+      frame = anims.shuffleStart + (strafe < 0 ? anims.shuffleSideStride : 0) +
+        (Math.floor(this.animPhase) % anims.shuffleLen);
     } else if (speed > 0.7) {
       this.animPhase += dt * (5.5 + speed * 1.7);
       frame = anims.runStart + (Math.floor(this.animPhase) % anims.runLen);
@@ -173,17 +235,20 @@ export class PlayerView {
       frame = anims.idleStart + (Math.floor(this.idlePhase) % anims.idleLen);
       this.animPhase = 0;
     }
-    const row = this.headingRow(p);
+    // A body on the ground does not pivot: the leap's compass row outlives it
+    let row = this.headingRow(p);
+    if (airborne) this.diveRow = row;
+    else if (this.landTimer > 0) row = this.diveRow;
     this.body.texture = this.assets.players[this.sheet][row][frame];
 
     // The shirt number lives between the shoulders — visible whenever the
     // back is turned to camera, riding the run cycle's bob
-    const backTurned = row >= 10 && row <= 14 && p.lungeTimer <= 0 && p.recoverTimer <= 0.15;
+    const backTurned = row >= 10 && row <= 14 && p.lungeTimer <= 0 && p.recoverTimer <= 0.15 &&
+      this.landTimer <= 0;
     this.backNo.visible = backTurned;
     if (backTurned) {
       const bob = speed > 0.7 && frame % 2 === 1 ? -1 : 0;
-      const { baseline } = this.assets.manifest.player;
-      this.backNo.position.set(Math.round(-this.backNo.textWidth / 2), Math.round(-baseline * 0.72) + bob);
+      this.backNo.position.set(Math.round(-this.backNo.textWidth / 2), Math.round(project(0, 0, BACK_NUMBER_Z).sy) + bob);
     }
 
     // Charge tell above EVERY head, human or brain: you can read a wound-up
@@ -216,10 +281,28 @@ export class PlayerView {
     this.aimArrow.alpha = 0.82 + 0.18 * Math.sin(this.aimPulse);
   }
 
-  // Continuous heading → nearest of the 16 baked compass rows
+  // The keeper flies ALONG his heading, so the sheet's two side blocks are
+  // chosen by the shoulder the shot comes over — which is simply the field
+  // side of the goal he is defending. Latched so the landing matches the leap.
+  private diveFrame(p: PlayerBody, anims: Manifest['player']['anims'], stage?: number): number {
+    if (p.diveTimer > 0) {
+      const outward = p.pos.x < PITCH.length / 2 ? 1 : -1;
+      this.diveSide = p.facing.y * outward > 0 ? 0 : anims.diveSideStride;
+    }
+    const d = anims.diveStage;
+    const at = stage ?? (
+      this.saveTimer > 0 && this.saveStage ? (this.saveStage === 'catch' ? d.catch : d.parry)
+        : this.diveClock < LAUNCH_BEAT ? d.launch
+          : p.diveHeight === 1 ? d.high : d.low);
+    return anims.diveStart + this.diveSide + at;
+  }
+
+  // Continuous heading → nearest of the 16 baked compass rows. The EYES pick
+  // the row, so a man watching the ball keeps his shoulders open while his
+  // legs carry him elsewhere — the feet answer to facing, the sprite to look.
   private headingRow(p: PlayerBody): number {
     const dirs = this.assets.manifest.player.dirs;
-    const angle = Math.atan2(p.facing.y, p.facing.x);
+    const angle = Math.atan2(p.look.y, p.look.x);
     const bin = Math.round(angle / ((Math.PI * 2) / dirs));
     return ((bin % dirs) + dirs) % dirs;
   }

@@ -4,7 +4,7 @@ import { makeCanvas, PixelGrid } from './lib.mjs';
 // with real sidebearings, tabular 4px digits so scoreboards line up, and a 5px
 // micro face for on-field names and card fine print. Readable first, pixel always.
 
-export const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!-.:%><^';
+export const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!-.:%><^?/';
 export const CELL_W = 7; // widest glyph (5) + 1px outline each side
 export const CELL_H = 9;
 
@@ -53,6 +53,8 @@ export const ROWS = {
   '>': ['#...', '##..', '.##.', '..##', '.##.', '##..', '#...'],
   '<': ['...#', '..##', '.##.', '##..', '.##.', '..##', '...#'],
   '^': ['.#.', '#.#', '...', '...', '...', '...', '...'],
+  '?': ['.##.', '#..#', '...#', '..#.', '..#.', '....', '..#.'],
+  '/': ['...#', '...#', '..#.', '.##.', '.#..', '#...', '#...'],
 };
 
 export const WIDTHS = Object.fromEntries(
@@ -84,7 +86,7 @@ export function generateFontSheet() {
 // ---------------------------------------------------------------- micro face
 // 5px-tall labels that live ON the pitch: player names, shirt numbers, card
 // fine print. Same outline discipline so they read over grass.
-export const MICRO_GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.';
+export const MICRO_GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-./';
 export const MICRO_CELL_W = 7;
 export const MICRO_CELL_H = 7;
 
@@ -127,6 +129,7 @@ const MICRO_ROWS = {
   9: ['###', '#.#', '###', '..#', '##.'],
   '-': ['...', '...', '###', '...', '...'],
   '.': ['.', '.', '.', '.', '#'],
+  '/': ['..#', '..#', '.#.', '#..', '#..'],
 };
 
 export const MICRO_WIDTHS = Object.fromEntries(
@@ -158,21 +161,43 @@ export function generateTitleSheet() {
   const { canvas, ctx } = makeCanvas(TITLE_W, TITLE_H);
   const grid = new PixelGrid(TITLE_W, TITLE_H);
   const shades = ['#fff9d9', '#ffef9e', '#ffe27a', '#ffd95e', '#f0b83f', '#dc9a30', '#c47c26'];
-  const stamp = (ox, oy, colorOf) => {
+  const key = (x, y) => y * TITLE_W + x;
+  const walk = (ox, oy, visit) => {
     let x = ox;
     for (const ch of TITLE_WORD) {
       const rows = ROWS[ch];
       rows.forEach((row, ry) => {
         for (let rx = 0; rx < row.length; rx++) {
-          if (row[rx] === '#') grid.set(x + rx, oy + ry, colorOf(ry));
+          if (row[rx] === '#') visit(x + rx, oy + ry, ry);
         }
       });
       x += WIDTHS[ch] + TITLE_SPACING;
     }
   };
-  stamp(4, 5, () => '#0a0806');       // the shadow, thrown low
-  stamp(3, 4, () => '#0a0806');
-  stamp(2, 2, (ry) => shades[ry]);    // the face
+  const face = new Set();
+  walk(2, 2, (x, y) => face.add(key(x, y)));
+  // The O's counter is two pixels wide, so a drop shadow thrown two pixels
+  // down lands INSIDE it and the wordmark reads TQTAL22. Flooding from the
+  // border marks every cell the shadow is allowed to touch; whatever the
+  // flood cannot reach is a letter's hole and stays one.
+  const outside = new Set();
+  const stack = [];
+  for (let x = 0; x < TITLE_W; x++) stack.push([x, 0], [x, TITLE_H - 1]);
+  for (let y = 0; y < TITLE_H; y++) stack.push([0, y], [TITLE_W - 1, y]);
+  while (stack.length) {
+    const [x, y] = stack.pop();
+    if (x < 0 || y < 0 || x >= TITLE_W || y >= TITLE_H) continue;
+    const k = key(x, y);
+    if (outside.has(k) || face.has(k)) continue;
+    outside.add(k);
+    stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+  }
+  const shadow = (ox, oy) => walk(ox, oy, (x, y) => {
+    if (outside.has(key(x, y))) grid.set(x, y, '#0a0806');
+  });
+  shadow(4, 5);                     // the shadow, thrown low
+  shadow(3, 4);
+  walk(2, 2, (x, y, ry) => grid.set(x, y, shades[ry])); // the face
   grid.autoOutline('#241a08');
   grid.blitTo(ctx, 0, 0);
   return canvas;

@@ -24,6 +24,13 @@ export function rotZ([x, y, z], ang) {
   return [x * c - y * s, x * s + y * c, z];
 }
 
+// Tips a body forward onto its face: -π/2 lays a standing rig flat along +y
+export function rotX([x, y, z], ang) {
+  const c = Math.cos(ang);
+  const s = Math.sin(ang);
+  return [x, y * c - z * s, y * s + z * c];
+}
+
 // Rotate a whole primitive list around the z axis through (0,0)
 export function rotScene(prims, ang) {
   return prims.map((p) =>

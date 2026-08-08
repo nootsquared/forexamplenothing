@@ -6,7 +6,15 @@ export interface Manifest {
   pitch: { length: number; width: number; apron: number };
   player: {
     frameW: number; frameH: number; baseline: number; dirs: number; frames: number;
-    anims: { idleStart: number; idleLen: number; runStart: number; runLen: number; kickStart: number; kickLen: number; lunge: number; recover: number };
+    // sideStride = columns between the -x-side block and the +x-side block
+    anims: {
+      idleStart: number; idleLen: number; runStart: number; runLen: number;
+      kickStart: number; kickLen: number; lunge: number; recover: number;
+      shuffleStart: number; shuffleLen: number; shuffleSideStride: number;
+      celebStart: number; celebLen: number;
+      diveStart: number; diveSideStride: number;
+      diveStage: { launch: number; low: number; high: number; catch: number; parry: number; land: number };
+    };
   };
   ball: { size: number; dirs: number; phases: number; worldR: number };
   fx: { dust: { size: number; frames: number }; grass: { size: number; frames: number }; ring: { size: number; frames: number }; blade: { w: number; h: number; frames: number }; aim: { size: number; frames: number }; chev: { w: number; h: number; frames: number } };
