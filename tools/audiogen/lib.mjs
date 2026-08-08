@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 
 // The bake's little DSP kit: deterministic synthesis primitives that turn
 // plain math into WAV files. Everything the game hears is built from these.
@@ -231,6 +231,21 @@ export function reverb(buf, { wet = 0.3, decay = 0.75, size = 1, damp = 3500 } =
   return out;
 }
 
+// The other direction, for material that arrives from outside the synth — the
+// announcer's takes are stored small and stretched back up to SR here. Linear
+// interpolation leaves images an octave up; every caller lowpasses well below
+// that, so they never reach the ear.
+export function upsample(buf, factor) {
+  const out = new Float32Array(buf.length * factor);
+  for (let i = 0; i < out.length; i++) {
+    const p = i / factor;
+    const a = Math.floor(p);
+    const f = p - a;
+    out[i] = buf[a] * (1 - f) + (buf[a + 1] ?? buf[a]) * f;
+  }
+  return out;
+}
+
 // Box-average a buffer down by a whole factor. A bed with nothing above 2kHz
 // in it does not need 44.1k of storage — shipped at a quarter rate it costs a
 // quarter of the download, and the browser resamples it back on decode.
@@ -242,6 +257,28 @@ export function decimate(buf, factor) {
     out[i] = sum / factor;
   }
   return out;
+}
+
+// The one thing the bake reads back off disk: a 16-bit mono take spoken by a
+// synthesiser it does not own. Walks the chunk list rather than assuming a
+// 44-byte header, because encoders love to slip a LIST chunk in front of data.
+export function readWav(path) {
+  const b = readFileSync(path);
+  let o = 12;
+  let rate = SR;
+  let samples = null;
+  while (o + 8 <= b.length) {
+    const id = b.toString('ascii', o, o + 4);
+    const size = b.readUInt32LE(o + 4);
+    if (id === 'fmt ') rate = b.readUInt32LE(o + 12);
+    if (id === 'data') {
+      samples = new Float32Array(size >> 1);
+      for (let i = 0; i < samples.length; i++) samples[i] = b.readInt16LE(o + 8 + i * 2) / 32768;
+    }
+    o += 8 + size + (size & 1);
+  }
+  if (!samples) throw new Error(`no audio in ${path}`);
+  return { samples, rate };
 }
 
 // 16-bit PCM WAV, mono or stereo

@@ -179,17 +179,46 @@ function stepGrass(seed) {
 // ----------------------------------------------------------------- the crowd
 // The bed: band-limited noise wearing slow integer-cycle swells so the loop
 // never betrays itself. Everything else layers on top of this wash.
+// One voice in the stand, a fraction of a second of it: a glottal buzz pushed
+// through two vowel formants. Alone it is a person going "ah"; four hundred of
+// them overlapping is the only thing that actually sounds like a crowd.
+function voiceGrain(rng, f0) {
+  const dur = 0.22 + rng() * 0.5;
+  const drift = 1 + (rng() - 0.5) * 0.06;
+  const src = bandLimited(dur, (t) => f0 * (drift + 0.012 * Math.sin(t * 34)), 'saw', { ceiling: 3200 });
+  // the two resonances that make a mouth a mouth — F1 low and open, F2 the vowel
+  const f1 = bandpass(Float32Array.from(src), 420 + rng() * 380, 2.2);
+  const f2 = bandpass(Float32Array.from(src), 1050 + rng() * 900, 2.6);
+  const out = secs(dur);
+  addInto(out, f1, 0, 1);
+  addInto(out, f2, 0, 0.42);
+  // no consonants, no attack — a voice in a wash swells and fades
+  shape(out, (t) => {
+    const k = t / dur;
+    return Math.sin(Math.PI * Math.min(1, Math.max(0, k))) ** 1.3;
+  });
+  return out;
+}
+
+// The stand itself: hundreds of voices, none of them audible on its own, over
+// the low roll of a full house. It was filtered noise before, which is the
+// textbook recipe for WIND — it never once sounded like people.
 function crowdBed() {
   const rng = makeRng(61);
   const dur = 9.5;
-  const raw = noise(dur, rng);
-  const low = onePoleLP(Float32Array.from(raw), 260);
-  const mid = bandpass(Float32Array.from(raw), 500, 0.55);
-  const air = bandpass(Float32Array.from(raw), 1900, 0.7);
   const bed = secs(dur);
-  addInto(bed, low, 0, 0.58);
-  addInto(bed, mid, 0, 0.62);
-  addInto(bed, air, 0, 0.11);
+  // the voices: male and female registers, scattered so no pitch ever leads
+  const VOICES = 620;
+  for (let i = 0; i < VOICES; i++) {
+    const f0 = rng() < 0.58 ? 96 + rng() * 74 : 168 + rng() * 116;
+    const g = voiceGrain(rng, f0);
+    addInto(bed, g, rng() * dur, 0.055 + rng() * 0.055);
+  }
+  // ...and the room they are standing in: bodies, clothes, concrete, distance
+  const raw = noise(dur, rng);
+  addInto(bed, onePoleLP(Float32Array.from(raw), 190), 0, 0.3);
+  addInto(bed, bandpass(Float32Array.from(raw), 2600, 0.8), 0, 0.045); // the hiss of distance, barely
+  softClip(bed, 1.25); // a crowd is a compressed thing — it glues into one voice
   polish(bed, 4600, 3.5, 4);
   const looped = loopable(bed, 0.5); // exactly 9.0s now
   const L = looped.length / SR;
