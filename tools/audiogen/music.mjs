@@ -1,8 +1,12 @@
-import { SR, secs, osc, noise, shape, ad, onePoleLP, onePoleHP, bandpass, softClip, normalize, makeRng } from './lib.mjs';
+import {
+  SR, secs, osc, noise, shape, ad, lowpass2, bandpass, bandLimited,
+  addInto, softClip, loopable, reverb, makeRng, decimate,
+} from './lib.mjs';
 
-// A four-voice chip tracker and the two songs the game owns: a bright bouncing
-// menu anthem and a cooler, coiled draft-room groove. Loops are sample-exact —
-// every echo and release tail wraps around into the top of the form.
+// A four-voice chip tracker, the two songs it plays, and the match's own quiet.
+// The tracker's loops are sample-exact — every echo and release tail wraps
+// around into the top of the form. Its squares are summed, never sliced: naive
+// edges fold hash into the 2-5kHz band and that is what "cheap" sounds like.
 
 const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
 
@@ -33,7 +37,9 @@ function renderSong(song) {
       const freq = vib
         ? (t) => f0 * (1 + vib.depth * Math.sin(Math.PI * 2 * vib.rate * t) * Math.min(1, Math.max(0, t - vib.after) / 0.14))
         : f0;
-      const n = osc(dur + 0.08, freq, ch.wave, { duty: ch.duty ?? 0.5 });
+      const n = ch.wave === 'square' || ch.wave === 'saw'
+        ? bandLimited(dur + 0.08, freq, ch.wave, { duty: ch.duty ?? 0.5 })
+        : osc(dur + 0.08, freq, ch.wave);
       shape(n, (t) => {
         const a = Math.min(1, t / 0.005);
         const rel = t > dur ? Math.max(0, 1 - (t - dur) / 0.08) : 1;
@@ -54,13 +60,13 @@ function renderSong(song) {
     kick: () => {
       const b = osc(0.09, (t) => 42 + 90 * Math.exp(-t * 55), 'sine');
       shape(b, ad(0.001, 0.085, 2));
-      const c = onePoleHP(noise(0.006, rng), 2000);
+      const c = bandpass(noise(0.006, rng), 1700, 1.2);
       shape(c, ad(0.0004, 0.005, 2));
       for (let i = 0; i < c.length; i++) b[i] += c[i] * 0.25;
       return b;
     },
     snare: () => {
-      const n = bandpass(noise(0.13, rng), 1900, 0.8);
+      const n = bandpass(noise(0.13, rng), 1600, 0.8);
       shape(n, ad(0.001, 0.12, 2.2));
       const body = osc(0.06, 195, 'sine');
       shape(body, ad(0.001, 0.055, 2));
@@ -68,17 +74,17 @@ function renderSong(song) {
       return n;
     },
     hat: () => {
-      const n = onePoleHP(noise(0.03, rng), 6800);
+      const n = bandpass(noise(0.03, rng), 2800, 0.8);
       shape(n, ad(0.0005, 0.028, 2));
       return n;
     },
     ohat: () => {
-      const n = onePoleHP(noise(0.09, rng), 6200);
+      const n = bandpass(noise(0.09, rng), 2600, 0.7);
       shape(n, ad(0.0005, 0.085, 1.6));
       return n;
     },
     rim: () => {
-      const n = bandpass(noise(0.02, rng), 3100, 2);
+      const n = bandpass(noise(0.02, rng), 1800, 2);
       shape(n, ad(0.0004, 0.018, 2));
       const p = osc(0.015, 820, 'sine');
       shape(p, ad(0.0005, 0.013, 2));
@@ -86,15 +92,15 @@ function renderSong(song) {
       return n;
     },
   };
-  const drumGain = { kick: 0.5, snare: 0.3, hat: 0.1, ohat: 0.11, rim: 0.2 };
+  const drumGain = { kick: 0.5, snare: 0.28, hat: 0.07, ohat: 0.08, rim: 0.18 };
   const drumPan = { kick: 0, snare: 0.05, hat: 0.22, ohat: 0.22, rim: -0.12 };
   for (const [bar, beat, kind, vel = 1] of song.drums) {
     const [gl, gr] = panGains(drumGain[kind] * vel, drumPan[kind]);
     addWrapped(drumKit[kind](), (bar * 4 + beat) * spb, gl, gr);
   }
 
-  onePoleLP(L, 11500);
-  onePoleLP(R, 11500);
+  lowpass2(L, 7500);
+  lowpass2(R, 7500);
   softClip(L, 1.12);
   softClip(R, 1.12);
   const peak = Math.max(...[L, R].map((b) => b.reduce((m, v) => Math.max(m, Math.abs(v)), 1e-9)));
@@ -225,15 +231,84 @@ function warRoom() {
   });
 }
 
+// ------------------------------------------------------------ CALM AMBIENT
+// The music that plays under a match, and the whole job is to not be noticed.
+// Eno's trick, not a composition: six timers whose periods share no common
+// multiple each own one note of a D pentatonic set (nothing in it can clash),
+// fire it seven times in ten, and drift apart forever — so a 72s loop never
+// repeats a phrase. Pads walk I-vi-IV-V one step at a time underneath. If you
+// catch yourself listening to this during play, it is mixed too loud.
+const CALM_LOOP = 72;
+const CALM_FADE = 4; // no note starts inside this window: the tail wraps instead
+
+// two triangles five cents apart, keytracked dark — a note played on felt
+function feltPluck(midi) {
+  const f0 = mtof(midi);
+  const b = secs(3);
+  for (const cents of [-5, 5]) addInto(b, osc(3, f0 * Math.pow(2, cents / 1200), 'tri'), 0, 0.5);
+  shape(b, ad(0.004, 2.8, 1.4));
+  return lowpass2(b, Math.min(4800, f0 * 7)); // the bed ships at 11kHz — nothing may fold
+}
+
+// a chord that takes four seconds to arrive and never sharpens
+function feltPad(midis, dur) {
+  const b = secs(dur);
+  for (const m of midis) {
+    for (const cents of [-7, 0, 7]) addInto(b, osc(dur, mtof(m) * Math.pow(2, cents / 1200), 'tri'), 0, 0.33);
+  }
+  shape(b, ad(4, dur - 4, 1.1));
+  return lowpass2(b, 2400);
+}
+
+function calmAmbient() {
+  const rng = makeRng(2207);
+  const total = CALM_LOOP + CALM_FADE;
+  const L = secs(total);
+  const R = secs(total);
+  const chords = [[50, 57, 64], [47, 54, 61], [43, 50, 57], [45, 52, 59]]; // I vi IV V in D
+  let chord = 0;
+  for (let at = 0; at < CALM_LOOP; ) {
+    const dur = Math.min(20 + rng() * 25, total - at);
+    const pad = feltPad(chords[chord], dur);
+    addInto(L, pad, at, 0.35);
+    addInto(R, pad, at + 0.015, 0.35); // 15ms of Haas: width without smear
+    const drone = shape(osc(dur, mtof(chords[chord][0] - 12), 'sine'), ad(6, dur - 6, 1));
+    addInto(L, drone, at, 0.18);
+    addInto(R, drone, at, 0.18);
+    at += dur;
+    chord = rng() < 0.45 ? 0 : (chord + (rng() < 0.5 ? 1 : 3)) % 4; // home, or one step either way
+  }
+  [13.7, 17.3, 21.1, 26.7, 33.9, 41.3].forEach((period, i) => {
+    const note = feltPluck([69, 71, 74, 76, 78, 81][i]);
+    for (let t = period * 0.5; t < CALM_LOOP; t += period) {
+      if (rng() > 0.55) continue; // silence is the point
+      const at = t + (rng() - 0.5) * 0.8;
+      addInto(L, note, at, 0.5);
+      addInto(R, note, at, 0.5); // plucks stay centred — Haas would blur the transient
+    }
+  });
+  const space = { wet: 0.45, decay: 0.86, size: 1.4, damp: 1800 };
+  const chs = [reverb(L, space), reverb(R, space)].map((ch) => loopable(lowpass2(ch, 4600), CALM_FADE));
+  const peak = Math.max(...chs.map((ch) => ch.reduce((m, v) => Math.max(m, Math.abs(v)), 1e-9)));
+  for (const ch of chs) for (let i = 0; i < ch.length; i++) ch[i] *= 0.5 / peak;
+  return chs;
+}
+
 export function bakeMusic(write) {
   const entries = [];
+  // songs sit a good 10dB under the gameplay pile: a chip anthem that competes
+  // with the whistle is a chip anthem you turn off on day two. `thin` is how
+  // many samples get averaged away before shipping — the chip tunes stop at
+  // 7.5kHz and the felt bed at 4.6kHz, so the rest of 44.1k is paying for air
+  // that was never written.
   const songs = {
-    'music-menu': { render: golazoTheme, gain: 0.5 },
-    'music-draft': { render: warRoom, gain: 0.45 },
+    'music-menu': { render: golazoTheme, gain: 0.26, thin: 2 },
+    'music-draft': { render: warRoom, gain: 0.28, thin: 2 },
+    'music-calm': { render: calmAmbient, gain: 0.55, thin: 4 },
   };
   for (const [name, def] of Object.entries(songs)) {
     const file = `${name}.wav`;
-    write(file, def.render());
+    write(file, def.render().map((ch) => decimate(ch, def.thin)), SR / def.thin);
     entries.push({ name, file, loop: true, gain: def.gain, music: true });
   }
   return entries;

@@ -11,13 +11,13 @@ mkdirSync(OUT, { recursive: true });
 
 const t0 = performance.now();
 const stats = [];
-const write = (file, data) => {
+const write = (file, data, rate = SR) => {
   const chs = Array.isArray(data) ? data : [data];
-  writeWav(OUT + file, chs);
+  writeWav(OUT + file, chs, rate);
   const n = chs[0].length;
   let peak = 0, sum = 0;
   for (const ch of chs) for (let i = 0; i < n; i++) { peak = Math.max(peak, Math.abs(ch[i])); sum += ch[i] * ch[i]; }
-  stats.push({ file, secs: (n / SR).toFixed(2), peak: peak.toFixed(2), rms: Math.sqrt(sum / (n * chs.length)).toFixed(3) });
+  stats.push({ file, secs: (n / rate).toFixed(2), kHz: rate / 1000, peak: peak.toFixed(2), rms: Math.sqrt(sum / (n * chs.length)).toFixed(3) });
 };
 
 const entries = [...bakeSfx(write), ...bakeMusic(write)];

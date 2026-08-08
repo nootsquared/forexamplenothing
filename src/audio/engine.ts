@@ -17,7 +17,9 @@ interface PlayOpts {
   delay?: number;
 }
 
-const volCurve = (v: number) => Math.pow(Math.max(0, Math.min(10, v)) / 10, 1.6);
+// 0-10 on the dial → bus gain. The exponent puts the default 3 a shade under
+// half power — a room level nobody reaches for — and leaves 8dB above it.
+const volCurve = (v: number) => Math.pow(Math.max(0, Math.min(10, v)) / 10, 0.75);
 
 class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -36,7 +38,15 @@ class AudioEngine {
     if (typeof AudioContext === 'undefined') return; // headless: the game plays mute
     this.ctx = new AudioContext();
     this.master = this.ctx.createGain();
-    this.master.connect(this.ctx.destination);
+    // a safety net, not a sound: it sleeps until a goal stacks the roar, the
+    // net and the fanfare on a dial turned past comfortable
+    const ceiling = this.ctx.createDynamicsCompressor();
+    ceiling.threshold.value = -8;
+    ceiling.knee.value = 4;
+    ceiling.ratio.value = 12;
+    ceiling.attack.value = 0.004;
+    ceiling.release.value = 0.25;
+    this.master.connect(ceiling).connect(this.ctx.destination);
     this.musicBus = this.ctx.createGain();
     this.sfxBus = this.ctx.createGain();
     this.ambientBus = this.ctx.createGain();
@@ -85,7 +95,7 @@ class AudioEngine {
     src.start(now + delay);
   }
 
-  ui(name: 'move' | 'select' | 'back' | 'denied' | 'buy' | 'card' | 'coin' | 'wheel-tick' | 'wheel-win', vol = 1) {
+  ui(name: 'move' | 'select' | 'back' | 'tick' | 'denied' | 'buy' | 'card' | 'coin' | 'wheel-tick' | 'wheel-win', vol = 1) {
     this.play(`ui-${name}`, { vol });
   }
 
@@ -116,8 +126,10 @@ class AudioEngine {
     this.musicNow = { name, src, g };
   }
 
-  // Ambient beds fade in and hold until told otherwise
-  ambient(name: string, on: boolean, fade = 1.2) {
+  // Ambient beds fade in and hold until told otherwise. `level` sets where the
+  // fade lands, so a bed can arrive at a murmur without a second ramp fighting
+  // the first one on the way up.
+  ambient(name: string, on: boolean, fade = 1.2, level = 1) {
     if (!this.ready || !this.ctx) return;
     const now = this.ctx.currentTime;
     const running = this.loops.get(name);
@@ -130,10 +142,10 @@ class AudioEngine {
       src.loop = true;
       const g = this.ctx.createGain();
       g.gain.setValueAtTime(0, now);
-      g.gain.linearRampToValueAtTime(m.gain, now + fade);
+      g.gain.linearRampToValueAtTime(m.gain * level, now + fade);
       src.connect(g).connect(this.ambientBus);
       src.start(now);
-      this.loops.set(name, { src, g, level: 1 });
+      this.loops.set(name, { src, g, level });
     } else if (!on && running) {
       running.g.gain.setValueAtTime(running.g.gain.value, now);
       running.g.gain.linearRampToValueAtTime(0, now + fade);
