@@ -36,6 +36,45 @@ export function takeSnap(match: Match, tick: number, cursors: Record<number, num
   };
 }
 
+// One instant of truth painted onto a world: the pose between two snaps, and
+// nothing else. A guest rides it forward off the wire; the replay truck
+// scrubs the very same function over its own tape.
+export function poseWorld(world: World, a: MatchSnap, b: MatchSnap, k: number) {
+  const lerp = (x: number, y: number) => x + (y - x) * k;
+  world.ball.savePrev();
+  for (const p of world.players) p.savePrev();
+
+  world.ball.pos.x = lerp(a.ball[0], b.ball[0]);
+  world.ball.pos.y = lerp(a.ball[1], b.ball[1]);
+  world.ball.z = lerp(a.ball[2], b.ball[2]);
+  world.ball.vel.x = b.ball[3];
+  world.ball.vel.y = b.ball[4];
+  world.ball.vz = b.ball[5];
+
+  world.players.forEach((p, i) => {
+    const pa = a.players[i];
+    const pb = b.players[i];
+    if (!pb || !pa) return;
+    p.pos.x = lerp(pa[0], pb[0]);
+    p.pos.y = lerp(pa[1], pb[1]);
+    p.vel.x = pb[2];
+    p.vel.y = pb[3];
+    p.facing.x = pb[4];
+    p.facing.y = pb[5];
+    p.lungeTimer = pb[6] > 0 ? 0.2 : 0;
+    p.isCharging = pb[7] > 0;
+    p.isSprinting = pb[8] > 0;   // the dust trail reads this
+    p.stamina = pb[9] ?? 1;      // ...and the HUD meter reads this
+  });
+
+  // the jaws are the host's truth, closure lerped for smoothness
+  world.clamp = a.clamp && b.clamp && a.clamp[0] === b.clamp[0]
+    ? { idx: b.clamp[0], close: lerp(a.clamp[1], b.clamp[1]), graceT: 0, feintRolled: false }
+    : b.clamp
+      ? { idx: b.clamp[0], close: b.clamp[1], graceT: 0, feintRolled: false }
+      : null;
+}
+
 // A guest rides a short interpolation BUFFER: it renders the match ~3 sim
 // ticks behind the freshest snapshot and glides through the timeline, so
 // network jitter never reads as chop. The renderer's own frame alpha
@@ -96,45 +135,12 @@ export class SnapPlayer {
       }
     }
     const span = Math.max(1, b.tick - a.tick);
-    const k = Math.min(1, Math.max(0, (this.renderTick - a.tick) / span));
-    const lerp = (x: number, y: number) => x + (y - x) * k;
-
-    world.ball.savePrev();
-    for (const p of world.players) p.savePrev();
-
-    world.ball.pos.x = lerp(a.ball[0], b.ball[0]);
-    world.ball.pos.y = lerp(a.ball[1], b.ball[1]);
-    world.ball.z = lerp(a.ball[2], b.ball[2]);
-    world.ball.vel.x = b.ball[3];
-    world.ball.vel.y = b.ball[4];
-    world.ball.vz = b.ball[5];
-
-    world.players.forEach((p, i) => {
-      const pa = a.players[i];
-      const pb = b.players[i];
-      if (!pb || !pa) return;
-      p.pos.x = lerp(pa[0], pb[0]);
-      p.pos.y = lerp(pa[1], pb[1]);
-      p.vel.x = pb[2];
-      p.vel.y = pb[3];
-      p.facing.x = pb[4];
-      p.facing.y = pb[5];
-      p.lungeTimer = pb[6] > 0 ? 0.2 : 0;
-      p.isCharging = pb[7] > 0;
-      p.isSprinting = pb[8] > 0;   // the dust trail reads this
-      p.stamina = pb[9] ?? 1;      // ...and the HUD meter reads this
-    });
+    poseWorld(world, a, b, Math.min(1, Math.max(0, (this.renderTick - a.tick) / span)));
 
     world.score.left = newest.score[0];
     world.score.right = newest.score[1];
     world.restartLock = newest.restartLock;
     world.sidesSwapped = newest.sidesSwapped;
-    // the jaws a guest sees are the host's truth, closure lerped for smoothness
-    world.clamp = a.clamp && b.clamp && a.clamp[0] === b.clamp[0]
-      ? { idx: b.clamp[0], close: lerp(a.clamp[1], b.clamp[1]), graceT: 0, feintRolled: false }
-      : newest.clamp
-        ? { idx: newest.clamp[0], close: newest.clamp[1], graceT: 0, feintRolled: false }
-        : null;
   }
 
   // Events surface exactly once, in order — each held until the buffered

@@ -49,7 +49,14 @@ export type GuestMsg =
   | { t: 'ready'; ready: boolean }
   | { t: 'draft'; action: DraftIntent }
   | { t: 'input'; input: NetInput }
+  | { t: 'replay' }                    // I have seen the goal back — my nod
   | { t: 'gk'; x: number; y: number }; // my keeper's distribution call — a field point
+
+// The replay's roll call: who the room is still waiting on before play resumes
+export interface ReplaySeatRow {
+  name: string;
+  ready: boolean;
+}
 
 // host → guests
 export type HostMsg =
@@ -57,6 +64,7 @@ export type HostMsg =
   | { t: 'start'; config: NetStartConfig }
   | { t: 'draft'; op: DraftOp }
   | { t: 'snap'; snap: MatchSnap }
+  | { t: 'replay'; room: ReplaySeatRow[]; done: boolean }
   | { t: 'end'; score: [number, number] };
 
 export interface SeatSnap {

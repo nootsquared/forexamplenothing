@@ -3,8 +3,9 @@ import { GameLoop } from './core/loop';
 import { Vec2, vec, dist, clamp, norm, scale, expDecayVec } from './core/math';
 import { PlayerInput } from './sim/player';
 import { World } from './sim/world';
-import { kickSight } from './sim/tuning';
-import { Match, createMatch, advanceMatch, pickDistribution } from './match';
+import { kickSight, keeperScatter, keeperCentering } from './sim/tuning';
+import { PITCH } from './sim/constants';
+import { Match, createMatch, advanceMatch, pickDistribution, MAX_STOPPAGE } from './match';
 import { leadTarget, passMargin } from './ai/brain';
 import { AI_PROFILES } from './ai/blackboard';
 import { FORMATIONS, formationsOfSize } from './data/formations';
@@ -14,20 +15,24 @@ import { Keyboard } from './input/keyboard';
 import { LocalControls } from './input/controls';
 import { pads } from './input/gamepad';
 import { TeamCursor } from './input/cursor';
+import { Seat, roster } from './input/seats';
 import { audio } from './audio/engine';
 import { MatchAudio } from './audio/matchAudio';
 import { loadAssets } from './render/assets';
 import { setProjection, squash } from './render/projection';
 import { Scene } from './render/scene';
 import { PixelText } from './render/pixelText';
+import { PlayerView } from './render/playerSprite';
 import { MOODS } from './render/variants';
-import { Screen, MenuScreen, SetupScreen, PauseScreen, StatsScreen, MatchSetup, fmtClock } from './ui/screens';
+import { GOLD, MINT, cornerMarks } from './ui/kit';
+import { Screen, MenuScreen, SetupScreen, PauseScreen, StatsScreen, LocalJoinScreen, MatchSetup, fmtClock } from './ui/screens';
 import { Tutorial } from './ui/tutorial';
 import { SquadBuilderScreen } from './ui/draft';
 import { OnlineScreen } from './ui/online';
 import { NetSession, NetStartConfig, DraftCtl } from './net/net';
 import { Party, packInput, unpackInput } from './net/party';
 import { takeSnap, SnapPlayer } from './net/snapshot';
+import { ReplayTruck } from './replay/truck';
 import { loadNationSheets } from './render/assets';
 import { SimEvent } from './sim/events';
 
@@ -64,21 +69,40 @@ async function boot() {
   let match: Match | null = null;
   let scene: Scene | null = null;
   let tutorial: Tutorial | null = null;
+  const playerViews: PlayerView[] = []; // the sprites, by body index — the party needs to reach one
   const matchAudio = new MatchAudio();
+  // The tape is always rolling — every goal gets shown back, exactly once
+  const replay = new ReplayTruck(app, assets);
+  let replayShare = 0;          // cadence for putting the room's roll call on the wire
+  let replayClosed = false;     // ...and whether the room has already been told to come back
   // The menu's living backdrop: an endless AI-vs-AI kickabout
   let attract: { match: Match; scene: Scene } | null = null;
   let cursor: TeamCursor | null = null;
   let gkIdx = -1;
   let gkHoldCooldown = 0; // a fresh launch can't be instantly re-scooped
   let halfCountdown = 0; // the 3-2-1 before the second half kicks off
+  let ceremonyWas: World['ceremony'] = 'live'; // the goal beat we last staged
+  let restT = 0;             // seconds left in the breath before the next chapter
+  let restAt: Vec2 | null = null; // and the spot the wide lens rests on
+  let restZoom = 2.25;       // ...at the size the moment was already being played
   let humanIdle = Infinity;
   let passHints: number[] = [];
   let hintClock = 0;
   let keeperAiming = false;
   let trainT = 0;   // the coach's next line, fused
   let trainIdx = 0;
-  let penAim: { col: number; row: number } | null = null; // the shooter's chosen bin
   let throwAim: { taker: number } | null = null; // your throw-in, aimed like a keeper's throw
+  // ---- the couch ----
+  // The first seat wears the shell's own hands (the mouse sling, the keeper
+  // sight, the throw) and its side becomes sim team 0; every seat after it
+  // drives its own body through its own cursor, exactly as an online friend
+  // does. Both empty means one player, and nothing below changes.
+  let primary: Seat | null = null;
+  let couch: { seat: Seat; cursor: TeamCursor; team: 0 | 1 }[] = [];
+  const couchDown = new Set<string>(); // raw key edges the couch reads for itself
+  // The goal party: whose arms X throws up, and whether anybody has asked yet
+  let celebrate: { scorer: number; t: number; taken: boolean; pop: number } | null = null;
+  const CELEBRATE_WINDOW = 4.2; // the sim's own party length — the arms come down with it
   // ---- the online party ----
   let net: NetSession | null = null;
   let party: Party | null = null;                    // host-side authority
@@ -105,12 +129,14 @@ async function boot() {
   let guestLead = vec();    // my body's local head start — input answered this frame
   let guestLeadIdx = -1;
   let guestKickEchoT = 0;   // my kick already sounded locally — mute its snap echo
-  // The spot kick fires INSIDE the tick so its events reach every listener
-  let penaltyShot: { side: -1 | 0 | 1; high: boolean } | null = null;
   let myName = ''; // asked fresh every time — his call, no stored defaults
   const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2, clicked: false, moved: false };
   const drag = { active: false, anchorX: 0, anchorY: 0 };
   const DRAG_FULL_PX = 260;
+  const SWITCH_PICK_PX = 40; // how near the pointer a man stands to be takeable
+  const REST_BEAT = 2;       // the law: a breath of stillness before any next chapter
+  const REST_ZOOM = 2.25;    // ...shown by the lens easing wide while the game waits
+  const CENTER_SPOT = vec(PITCH.length / 2, PITCH.width / 2); // where a half rests
   // The coach's lines, keyboard and pad wordings — rotated slowly on the
   // training ground so a new player learns the sticks without reading a menu
   const TRAINING_TIPS: [string, string][] = [
@@ -134,6 +160,7 @@ async function boot() {
   const pauseScreen = new PauseScreen(assets);
   const statsScreen = new StatsScreen(assets);
   const onlineScreen = new OnlineScreen(assets);
+  const localScreen = new LocalJoinScreen(assets, kb);
   let activeScreen: Screen | null = null;
 
   // The shell's one warning toast, riding above every screen: the double-press
@@ -154,6 +181,26 @@ async function boot() {
     leaveHint.addChild(plate);
     t.centerAt(w / 2, y + 10);
     leaveHint.addChild(t);
+  };
+
+  // The goal party's one card, riding over the celebration: gold while it is
+  // asking for the button, mint once the arms are up
+  const celebrateCard = new Container();
+  const celebratePlate = new Graphics();
+  const celebrateText = new PixelText(assets, 3, GOLD);
+  celebrateCard.addChild(celebratePlate, celebrateText);
+  celebrateCard.visible = false;
+  const dressCelebrate = (text: string, tone: number) => {
+    celebrateText.tint = tone;
+    celebrateText.text = text;
+    const w = celebrateText.textWidth + 44;
+    const h = celebrateText.textHeight + 22;
+    celebratePlate.clear();
+    celebratePlate.rect(-w / 2, 0, w, h).fill({ color: 0x0d1119, alpha: 0.92 });
+    celebratePlate.rect(-w / 2, 0, w, 2).fill({ color: tone, alpha: 0.7 });
+    celebratePlate.rect(-w / 2, h - 2, w, 2).fill({ color: 0x000000, alpha: 0.5 });
+    cornerMarks(celebratePlate, -w / 2, 0, w, h, tone, 0.6);
+    celebrateText.centerAt(0, 11);
   };
 
   const show = (s: Screen | null) => {
@@ -213,6 +260,9 @@ async function boot() {
   menu.onTraining = () => startTraining();
   menu.onTutorial = () => startTutorial();
   menu.onOnline = () => { onlineScreen.begin('name', ''); show(onlineScreen); };
+  menu.onLocal = () => show(localScreen); // still the front room: the attract match plays on behind it
+  localScreen.onBack = () => { menu.openPage('root'); show(menu); };
+  localScreen.onStart = () => startLocalMatch();
 
   // The training ground: your full XI on an open field, nobody pressing.
   // Teammates still make real runs, every restart is yours, the clock never
@@ -230,6 +280,42 @@ async function boot() {
     const [homeStars, awayStars] = quickSplit(11);
     startMatch(toSquad(homeStars, FORMATIONS['4-3-3']), '4-3-3', toSquad(awayStars, FORMATIONS['4-3-3']), '4-3-3',
       { halfLength: 0, kickoffFirst: 0, tutorial: true });
+  }
+
+  // The couch kicks off: a straight 11v11 with nobody scaled, because every
+  // shirt out there is somebody's. Whoever sits in the first seat wears the
+  // shell's own hands, so HIS side becomes sim team 0 — and the kits travel
+  // with him, so the man who picked AWAY really does play in blue.
+  function startLocalMatch() {
+    const first = roster.seats[0];
+    if (!first) return;
+    const flip = first.team === 1;
+    const shapes = formationsOfSize(11);
+    const homeShape = shapes[Math.min(1, shapes.length - 1)];
+    const awayShape = shapes[0];
+    const [homeStars, awayStars] = quickSplit(11);
+    startMatch(
+      toSquad(homeStars, FORMATIONS[homeShape]), homeShape,
+      toSquad(awayStars, FORMATIONS[awayShape]), awayShape,
+      { kits: flip ? ['away', 'home'] : ['home', 'away'], halfLength: setup.halfLength },
+    );
+    if (!match || !scene || !cursor) return;
+    roster.retune(squash());
+    primary = first;
+    controls = first.controls; // the shell's charge bar and arrow are HIS now
+    const worn = new Set<number>([cursor.idx]);
+    const captained = new Set<0 | 1>([0]); // the first seat owns team 0's dead balls
+    couch = roster.seats.slice(1).map((seat) => {
+      const team = (flip ? 1 - seat.team : seat.team) as 0 | 1;
+      const c = new TeamCursor(team, match!.world, nearestOutfield(match!.world, team, match!.world.ball.pos, worn));
+      c.autoMode = menu.autoSwitch;
+      c.isCaptain = !captained.has(team);
+      captained.add(team);
+      worn.add(c.idx);
+      return { seat, cursor: c, team };
+    });
+    wireSeatClaims();
+    scene.toast(`${roster.seats.length} PLAYERS ON THE COUCH`);
   }
 
   function exitTutorial(kind: 'menu' | 'training' | 'easy') {
@@ -293,6 +379,8 @@ async function boot() {
         party.onSeatLeft = (seat) => {
           if (screenName === 'draft') draftScreen.seatLeft(seat);
         };
+        // a friend has seen the goal back — the room moves on when all have
+        party.onGuestReplay = (seat) => replay.nod(seat);
         // A guest captain clicked his keeper's sight: validate that the call
         // is his to make, rebuild throw-or-punt from the KEEPER's own stats
         // (the wire names only a field point), and launch inside the sim
@@ -310,9 +398,7 @@ async function boot() {
           const dir = dRaw > 1e-4 ? vec(toT.x / dRaw, toT.y / dRaw) : vec(world.attackSign(gk.id.team), 0);
           const target = vec(gk.pos.x + dir.x * d, gk.pos.y + dir.y * d);
           const kind: 'throw' | 'punt' = d <= throwR ? 'throw' : 'punt';
-          const scatter = kind === 'throw'
-            ? (0.8 + d * 0.045) * (1.35 - gk.stats.control * 0.7)
-            : (2.2 + d * 0.075) * (1.45 - gk.stats.control * 0.7);
+          const scatter = keeperScatter(kind, d, gk.stats.control);
           remoteGk = null;
           pendingGkLaunch = { gkIdx: gkIdx2, seat, target, kind, scatter };
         };
@@ -364,7 +450,13 @@ async function boot() {
         }
         return;
       }
-      if (m.t === 'snap') { snapPlayer?.push(m.snap); return; }
+      // the host's stream is both this tab's truth and its replay tape
+      if (m.t === 'snap') { snapPlayer?.push(m.snap); replay.ring.push(m.snap); return; }
+      if (m.t === 'replay') {
+        replay.applyRoom(m.room);
+        if (m.done) replay.release();
+        return;
+      }
       // full time: let the banner land before walking back to the lobby
       if (m.t === 'end') { if (screenName === 'match') guestEndT = 2.6; return; }
     };
@@ -407,9 +499,12 @@ async function boot() {
   function backToLobby() {
     leaveArm = 0; // an exit armed in the match must not fire in the lobby
     shellHint(null);
+    replay.reset(scene);
     scene?.destroy();
     scene = null;
     match = null;
+    playerViews.length = 0;
+    endCelebration();
     matchAudio.end();
     snapPlayer = netRole === 'guest' ? new SnapPlayer() : null;
     seatCursors.clear();
@@ -509,9 +604,14 @@ async function boot() {
   function toMenu() {
     tutorial?.destroy();
     tutorial = null;
+    replay.reset(scene);
     scene?.destroy();
     scene = null;
     match = null;
+    playerViews.length = 0;
+    endCelebration();
+    primary = null;
+    couch = [];
     matchAudio.end();
     screenName = 'menu';
     paused = false;
@@ -553,9 +653,10 @@ async function boot() {
 
   // The stick's sling and the mouse's sling land in the same place: a
   // field-point kick released this frame, aimed FROM THE BALL. Any release
-  // also kicks the pad's motors, scaled to the ball it just hit.
-  const applyFlick = (into: PlayerInput, world: World) => {
-    const flick = controls.takeFlick();
+  // also kicks the motors of the hands that asked for it — a couch seat feels
+  // its own boot and nobody else's.
+  const applyFlick = (into: PlayerInput, world: World, seat: Seat | null) => {
+    const flick = seat ? seat.takeFlick() : controls.takeFlick();
     if (flick && !into.kickReleased) {
       into.kickReleased = {
         power: flick.power,
@@ -563,16 +664,19 @@ async function boot() {
         aimAt: vec(world.ball.pos.x + flick.dir.x * 30, world.ball.pos.y + flick.dir.y * 30),
       };
     }
-    if (into.kickReleased) pads.rumble(0.2 + into.kickReleased.power * 0.45, 90);
+    if (!into.kickReleased) return;
+    const kick = 0.2 + into.kickReleased.power * 0.45;
+    if (seat) seat.rumble(kick, 90);
+    else pads.rumble(kick, 90);
   };
 
   // The host presses START: his claimed side becomes SIM TEAM 0 (every local
-  // aid — keeper sight, penalty bins, drag pass — keeps working unchanged),
+  // aid — keeper sight, throw sight, drag pass — keeps working unchanged),
   // nations dress the teams, seated friends become cursors, and the whole
   // stage description ships to every guest.
   // The wardrobe and seating a match needs, from the party as it stands.
   // The host's claimed side becomes SIM TEAM 0 so every local aid (keeper
-  // sight, penalty bins, drag pass) keeps working unchanged.
+  // sight, throw sight, drag pass) keeps working unchanged.
   interface OnlineDress {
     kits: [string, string];
     nations: [string, string];
@@ -653,10 +757,6 @@ async function boot() {
         seatCursors.set(st.seat, { cursor: c, team: simT });
       }
       wireSeatClaims();
-      // penalties for a side with no LOCAL human take themselves
-      const auto = new Set<0 | 1>([1]);
-      if (party!.seats.get(0)?.team === null) auto.add(0);
-      if (match) match.autoPenaltyTeams = auto;
     })();
   }
 
@@ -707,7 +807,7 @@ async function boot() {
   // No two hands on one body, ever — every cursor refuses the others' bodies
   function wireSeatClaims() {
     if (!cursor) return;
-    const all: { cursor: TeamCursor }[] = [{ cursor }, ...seatCursors.values()];
+    const all: { cursor: TeamCursor }[] = [{ cursor }, ...seatCursors.values(), ...couch];
     for (const a of all) {
       a.cursor.claimed = (idx) => all.some((b) => b !== a && b.cursor.idx === idx);
     }
@@ -738,7 +838,8 @@ async function boot() {
         get echo() { return guestEchoT > 0 ? guestEchoIdx : -1; },
       };
     }
-    match.world.players.forEach((p, i) => scene!.addPlayer(p.id.team === 0 ? config.kits[0] : config.kits[1], match!.names[i], p.id.number));
+    playerViews.length = 0;
+    match.world.players.forEach((p, i) => playerViews.push(scene!.addPlayer(p.id.team === 0 ? config.kits[0] : config.kits[1], match!.names[i], p.id.number)));
     scene.setVariant(MOODS[menu.moodIdx]);
     scene.setPadHints(pads.connected);
     scene.toast(`${config.teamNames[0]} V ${config.teamNames[1]}`);
@@ -758,13 +859,15 @@ async function boot() {
     guestKickEchoT = 0;
     gkIdx = -1;
     keeperAiming = false;
-    penAim = null;
     throwAim = null;
+    primary = null;
+    couch = [];
     humanIdle = 0;
     halfCountdown = 0;
     fulltimeDelay = 0;
     passHints = [];
-    app.stage.addChild(uiRoot);
+    replay.reset(null);
+    app.stage.addChild(replay.root, celebrateCard, uiRoot);
     screenName = 'match';
     paused = false;
     show(null);
@@ -774,6 +877,12 @@ async function boot() {
   // One guest render-tick: send my hands, glide to the freshest truth
   function tickMatchGuest(dt: number) {
     if (!match || !scene || !net || !snapPlayer) return;
+    // the goal is being shown back on every tab at once — the host says when
+    if (replay.holds) {
+      replay.tick(dt, match.world, scene);
+      mouse.clicked = false;
+      return;
+    }
     if (guestEndT > 0) {
       guestEndT -= dt;
       if (guestEndT <= 0) return backToLobby();
@@ -791,7 +900,7 @@ async function boot() {
       input.kickReleased = { power: mouseKick.power, aimOffset: 0, aimAt: mouseKick.aimAt };
       mouseKick = null;
     }
-    applyFlick(input, match.world);
+    applyFlick(input, match.world, null);
     // Your boot SOUNDS the moment you let go — the strike itself still rides
     // the wire, but the thump answers your hands, not the round trip
     guestKickEchoT = Math.max(0, guestKickEchoT - dt);
@@ -833,7 +942,12 @@ async function boot() {
     }
     const evs = snapPlayer.drainEvents();
     if (evs.length) scene.handleEvents(evs);
-    for (const e of evs) if (e.kind === 'goal') pads.rumble(1, 350);
+    for (const e of evs) {
+      if (e.kind !== 'goal') continue;
+      pads.rumble(1, 350);
+      armReplay(e.side);
+    }
+    replay.cue(dt, match.world, scene);
     // a silent host tab reads as a broken game — say what's actually wrong
     guestStaleT -= dt;
     if (snapPlayer.lastAt > 0 && performance.now() - snapPlayer.lastAt > 2500 && guestStaleT <= 0) {
@@ -904,7 +1018,8 @@ async function boot() {
     scene = new Scene(app, assets, match.world, loop);
     if (import.meta.env.DEV) (window as unknown as { __match?: Match }).__match = match; // dev console handle
     const kits = opts?.kits ?? ['home', 'away'];
-    match.world.players.forEach((p, i) => scene!.addPlayer(p.id.team === 0 ? kits[0] : kits[1], match!.names[i], p.id.number));
+    playerViews.length = 0;
+    match.world.players.forEach((p, i) => playerViews.push(scene!.addPlayer(p.id.team === 0 ? kits[0] : kits[1], match!.names[i], p.id.number)));
     scene.setVariant(MOODS[menu.moodIdx]);
     scene.setPadHints(pads.connected);
     if (!opts?.tutorial) scene.toast(opts?.practice ? 'TRAINING GROUND' : toss === 0 ? 'RED WINS THE TOSS' : 'BLUE WINS THE TOSS');
@@ -919,17 +1034,22 @@ async function boot() {
     controls = new LocalControls(squash());
     humanIdle = Infinity;
     keeperAiming = false;
-    penAim = null;
-    penaltyShot = null;
     throwAim = null;
+    primary = null;   // a couch room re-seats itself right after this returns
+    couch = [];
+    endCelebration();
     remoteGk = null;
     pendingGkLaunch = null;
     halfCountdown = 0;
+    ceremonyWas = 'live';
+    restT = 0;
+    restAt = null;
     drag.active = false;
     mouseKick = null;
     passHints = [];
     fulltimeDelay = 0;
-    app.stage.addChild(uiRoot); // UI rides above the fresh pitch
+    replay.reset(null);
+    app.stage.addChild(replay.root, celebrateCard, uiRoot); // the truck's dress, the party's card, then the UI
     screenName = 'match';
     paused = false;
     show(null);
@@ -948,35 +1068,16 @@ async function boot() {
   }
 
   // ---- input plumbing ----------------------------------------------------
-  // The penalty sight eats UI keys first: WASD/arrows walk the bin, Enter
-  // pulls the trigger. Any key it doesn't claim falls through to the screens.
-  const penaltyKey = (code: string): boolean => {
-    if (screenName !== 'match' || paused || !penAim || !match || !scene) return false;
-    const pen = match.world.penalty;
-    if (pen?.phase !== 'aiming' || pen.team !== 0) return false;
-    const move: Record<string, [number, number]> = {
-      KeyA: [-1, 0], ArrowLeft: [-1, 0], KeyD: [1, 0], ArrowRight: [1, 0],
-      KeyW: [0, -1], ArrowUp: [0, -1], KeyS: [0, 1], ArrowDown: [0, 1],
-    };
-    if (move[code]) {
-      penAim.col = clamp(penAim.col + move[code][0], 0, 2);
-      penAim.row = clamp(penAim.row + move[code][1], 0, 1);
-      audio.ui('move');
-      return true;
-    }
-    if (code === 'Enter') {
-      // queued for the next tick — a between-frames strike would push its
-      // events into a buffer the sim wipes before anyone hears them
-      penaltyShot = { side: (penAim.col - 1) as -1 | 0 | 1, high: penAim.row === 0 };
-      penAim = null;
-      scene.setPenaltyAim(null);
-      return true;
-    }
-    return false;
-  };
   const routeKey = (code: string) => {
+    // Enter belongs to the truck while it has the room — alone it skips, in a
+    // party it is your nod and everyone's is needed
+    if (code === 'Enter' && !paused && replay.holds) {
+      if (replay.press() && netRole === 'guest') net?.send({ t: 'replay' });
+      return;
+    }
+    if (code === 'KeyX' && takeCelebration()) return; // the party asked for it first
     if (tutorial && screenName === 'match' && tutorial.key(code)) return;
-    if (!penaltyKey(code)) activeScreen?.key(code);
+    activeScreen?.key(code);
   };
   const uiKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyF', 'KeyX'];
   for (const code of uiKeys) kb.onPress(code, () => routeKey(code));
@@ -1013,11 +1114,10 @@ async function boot() {
       audio.ui('back');
       return draftScreen.onBack(); // host folds to the lobby; offline goes home
     }
-    if (tutorial && screenName === 'match') {
-      // one ESC walks out of school — the coach holds no one hostage
-      audio.ui('back');
-      return exitTutorial('menu');
-    }
+    // School has its own door, and the coach opens it: a pause board with the
+    // lesson, the skip and the way out on it. The keyboard reaches him first;
+    // a pad's START arrives here instead, and must land on the same board.
+    if (tutorial && screenName === 'match') return tutorial.pause();
     if (screenName !== 'match' || !match || match.finished) return;
     // Every retreat wears the same voice: closing the pause is a BACK,
     // opening it is drawing a card
@@ -1034,15 +1134,20 @@ async function boot() {
     }
   };
   kb.onPress('Escape', pressEscape);
+  // Every switch answers in the same voice, however you asked for it
+  const soundSwitch = () => audio.ui('select', 0.7);
   const pressSwitch = () => {
     if (screenName !== 'match' || paused) return;
+    if (primary) return; // a couch room: every seat asks with its own hands, in the tick
     if (netRole === 'guest') {
       guestSwitch = true; // rides the next packet up to the host...
       const sug = snapPlayer?.latest?.suggest?.[net?.seat ?? -1] ?? -1;
-      if (sug >= 0) { guestEchoIdx = sug; guestEchoT = 0.6; } // ...the ring moves NOW
+      if (sug >= 0) { guestEchoIdx = sug; guestEchoT = 0.6; soundSwitch(); } // ...the ring moves NOW
       return;
     }
+    const was = cursor?.idx ?? -1;
     cursor?.manualSwitch();
+    if (cursor && cursor.idx !== was) soundSwitch();
   };
   kb.onPress('KeyE', pressSwitch);
   const toggleAutoSwitch = () => {
@@ -1051,6 +1156,41 @@ async function boot() {
     scene.toast(cursor.autoMode ? 'AUTO SWITCH ON' : 'AUTO SWITCH OFF');
   };
   kb.onPress('KeyT', toggleAutoSwitch);
+
+  // A raw key edge read straight off the board: the couch's own keys never
+  // travel through the shell's UI routing, and two seats never share one
+  const keyEdge = (code: string): boolean => {
+    const down = kb.has(code);
+    const fresh = down && !couchDown.has(code);
+    if (down) couchDown.add(code);
+    else couchDown.delete(code);
+    return fresh;
+  };
+  // What "switch me" looks like on each kind of hands — the pad's LB or X,
+  // seat one's E, seat two's comma beside its own tackle and sprint keys
+  const seatSwitchPressed = (seat: Seat): boolean => {
+    if (seat.device.kind === 'pad') {
+      const pad = pads.device(seat.device.index);
+      // X belongs to the party while a goal is still being celebrated
+      return !!pad && (pad.pressed('lb') || (pad.pressed('x') && !celebrate));
+    }
+    return keyEdge(seat.device.hands === 0 ? 'KeyE' : 'Comma');
+  };
+  const askSwitch = (c: TeamCursor) => {
+    const was = c.idx;
+    c.manualSwitch();
+    if (c.idx !== was) soundSwitch();
+  };
+
+  // One board, two players. Seat one has always answered WASD *or* the arrows;
+  // the arrow cluster is seat two's whole left hand, so the moment seat two
+  // sits down seat one gives the arrows up and keeps its own letters.
+  const ARROW_CODES = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+  const armlessBoard: Keyboard = Object.create(kb);
+  armlessBoard.has = (code: string) => !ARROW_CODES.includes(code) && kb.has(code);
+  const boardFor = (seat: Seat): Keyboard =>
+    seat.device.kind === 'keys' && seat.device.hands === 0 && roster.has({ kind: 'keys', hands: 1 })
+      ? armlessBoard : kb;
 
   // ---- the pad speaks every language: sticks in play, dpad in menus ------
   pads.onConnect = () => {
@@ -1062,7 +1202,9 @@ async function boot() {
   const tickPad = (dt: number) => {
     pads.poll(dt);
     if (!pads.connected) return;
-    if (activeScreen || penAim) for (const code of pads.navCodes()) routeKey(code);
+    // the party takes X off every pad in the room before anything else does
+    if (pads.devices.some((p) => p.pressed('x')) && takeCelebration()) return;
+    if (activeScreen) for (const code of pads.navCodes()) routeKey(code);
     if (pads.pressed('a')) routeKey('Enter');
     if (pads.pressed('start')) pressEscape();
     if (pads.pressed('b') && activeScreen) pressEscape(); // B backs out of menus; in play it tackles
@@ -1102,16 +1244,45 @@ async function boot() {
     return kickSight(b.stats, w.ball.pos, dir, power, w.goalXOf(b.id.team), w.attackSign(b.id.team)).theta;
   };
 
+  // The man under the pointer: the nearest of MY outfield bodies inside the
+  // pick ring, measured in SCREEN pixels so the iso squash can't lie about who
+  // is closest. Only ever offered when the mouse has nothing else to do — the
+  // ball at your feet, a keeper's sight and a throw all outrank a switch.
+  // (the local cursor wears sim team 0, online host and first couch seat alike)
+  const pickTeammate = (): number => {
+    if (!match || !scene || !cursor || tutorial || netRole === 'guest') return -1;
+    if (keeperAiming || throwAim || ballIsMine()) return -1;
+    let best = -1;
+    let bestD = SWITCH_PICK_PX;
+    match.world.players.forEach((p, i) => {
+      if (p.id.team !== 0 || p.id.role === 'GK' || i === cursor!.idx || cursor!.claimed(i)) return;
+      const s = scene!.worldToScreen(p.pos.x, p.pos.y, 1); // his chest, not his shadow
+      const d = Math.hypot(s.x - mouse.x, s.y - mouse.y);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    return best;
+  };
+
   app.canvas.addEventListener('mousemove', (e) => { mouse.x = e.clientX; mouse.y = e.clientY; mouse.moved = true; });
   app.canvas.addEventListener('mousedown', (e) => {
     mouse.clicked = true;
+    // the press carries its own coordinates — a click that arrives before any
+    // movement must not be picked against a pointer we only guessed at
+    mouse.x = e.clientX;
+    mouse.y = e.clientY;
     if (screenName !== 'match' || paused) return;
     // The sling only arms with the ball at YOUR feet — no phantom arrows
     if (!keeperAiming && ballIsMine()) {
       drag.active = true;
       drag.anchorX = e.clientX;
       drag.anchorY = e.clientY;
+      return;
     }
+    // Off the ball the same button hands you a body instead — the man lit up
+    // under the pointer, worn the instant you press. A kick and a switch can
+    // never steal each other: the ball decides whose click this is.
+    const pick = pickTeammate();
+    if (pick >= 0 && cursor?.takeAt(pick)) soundSwitch();
   });
   window.addEventListener('mouseup', () => {
     if (!drag.active) return;
@@ -1137,10 +1308,8 @@ async function boot() {
       ? vec(origin.x + (toM.x / dRaw) * d, origin.y + (toM.y / dRaw) * d)
       : vec(origin.x + 10, origin.y);
     const kind: 'throw' | 'punt' = d <= throwR ? 'throw' : 'punt';
-    const scatter = kind === 'throw'
-      ? (0.15 + d * 0.012) * (1.2 - stats.control * 0.55)
-      : (0.7 + d * 0.028) * (1.3 - stats.control * 0.55);
-    const pCenter = Math.pow(0.5, 1 / (0.5 + 0.6 * stats.control));
+    const scatter = keeperScatter(kind, d, stats.control);
+    const pCenter = Math.pow(0.5, 1 / keeperCentering(stats.control));
     return { gk: origin, target, throwR, puntR, scatter, kind, pCenter };
   };
 
@@ -1161,39 +1330,135 @@ async function boot() {
     scene.setKeeperAim(null);
   };
 
+  // The rest law: nothing in this game cuts to the next thing. The lens eases
+  // wide onto a spot, the moment is allowed to breathe, and only then does the
+  // game move on. A newer beat always outranks one still running.
+  const restLens = (at: Vec2, seconds = REST_BEAT, zoom = REST_ZOOM) => {
+    restT = seconds;
+    restAt = vec(at.x, at.y);
+    restZoom = zoom;
+  };
+  // A moment already being framed keeps its own framing through the breath —
+  // a goal rests on the goal, never on a centre circle nobody is looking at
+  const restOnCeremony = (fallback: Vec2) => {
+    const shot = scene?.ceremonyFrame();
+    restLens(shot?.center ?? fallback, REST_BEAT, shot?.zoom ?? REST_ZOOM);
+  };
+
+  // ---- the goal party ----------------------------------------------------
+  // A goal for somebody in this room opens the prompt; X throws the scorer's
+  // arms up for the rest of the window. Nobody is ever asked to cheer a goal
+  // that was scored against them.
+  const armCelebrate = (cel: World['celebration']) => {
+    if (!cel || cel.scorer < 0 || !match) return;
+    if (cel.team !== 0 && !couch.some((cs) => cs.team === cel.team)) return;
+    // an own goal names the man who put it in his own net — nobody's arms go up
+    if (match.world.players[cel.scorer].id.team !== cel.team) return;
+    celebrate = { scorer: cel.scorer, t: CELEBRATE_WINDOW, taken: false, pop: 0 };
+    dressCelebrate('PRESS X TO CELEBRATE', GOLD);
+  };
+
+  // True when the press was SPENT here — the caller keeps its own hands off it
+  const takeCelebration = (): boolean => {
+    if (!celebrate || celebrate.taken || paused || replay.holds) return false;
+    celebrate.taken = true;
+    celebrate.pop = 1;
+    playerViews[celebrate.scorer]?.setCelebrating(true);
+    dressCelebrate('GET IN!', MINT);
+    audio.ui('select');
+    audio.play('kick-hard', { vol: 0.5, jitter: 0.08 });
+    pads.rumble(0.9, 300);
+    for (const cs of couch) cs.seat.rumble(0.9, 300);
+    return true;
+  };
+
+  const endCelebration = () => {
+    if (!celebrate) return;
+    playerViews[celebrate.scorer]?.setCelebrating(false);
+    celebrate = null;
+    celebrateCard.visible = false;
+  };
+
+  // The card breathes while it asks and pops once when it is answered; the
+  // truck and the pause board both own the screen outright, so it steps off
+  const tickCelebration = (dt: number, ceremony: World['ceremony']) => {
+    if (!celebrate) return;
+    celebrate.t -= dt;
+    if (celebrate.t <= 0 || ceremony !== 'celebrate') return endCelebration();
+    celebrate.pop = Math.max(0, celebrate.pop - dt * 3.5);
+    const h = app.renderer.height;
+    celebrateCard.visible = true;
+    celebrateCard.position.set(Math.round(app.renderer.width / 2), Math.round(Math.max(h * 0.42, h - 200)));
+    celebrateCard.scale.set(1 + celebrate.pop * 0.14);
+    celebrateCard.alpha = celebrate.taken ? 1 : 0.82 + 0.18 * Math.sin(celebrate.t * 7);
+  };
+
+  // A goal has gone in: the truck lines up its cut, and online it learns which
+  // seats have to nod before the game is allowed to move on
+  const armReplay = (side: 'left' | 'right') => {
+    const seats = netRole === 'host' && party
+      ? [...party.seats.values()].filter((s) => s.team !== null).map((s) => ({ seat: s.seat, name: s.name }))
+      : [];
+    replay.setRoom(seats, netRole === 'guest' ? (net?.seat ?? 0) : 0);
+    replayClosed = false;
+    replay.arm(side);
+  };
+
+  // The roll call on the wire: who has seen enough, repeated on a slow beat
+  // because the list is tiny. The word that play is resuming jumps the queue,
+  // so every tab blips back to the football together.
+  const shareReplay = (dt: number) => {
+    if (netRole !== 'host' || !party) return;
+    const done = replay.closing;
+    replayShare -= dt;
+    if (replayShare > 0 && done === replayClosed) return;
+    replayShare = 0.4;
+    replayClosed = done;
+    party.broadcast({ t: 'replay', room: replay.rows(), done });
+  };
+
   // ---- the match tick (unchanged control feel, now clock-aware) ----------
   function tickMatch(dt: number) {
     if (!match || !scene || !cursor) return;
     const world = match.world;
 
-    input = controls.sample(dt, kb, world.players[cursor.idx].facing);
+    // The truck has the room: the sim holds absolutely still while the goal is
+    // shown back, and hands the lens back onto the goal's own shot when it lets go
+    if (replay.holds) {
+      shareReplay(dt);
+      celebrateCard.visible = false;
+      if (replay.tick(dt, world, scene)) restOnCeremony(world.ball.pos);
+      mouse.clicked = false;
+      return;
+    }
+
+    // the first seat's hands are the shell's hands — read through ITS device,
+    // so a couch pad in slot two still steers the man it is holding
+    const facing = world.players[cursor.idx].facing;
+    input = primary ? primary.sample(dt, boardFor(primary), facing) : controls.sample(dt, kb, facing);
     if (mouseKick) {
       input.kickReleased = { power: mouseKick.power, aimOffset: 0, aimAt: mouseKick.aimAt };
       mouseKick = null;
     }
-    applyFlick(input, world);
+    applyFlick(input, world, primary);
+    if (primary && seatSwitchPressed(primary)) askSwitch(cursor);
     const active = input.move.x !== 0 || input.move.y !== 0 ||
       input.sprint || input.kickCharging || !!input.kickReleased || !!input.tackle || mouse.moved;
     mouse.moved = false;
     humanIdle = active ? 0 : humanIdle + dt;
 
-    // Auto-tackle only bites honest prey now — a heavy touch or a loose ball.
-    // A latched carrier is taken ON PURPOSE: hold K and clamp him.
-    const poss = match.teamBrains[0].possessorIdx;
-    if (humanIdle < 2.5 && poss !== null && world.players[poss].id.team === 1 &&
-        world.ballExposed() && world.players[cursor.idx].tackleCooldown <= 0 &&
-        dist(world.players[cursor.idx].pos, world.ball.pos) < 1.3) {
-      input.tackle = true;
-    }
-
-    // YOUR body is always yours — an empty input means he holds, not plays on.
-    // While you aim a penalty the body waits on the spot; the keys own the sight.
-    const penMine = world.penalty?.phase === 'aiming' && world.penalty.team === 0;
-    const overrides: Record<number, PlayerInput> = {
-      [cursor.idx]: penMine ? { move: vec(), sprint: false, kickCharging: false, kickReleased: null } : input,
-    };
+    // YOUR body is always yours — an empty input means he holds, not plays on
+    const overrides: Record<number, PlayerInput> = { [cursor.idx]: input };
     // a taker mid-throw stands at the line; the mouse owns the delivery
     if (throwAim) overrides[throwAim.taker] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+    // the couch: every seat past the first drives its own body from its own
+    // device, switches with its own hands, and feels its own boot
+    for (const cs of couch) {
+      if (seatSwitchPressed(cs.seat)) askSwitch(cs.cursor);
+      const seatIn = cs.seat.sample(dt, boardFor(cs.seat), world.players[cs.cursor.idx].facing);
+      applyFlick(seatIn, world, cs.seat);
+      overrides[cs.cursor.idx] = seatIn;
+    }
     // online: every seated friend drives his own body through his own cursor
     if (netRole === 'host' && party) {
       for (const [seat, sc] of seatCursors) {
@@ -1216,15 +1481,6 @@ async function boot() {
           s.pendingKick = null;
         } else if (seatIn.kickReleased) {
           seatIn.kickReleased = null; // stale kp in a repeated packet never double-fires
-        }
-        // the same auto-tackle the host enjoys — and the same law: only
-        // exposed balls; a latched carrier needs the guest's own held clamp
-        const seatBody = world.players[sc.cursor.idx];
-        const seatPoss = match.teamBrains[sc.team].possessorIdx;
-        if (!seatIn.tackle && seatPoss !== null && world.players[seatPoss].id.team !== sc.team &&
-            world.ballExposed() && performance.now() - s.activeAt < 2500 && seatBody.tackleCooldown <= 0 &&
-            dist(seatBody.pos, world.ball.pos) < 1.3) {
-          seatIn.tackle = true;
         }
         overrides[sc.cursor.idx] = seatIn;
       }
@@ -1307,14 +1563,11 @@ async function boot() {
         }
       }
     }
-    if (penaltyShot) {
-      world.takePenalty(penaltyShot.side, penaltyShot.high);
-      penaltyShot = null;
-    }
     cursor.update(world, match.teamBrains[0], dt);
 
-    // online: friends' cursors follow the same football rules (the truth
-    // itself ships at the END of the tick, launches included)
+    // every other pair of hands in the game follows the same football rules,
+    // couch or wire (the truth itself ships at the END of the tick)
+    for (const cs of couch) cs.cursor.update(world, match.teamBrains[cs.team], dt);
     if (netRole === 'host' && party) {
       for (const sc of seatCursors.values()) sc.cursor.update(world, match.teamBrains[sc.team], dt);
     }
@@ -1324,7 +1577,7 @@ async function boot() {
     // distribution sight opens. Recycling through the goalie is a real tool.
     gkHoldCooldown = Math.max(0, gkHoldCooldown - dt);
     const ourBoxDeep = world.attackSign(0) > 0 ? world.ball.pos.x < 18 : world.ball.pos.x > 96;
-    if (!keeperAiming && gkHoldCooldown <= 0 && world.restartLock <= 0 && gkIdx >= 0 &&
+    if (!tutorial && !keeperAiming && gkHoldCooldown <= 0 && world.restartLock <= 0 && gkIdx >= 0 &&
         world.lastTouch?.team === 0 && world.ball.z < 1.2 && world.ball.speed() < 9 &&
         dist(world.players[gkIdx].pos, world.ball.pos) < 1.6 &&
         ourBoxDeep && Math.abs(world.ball.pos.y - 37) < 21.5) {
@@ -1341,32 +1594,64 @@ async function boot() {
     // A catch or goal kick for OUR keeper opens the distribution sight —
     // if someone's actually playing
     for (const e of world.events) {
-      const caught = e.kind === 'save' && world.lastTouch?.team === 0 && world.lastTouch.idx === gkIdx;
-      const goalKick = e.kind === 'restart' && e.team === 0 && e.taker === gkIdx;
-      if ((caught || goalKick) && humanIdle < 8 && cursor.isCaptain) {
-        keeperAiming = true;
-        world.holdLock = true;
-      }
-      // YOUR restarts belong to YOU: throw-ins, corners and free kicks hand
-      // you the taker and the game waits for your delivery — no gray body
-      // ever plays your dead ball for you
-      if (e.kind === 'restart' && e.team === 0 && e.taker >= 0 && e.restart !== 'goalkick') {
-        cursor.assign(e.taker);
-        // your throw-in opens the throw sight — pick the man, not the walk
-        if (e.restart === 'throwin' && humanIdle < 2.5) throwAim = { taker: e.taker };
-      }
-      if (e.kind === 'kickoff' && e.team === 0 && e.taker >= 0) cursor.assign(e.taker);
-      // A penalty for US: you become the shooter and the sight opens
-      if (e.kind === 'foul' && e.penalty && world.penalty?.team === 0) {
-        cursor.assign(world.penalty.shooterIdx);
+      // A drill is the coach's room entirely: no distribution sight, no
+      // restart hand-offs, no throw aim. He says who wears what, and when.
+      if (!tutorial) {
+        const caught = e.kind === 'save' && world.lastTouch?.team === 0 && world.lastTouch.idx === gkIdx;
+        const goalKick = e.kind === 'restart' && e.team === 0 && e.taker === gkIdx;
+        if ((caught || goalKick) && humanIdle < 8 && cursor.isCaptain) {
+          keeperAiming = true;
+          world.holdLock = true;
+        }
+        // YOUR restarts belong to YOU: throw-ins, corners and free kicks hand
+        // you the taker and the game waits for your delivery — no gray body
+        // ever plays your dead ball for you
+        // ...but school has no dead balls. A drill that stages its own men and
+        // its own lens cannot have the taker handed to it, and it certainly
+        // cannot have the throw sight pull the camera off the lesson.
+        if (!tutorial && e.kind === 'restart' && e.team === 0 && e.taker >= 0 && e.restart !== 'goalkick') {
+          cursor.assign(e.taker);
+          // your throw-in opens the throw sight — pick the man, not the walk
+          if (e.restart === 'throwin' && humanIdle < 2.5) throwAim = { taker: e.taker };
+        }
+        // a kickoff is the CURSOR's own law now — the man nearest the ball,
+        // ours or theirs, so nobody restarts a half parked at centre-back
       }
       if (e.kind === 'fulltime') {
-        fulltimeDelay = 1.5;
+        // the whistle is not the sheet: the lens breathes off the dead ball
+        // first, and the numbers arrive once the stadium has settled
+        fulltimeDelay = REST_BEAT;
+        restLens(world.ball.pos);
         if (netRole === 'host' && party) party.broadcast({ t: 'end', score: [world.score.left, world.score.right] });
       }
-      if (e.kind === 'half') halfCountdown = 4.3; // HALF TIME banner first, then 3-2-1
+      if (e.kind === 'half') {
+        halfCountdown = 4.3;      // HALF TIME banner first, then 3-2-1
+        restLens(CENTER_SPOT);    // and a wide, still field under the banner
+      }
       if (e.kind === 'goal') pads.rumble(1, 350);
       if (e.kind === 'goal' && e.scorer >= 0) scene.toast(`${match.names[e.scorer]}!`);
+      // the roar gets its beat first; the truck cuts in behind it
+      if (e.kind === 'goal' && !tutorial && !match.practice) {
+        armReplay(e.side);
+        armCelebrate(world.celebration);
+      }
+    }
+
+    // The goal ceremony is the SIM's now — celebrate, then the walk home, then
+    // the kickoff mark. The shell only stages the seams: when the party ends,
+    // the lens BREATHES ON THE GOAL it was already framing and only then drifts
+    // back with the walk. The centre circle is not a place anyone is looking.
+    if (!tutorial) {
+      tickCelebration(dt, world.ceremony);
+      if (world.ceremony !== ceremonyWas) {
+        if (ceremonyWas === 'celebrate') restOnCeremony(world.ball.pos);
+        ceremonyWas = world.ceremony;
+      }
+      if (restT > 0 && restAt) {
+        restT -= dt;
+        if (restT > 0) scene.setCameraOverride({ center: restAt, zoom: restZoom });
+        else { restAt = null; scene.setCameraOverride(null); }
+      }
     }
 
     // The second half arrives on a count, not a drop: 3… 2… 1… PLAY!
@@ -1386,19 +1671,9 @@ async function boot() {
     }
     // The sight is never a missed beat: as long as OUR keeper still holds his
     // ball (goal kick, catch, pickup), waking the hands reopens the menu
-    if (!keeperAiming && gkIdx >= 0 && world.holdingGk === gkIdx && humanIdle < 2.5 && cursor.isCaptain) {
+    if (!tutorial && !keeperAiming && gkIdx >= 0 && world.holdingGk === gkIdx && humanIdle < 2.5 && cursor.isCaptain) {
       keeperAiming = true;
       world.holdLock = true;
-    }
-
-    // The penalty sight rides the world's state — it opens for your spot
-    // kicks and folds away the instant the ball is struck or the play dies
-    if (penMine || (world.penalty?.phase === 'aiming' && world.penalty.team === 0)) {
-      if (!penAim) penAim = { col: 2, row: 1 };
-      scene.setPenaltyAim(penAim);
-    } else if (penAim) {
-      penAim = null;
-      scene.setPenaltyAim(null);
     }
 
     if (keeperAiming) {
@@ -1421,7 +1696,7 @@ async function boot() {
         world.lastTouch?.team !== 0 || world.lastTouch.idx !== throwAim.taker;
       if (gone) {
         throwAim = null;
-        if (!keeperAiming) scene.setKeeperAim(null);
+        if (!keeperAiming) scene.setKeeperAim(null, 'throwin');
       } else {
         const throwR = 14 + 10 * taker.stats.power;
         const origin = world.ball.pos;
@@ -1436,7 +1711,7 @@ async function boot() {
           });
           world.gkLaunch(throwAim.taker, best, 'throw', 2);
           throwAim = null;
-          if (!keeperAiming) scene.setKeeperAim(null);
+          if (!keeperAiming) scene.setKeeperAim(null, 'throwin');
         } else {
           const m = scene.screenToWorld(mouse.x, mouse.y);
           const toM = vec(m.x - origin.x, m.y - origin.y);
@@ -1446,8 +1721,8 @@ async function boot() {
             ? vec(origin.x + (toM.x / dRaw) * d, origin.y + (toM.y / dRaw) * d)
             : vec(origin.x + world.attackSign(0) * 6, origin.y);
           const scatter = (0.2 + d * 0.015) * (1.2 - taker.stats.control * 0.55);
-          const pCenter = Math.pow(0.5, 1 / (0.5 + 0.6 * taker.stats.control));
-          scene.setKeeperAim({ gk: origin, target, throwR, puntR: throwR, scatter, kind: 'throw', pCenter });
+          const pCenter = Math.pow(0.5, 1 / keeperCentering(taker.stats.control));
+          scene.setKeeperAim({ gk: origin, target, throwR, puntR: throwR, scatter, kind: 'throw', pCenter }, 'throwin');
           if (mouse.clicked) {
             world.gkLaunch(throwAim.taker, target, 'throw', scatter);
             let best = -1;
@@ -1459,7 +1734,7 @@ async function boot() {
             });
             if (best >= 0) cursor.assign(best);
             throwAim = null;
-            scene.setKeeperAim(null);
+            scene.setKeeperAim(null, 'throwin');
           }
         }
       }
@@ -1492,10 +1767,14 @@ async function boot() {
 
     scene.setControlled(cursor.idx);
     scene.setSwitchTarget(tutorial ? tutorial.switchTargetFor(cursor.suggested) : cursor.suggested);
+    scene.setHoverTarget(pickTeammate()); // the man a click would hand you
     scene.setBallGlow(ballIsMine());
     scene.setPing(netRole && net && net.rtt > 0 ? net.rtt : null);
-    // stoppage time wears a plus — the referee is letting the move breathe
-    const et = match.halfLength > 0 && match.clock > match.halfLength ? '+' : '';
+    // stoppage wears its NUMBER: the seconds the referee still owes back,
+    // capped at the same board he honors. The chevron stands in for a plus —
+    // the pixel face has no '+' glyph yet
+    const et = match.halfLength > 0 && match.clock > match.halfLength
+      ? ` >${Math.ceil(Math.min(match.stoppage, MAX_STOPPAGE))}` : '';
     scene.setClock(match.halfLength > 0 ? `${match.half === 1 ? '1ST' : '2ND'} ${fmtClock(match.clock)}${et}` : '');
     // the coach speaks on the training ground — one line at a time, unhurried
     if (match.practice) {
@@ -1532,6 +1811,15 @@ async function boot() {
       }
       scene.setSeatTags(tags);
     }
+    // one screen, several hands: every other seat wears the name of the thing
+    // it is holding, so nobody in the room has to ask which man is theirs
+    if (couch.length) scene.setSeatTags(Object.fromEntries(couch.map((cs) => [cs.cursor.idx, cs.seat.label])));
+    // the tape runs under everything, and an armed goal counts itself down.
+    // Drills and the training ground stage their own goals and are left alone.
+    if (!tutorial && !match.practice) {
+      replay.ring.record(match, dt, world.events);
+      replay.cue(dt, world, scene);
+    }
     scene.handleEvents(world.events);
 
     if (fulltimeDelay > 0 && match.finished) {
@@ -1557,6 +1845,9 @@ async function boot() {
       if (screenName === 'match' && match && !paused) {
         if (netRole === 'guest') tickMatchGuest(dt);
         else if (!match.finished || fulltimeDelay > 0) tickMatch(dt);
+      } else if (paused) { // the pause board owns the screen outright
+        replay.root.visible = false;
+        celebrateCard.visible = false;
       }
       if (screenName === 'menu' && attract) advanceMatch(attract.match, dt); // the backdrop plays on
       activeScreen?.update?.(dt);
@@ -1567,7 +1858,7 @@ async function boot() {
     },
   );
 
-  app.stage.addChild(uiRoot);
+  app.stage.addChild(celebrateCard, uiRoot);
   toMenu();
   loop.start();
 
@@ -1582,12 +1873,28 @@ async function boot() {
       get suggested() { return cursor?.suggested ?? -1; },
       get passHints() { return passHints; },
       get keeperAiming() { return keeperAiming; },
+      get replay() { return replay; },
       get cursor() { return cursor; },
       get seatCursors() { return [...seatCursors.entries()].map(([s, sc]) => ({ seat: s, team: sc.team, captain: sc.cursor.isCaptain, idx: sc.cursor.idx })); },
+      get couch() { return [{ id: primary?.id ?? null, team: 0, idx: cursor?.idx ?? -1 }, ...couch.map((cs) => ({ id: cs.seat.id, team: cs.team, idx: cs.cursor.idx }))]; },
+      get celebrate() { return celebrate; },
       get remoteGk() { return remoteGk; },
       menu, draftScreen,
     };
   }
+}
+
+// The outfield shirt nearest a spot, skipping anyone already being worn — how
+// a fresh couch seat is handed a body nobody else is holding
+function nearestOutfield(world: World, team: 0 | 1, at: Vec2, worn: Set<number>): number {
+  let best = -1;
+  let bestD = Infinity;
+  world.players.forEach((p, i) => {
+    if (p.id.team !== team || p.id.role === 'GK' || worn.has(i)) return;
+    const d = dist(p.pos, at);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  return best;
 }
 
 // The couch aid: which teammates can this pass actually REACH? True positions,
