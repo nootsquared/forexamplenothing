@@ -1,4 +1,4 @@
-import { Container, Graphics, Sprite } from 'pixi.js';
+import { Container, Graphics, Rectangle, Sprite } from 'pixi.js';
 import { GameAssets } from '../render/assets';
 import { PixelText } from '../render/pixelText';
 import { audio } from '../audio/engine';
@@ -548,47 +548,32 @@ export class MenuScreen implements Screen {
 const SHINE_CYCLE = 7; // seconds between wordmark glints
 
 // --------------------------------------------------------------- the couch
-// LOCAL MULTIPLAYER's front room: one screen, one ball, a row for every
-// device on the table. A pad sits down by pressing any two of its buttons —
-// the console handshake — and the keyboard's two pairs of hands sit down on
-// their own keys. Every seat picks its own side with its own sticks, so the
-// whole couch is choosing at once instead of queueing behind one cursor.
+// LOCAL MULTIPLAYER, built like the party room online — the same boards, the
+// same chairs, the same nod before the whistle, except the friends are in the
+// room instead of on the wire. A pad sits down with A, nods with A again and
+// stands with B; the keyboard's two pairs of hands do it on their own keys.
+// Everybody chooses at once, so nobody queues behind one cursor.
 const SIDE_TINT = [0xff9c8a, 0x9cc4f0]; // the compare card's two sides
 const SIDE_NAME = ['HOME', 'AWAY'];
-const JOIN_ROW_H = 58;
-const JOIN_ROW_GAP = 8;
-const JOIN_BTN_H = 38;
-
-interface JoinRow {
-  device: SeatDevice;
-  box: Container;
-  plate: Graphics;
-  glow: Graphics;
-  name: PixelText;
-  chip: PixelText;    // the side, once seated
-  prompt: PixelText;  // the handshake, while the seat is empty
-  hint: PixelText;
-  stamp: string;      // what the row last painted — repaint only on a change
-  lit: number;        // how hard this device's buttons are being leaned on
-  heard: number;      // buttons down last frame, so a fresh press can be heard
-}
+const COUCH_PANE = 1360;  // the wide room, same as the online party
+const CHAIRS = 11;
+const CONSOLE_H = 264;    // the room the whistle console keeps at the foot
+// One dialect per line at the foot, exactly where the online party prints its
+// hints — the device in gold, its buttons quiet beside it
+const COUCH_HANDSHAKE: [string, string][] = [
+  ['PAD', 'A SITS DOWN - A AGAIN READIES - B BACKS OUT - START KICKS OFF'],
+  ['KEYBOARD', 'BACKSPACE SITS DOWN - A D PICK A SIDE - ENTER READIES'],
+  ['SEAT TWO', '. AND / SIT DOWN - ARROWS PICK A SIDE - M READIES'],
+];
 
 export class LocalJoinScreen implements Screen {
   root = new Container();
   onStart: () => void = () => {};
   onBack: () => void = () => {};
-  private title: PixelText;
-  private crumb: PixelText;
-  private blurb: PixelText[];
-  private note: PixelText;          // why START is dark, when it is
-  private rowsBox = new Container();
-  private views = new Map<string, JoinRow>();
-  private startBtn = new Container();
-  private startPlate = new Graphics();
-  private startLabel: PixelText;
-  private backBtn = new Container();
-  private backPlate = new Graphics();
-  private backLabel: PixelText;
+  private head = new Container();
+  private boards = [new Container(), new Container()];
+  private tunnel = new Container();
+  private foot = new Container();
   private shade = new Graphics();
   private mark = new Graphics();
   private motes = new BeamMotes();
@@ -597,55 +582,21 @@ export class LocalJoinScreen implements Screen {
   private reveal = new Reveal();
   private drop = new Drop();
   private dust = new PixelDust();
+  private nods = new Set<string>();          // devices that have nodded
+  private lit = new Map<string, number>();   // how hard a device is being leaned on
+  private heard = new Map<string, number>(); // buttons down last frame, per device
+  private glows = new Map<string, Graphics>();
   private downKeys = new Set<string>();
   private comboHeld = false;
-  private armed: boolean | null = null; // what the KICK OFF plate last painted
-  private btnW = 0;
+  private nodHeld = false;
+  private settle = false; // the button that OPENED this room never also answers it
+  private stamp = '';
   private w = 1280;
   private h = 720;
 
   constructor(private assets: GameAssets, private kb: Keyboard) {
-    this.title = new PixelText(assets, 5, GOLD);
-    this.title.text = 'LOCAL MULTIPLAYER';
-    this.crumb = new PixelText(assets, 2, 0x8a91a0);
-    this.crumb.text = 'COUCH PLAY';
-    this.blurb = [
-      'ONE SCREEN - ONE BALL - EVERYBODY IN THE ROOM.',
-      'SIT DOWN - PICK A SIDE - KICK OFF.',
-    ].map((line) => {
-      const t = new PixelText(assets, 2, 0x69707f, 'micro');
-      t.text = line;
-      return t;
-    });
-    this.note = new PixelText(assets, 2, 0x8a91a0, 'micro');
-    this.startLabel = this.dressButton(this.startBtn, this.startPlate, 'KICK OFF!', GOLD, () => this.go());
-    this.backLabel = this.dressButton(this.backBtn, this.backPlate, 'BACK', 0x8a91a0, () => this.back());
     this.backdrop.addChild(this.shade, this.mark, this.grass.soil, this.grass.back, this.grass.front, this.motes.g);
-    this.root.addChild(this.backdrop, this.title, this.crumb, ...this.blurb, this.rowsBox, this.note, this.startBtn, this.backBtn, this.dust.g);
-  }
-
-  // A plate that answers the hand: menu cloth, crop-mark corners, a label on
-  // its true cell height. The shell's button, without a second dialect.
-  private dressButton(box: Container, plate: Graphics, text: string, tone: number, tap: () => void): PixelText {
-    const label = new PixelText(this.assets, 3, 0xe8ecf4);
-    label.text = text;
-    box.addChild(plate, label);
-    box.eventMode = 'static';
-    box.cursor = 'pointer';
-    box.on('pointerover', () => { label.tint = tone; audio.ui('move', 0.35); });
-    box.on('pointerout', () => { label.tint = 0xe8ecf4; });
-    box.on('pointertap', tap);
-    return label;
-  }
-
-  private drawButton(plate: Graphics, label: PixelText, bw: number, tone: number, live: boolean) {
-    plate.clear();
-    plate.rect(-bw / 2, 0, bw, JOIN_BTN_H).fill({ color: 0x0d1119, alpha: live ? 0.92 : 0.7 });
-    plate.rect(-bw / 2, 0, bw, 2).fill({ color: tone, alpha: live ? 0.6 : 0.2 });
-    plate.rect(-bw / 2, JOIN_BTN_H - 2, bw, 2).fill({ color: 0x000000, alpha: 0.5 });
-    cornerMarks(plate, -bw / 2, 0, bw, JOIN_BTN_H, tone, live ? 0.68 : 0.2);
-    label.alpha = live ? 1 : 0.45;
-    label.centerAt(0, Math.round((JOIN_BTN_H - label.textHeight) / 2));
+    this.root.addChild(this.backdrop, this.head, this.boards[0], this.boards[1], this.tunnel, this.foot, this.dust.g);
   }
 
   // The devices on the table right now, in couch order — the two pairs of
@@ -656,95 +607,15 @@ export class LocalJoinScreen implements Screen {
     return list;
   }
 
-  // A pad joins the table mid-lobby: build its row and DROP it in, so a
-  // plugged-in controller announces itself before anyone presses anything
-  private syncRows(animate: boolean) {
-    const want = this.bench();
-    const ids = new Set(want.map(deviceId));
-    let changed = false;
-    for (const [id, row] of this.views) {
-      if (ids.has(id)) continue;
-      row.box.destroy({ children: true });
-      this.views.delete(id);
-      roster.leave(id); // a pad yanked out of the wall gives up its seat
-      changed = true;
-    }
-    const fresh = want.filter((d) => !this.views.has(deviceId(d))).map((d) => this.buildRow(d));
-    if (!changed && !fresh.length) return;
-    this.place();
-    this.drop.finish(); // half-flown rows settle before the next arrival
-    this.drop.clear();
-    fresh.forEach((row, i) => this.drop.add(row.box, animate ? i * 0.06 : 0, { from: 18, dur: 0.26 }));
-    this.drop.play();
-    if (!animate && fresh.length) audio.ui('card', 0.5);
-  }
-
-  private buildRow(device: SeatDevice): JoinRow {
-    const box = new Container();
-    const plate = new Graphics();
-    const glow = new Graphics();
-    const name = new PixelText(this.assets, 3, 0xdfe4ee);
-    name.text = deviceLabel(device);
-    const chip = new PixelText(this.assets, 3, GOLD);
-    const prompt = new PixelText(this.assets, 2, 0x8a91a0, 'micro');
-    const hint = new PixelText(this.assets, 2, 0x69707f, 'micro');
-    box.addChild(plate, glow, name, chip, prompt, hint);
-    box.eventMode = 'static';
-    box.cursor = 'pointer';
-    // the mouse gets the same two verbs the hands do: sit down, or swap sides
-    box.on('pointertap', () => {
-      const seat = roster.seat(deviceId(device));
-      if (seat) this.side(seat, seat.team === 0 ? 1 : 0);
-      else if (device.kind === 'keys') this.sit(device);
-      else audio.ui('denied');
+  // Everything the room could paint differently — one string, so a table full
+  // of pads never rebuilds a single plate per frame
+  private roomStamp(): string {
+    const seats = this.bench().map((d) => {
+      const id = deviceId(d);
+      const seat = roster.seat(id);
+      return `${id}:${seat ? seat.team : '-'}${this.nods.has(id) ? '!' : ''}`;
     });
-    const row: JoinRow = { device, box, plate, glow, name, chip, prompt, hint, stamp: '', lit: 0, heard: 0 };
-    this.views.set(deviceId(device), row);
-    this.rowsBox.addChild(box);
-    return row;
-  }
-
-  private rowWidth() {
-    return Math.round(Math.max(430, Math.min(580, this.w * 0.42)));
-  }
-
-  // A row only redraws when what it SAYS changes — the lean-on glow rides
-  // alpha, so a couch full of pads never repaints a plate per frame
-  private paintRow(row: JoinRow) {
-    const seat = roster.seat(deviceId(row.device));
-    const bw = this.rowWidth();
-    const stamp = `${bw}|${seat ? seat.team : 'x'}`;
-    if (row.stamp === stamp) return;
-    row.stamp = stamp;
-    const joined = !!seat;
-    const g = row.plate;
-    g.clear();
-    g.rect(-bw / 2, 0, bw, JOIN_ROW_H).fill({ color: 0x0d1119, alpha: joined ? 0.9 : 0.7 });
-    if (joined) g.rect(-bw / 2, 0, bw, 2).fill({ color: GOLD, alpha: 0.5 });
-    g.rect(-bw / 2, JOIN_ROW_H - 2, bw, 2).fill({ color: 0x000000, alpha: 0.5 });
-    g.rect(-bw / 2, 2, 1, JOIN_ROW_H - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
-    g.rect(bw / 2 - 1, 2, 1, JOIN_ROW_H - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
-    cornerMarks(g, -bw / 2, 0, bw, JOIN_ROW_H, joined ? MINT : 0x8a91a0, joined ? 0.68 : 0.22);
-    row.glow.clear();
-    row.glow.rect(-bw / 2 + 1, 1, bw - 2, JOIN_ROW_H - 2).fill({ color: MINT, alpha: 0.18 });
-    row.name.tint = joined ? 0xdfe4ee : 0x8a91a0;
-    row.name.position.set(-bw / 2 + 16, 11);
-    row.chip.visible = joined;
-    row.prompt.visible = !joined;
-    if (seat) {
-      row.chip.text = `< ${SIDE_NAME[seat.team]} >`;
-      row.chip.tint = SIDE_TINT[seat.team];
-      row.chip.position.set(bw / 2 - 16 - row.chip.textWidth, 15);
-    } else {
-      row.prompt.text = row.device.kind === 'pad' ? 'PRESS TWO BUTTONS TO JOIN'
-        : row.device.hands === 0 ? 'PRESS BACKSPACE TO JOIN' : 'PRESS . AND / TO JOIN';
-      row.prompt.position.set(bw / 2 - 16 - row.prompt.textWidth, 22);
-    }
-    row.hint.text = !joined ? ''
-      : row.device.kind === 'pad' ? 'DPAD PICKS A SIDE - B STANDS UP'
-      : row.device.hands === 0 ? 'A AND D PICK A SIDE - BACKSPACE STANDS UP'
-      : 'ARROWS PICK A SIDE - . AND / STANDS UP';
-    row.hint.position.set(-bw / 2 + 16, 39);
+    return `${this.w}x${this.h}|${seats.join(',')}`;
   }
 
   // ------------------------------------------------------------ sitting down
@@ -754,16 +625,13 @@ export class LocalJoinScreen implements Screen {
     const seat = roster.join(device, team);
     audio.ui('select');
     seat.rumble(0.55, 130);
-    const row = this.views.get(seat.id);
-    if (row) {
-      row.lit = 1;
-      this.dust.burst(this.rowsBox.position.x, this.rowsBox.position.y + row.box.position.y + JOIN_ROW_H, this.rowWidth() * 0.5, 10);
-    }
+    this.lit.set(seat.id, 1);
   }
 
   private stand(id: string) {
     if (!roster.seat(id)) return;
     roster.leave(id);
+    this.nods.delete(id);
     audio.ui('back');
   }
 
@@ -779,16 +647,34 @@ export class LocalJoinScreen implements Screen {
     audio.ui('move', 0.8);
   }
 
+  // The nod: one seat saying it is ready. The whistle waits for all of them.
+  private nod(id: string, on: boolean) {
+    if (!roster.seat(id) || this.nods.has(id) === on) return;
+    if (on) this.nods.add(id);
+    else this.nods.delete(id);
+    audio.ui(on ? 'select' : 'back', 0.8);
+    roster.seat(id)?.rumble(on ? 0.4 : 0.2, 80);
+  }
+
+  // Who the room is still waiting on, in plain words
+  private blocker(): string | null {
+    if (!roster.active) return 'NOBODY IS SITTING DOWN YET';
+    if (!roster.ready) return 'EACH SIDE NEEDS A PLAYER';
+    const waiting = roster.seats.filter((s) => !this.nods.has(s.id));
+    if (!waiting.length) return null;
+    return waiting.length === 1
+      ? `WAITING ON ${waiting[0].label}`
+      : `WAITING ON ${waiting.length} PLAYERS TO READY UP`;
+  }
+
   private go() {
-    if (!roster.ready) return audio.ui('denied');
+    if (this.blocker()) return audio.ui('denied');
     audio.ui('select');
-    pads.exclusive = false;
     this.onStart();
   }
 
   private back() {
     audio.ui('back');
-    pads.exclusive = false;
     roster.clear();
     this.onBack();
   }
@@ -807,19 +693,31 @@ export class LocalJoinScreen implements Screen {
   private readPads() {
     for (const pad of pads.devices) {
       const device: SeatDevice = { kind: 'pad', index: pad.index };
-      const row = this.views.get(deviceId(device));
-      const seat = roster.seat(deviceId(device));
-      if (row) {
-        if (pad.held > row.heard && !seat) audio.ui('move', 0.3); // heard you
-        row.heard = pad.held;
-        row.lit = Math.max(row.lit, seat ? 0 : Math.min(1, pad.held / 2));
-      }
+      const id = deviceId(device);
+      const seat = roster.seat(id);
       if (!seat) {
-        if (pad.held >= 2) this.sit(device);
+        if (pad.down > (this.heard.get(id) ?? 0)) audio.ui('move', 0.3); // heard you
+        this.lit.set(id, Math.max(this.lit.get(id) ?? 0, Math.min(1, pad.down * 0.7)));
+      }
+      this.heard.set(id, pad.down);
+      if (!seat) {
+        if (pad.pressed('a') || pad.pressed('start')) this.sit(device);
+        // B backs out one rung at a time, and from an empty chair the last
+        // rung is the door — a pad can always leave the room it walked into
+        else if (pad.pressed('b')) this.back();
         continue;
       }
-      if (pad.pressed('b')) { this.stand(seat.id); continue; }
-      if (pad.pressed('start')) this.go();
+      if (pad.pressed('b')) {
+        if (this.nods.has(id)) this.nod(id, false);
+        else this.stand(id);
+        continue;
+      }
+      if (pad.pressed('a')) {
+        if (this.nods.has(id)) this.go();
+        else this.nod(id, true);
+        continue;
+      }
+      if (pad.pressed('start')) { this.go(); continue; }
       for (const code of pad.navCodes()) {
         if (code === 'ArrowLeft') this.side(seat, 0);
         else if (code === 'ArrowRight') this.side(seat, 1);
@@ -830,11 +728,16 @@ export class LocalJoinScreen implements Screen {
   private readKeys() {
     if (this.edge('Backspace')) this.toggleSeat({ kind: 'keys', hands: 0 });
     const combo = SECOND_JOIN.every((code) => this.kb.has(code));
-    const half = SECOND_JOIN.some((code) => this.kb.has(code));
     if (combo && !this.comboHeld) this.toggleSeat({ kind: 'keys', hands: 1 });
     this.comboHeld = combo;
-    const row = this.views.get('keys1');
-    if (row && !roster.has({ kind: 'keys', hands: 1 })) row.lit = Math.max(row.lit, half ? 0.6 : 0);
+    // seat two nods on M, beside its own cluster — the join combo stays the
+    // join combo, and nothing it presses to sit down can also mean yes
+    const nodKey = this.kb.has('KeyM');
+    if (nodKey && !this.nodHeld && roster.has({ kind: 'keys', hands: 1 })) this.nod('keys1', !this.nods.has('keys1'));
+    this.nodHeld = nodKey;
+    if (!roster.has({ kind: 'keys', hands: 1 })) {
+      this.lit.set('keys1', SECOND_JOIN.some((code) => this.kb.has(code)) ? 0.6 : 0);
+    }
   }
 
   key(code: string) {
@@ -842,47 +745,60 @@ export class LocalJoinScreen implements Screen {
     const second = roster.seat('keys1');
     if (first && (code === 'KeyA' || code === 'KeyD')) this.side(first, code === 'KeyA' ? 0 : 1);
     if (second && (code === 'ArrowLeft' || code === 'ArrowRight')) this.side(second, code === 'ArrowLeft' ? 0 : 1);
-    if (code === 'Enter' || code === 'Space') this.go();
+    if (code === 'Enter' || code === 'Space') {
+      if (first && !this.nods.has('keys0')) this.nod('keys0', true);
+      else this.go();
+    }
     if (code === 'Escape') this.back();
   }
 
   // The room opens with the hands that opened it already seated — whoever
   // walked in here is player one, and the rest of the table joins around them
   enter() {
-    pads.exclusive = true;
+    pads.hold();
     roster.clear();
-    for (const row of this.views.values()) row.box.destroy({ children: true });
-    this.views.clear();
+    this.nods.clear();
+    this.lit.clear();
+    this.heard.clear();
     this.downKeys.clear();
     this.comboHeld = false;
-    this.armed = null;
+    this.nodHeld = false;
+    this.settle = true;
     roster.join({ kind: 'keys', hands: 0 }, 0);
-    this.reveal.clear();
-    this.reveal.add(this.title, 0);
-    this.reveal.add(this.crumb, 0.08);
-    this.blurb.forEach((line, i) => this.reveal.add(line, 0.14 + i * 0.06));
+    this.stamp = '';
+    this.rebuild();
     this.reveal.play();
-    this.syncRows(true);
+    this.drop.clear();
+    this.drop.add(this.boards[0], 0.06, { from: 26, dur: 0.3 });
+    this.drop.add(this.boards[1], 0.12, { from: 26, dur: 0.3 });
+    this.drop.add(this.tunnel, 0.18, { from: 20, dur: 0.28 });
+    this.drop.add(this.foot, 0.24, { from: 20, dur: 0.28, onImpact: () => audio.ui('card', 0.5) });
+    this.drop.play();
   }
 
   update(dt: number) {
-    this.syncRows(false);
-    this.readPads();
-    this.readKeys();
-    const ready = roster.ready;
-    if (ready !== this.armed || this.rowWidth() !== this.btnW) {
-      this.armed = ready;
-      this.btnW = this.rowWidth();
-      this.note.text = ready ? 'PRESS ENTER OR START WHEN THE ROOM IS READY' : 'EACH SIDE NEEDS A PLAYER';
-      this.note.tint = ready ? MINT : 0x8a91a0;
-      this.note.centerAt(this.w / 2, this.note.position.y);
-      this.drawButton(this.startPlate, this.startLabel, this.btnW, GOLD, ready);
-      this.drawButton(this.backPlate, this.backLabel, Math.round(this.btnW * 0.45), 0x8a91a0, true);
+    pads.hold(); // the claim is refreshed while this room is alive, and only here
+    if (this.settle) {
+      // the A that picked LOCAL MULTIPLAYER is still down on this very frame —
+      // let it go before anybody sits down on it
+      this.settle = false;
+      for (const pad of pads.devices) this.heard.set(deviceId({ kind: 'pad', index: pad.index }), pad.down);
+      for (const code of ['Backspace', ...SECOND_JOIN, 'KeyM']) if (this.kb.has(code)) this.downKeys.add(code);
+      this.comboHeld = SECOND_JOIN.every((code) => this.kb.has(code));
+      this.nodHeld = this.kb.has('KeyM');
+    } else {
+      // a pad pulled out of the hub leaves its chair AND its nod behind, or
+      // the room would wait forever on hands that walked away
+      for (const id of roster.prune()) this.nods.delete(id);
+      this.readPads();
+      this.readKeys();
     }
-    for (const row of this.views.values()) {
-      this.paintRow(row);
-      row.lit = Math.max(0, row.lit - dt * 3.2);
-      row.glow.alpha = row.lit;
+    const stamp = this.roomStamp();
+    if (stamp !== this.stamp) this.rebuild();
+    for (const [id, glow] of this.glows) {
+      const lit = Math.max(0, (this.lit.get(id) ?? 0) - dt * 3.2);
+      this.lit.set(id, lit);
+      glow.alpha = lit;
     }
     this.reveal.update(dt);
     this.drop.update(dt);
@@ -891,46 +807,210 @@ export class LocalJoinScreen implements Screen {
     this.grass.update(dt);
   }
 
-  // The couch stacks like every other screen: measured pieces from one top,
-  // and a table full of pads lifts that top instead of running off the frame
-  private place() {
-    const { w, h } = this;
-    const head = this.title.textHeight + 14 + this.crumb.textHeight + 18
-      + this.blurb.reduce((sum, line) => sum + line.textHeight + 5, 0) + 22;
-    const body = this.views.size * (JOIN_ROW_H + JOIN_ROW_GAP) + this.note.textHeight + 12
-      + JOIN_BTN_H + 10 + JOIN_BTN_H;
-    let y = Math.max(20, Math.min(Math.round(h * 0.13), h - 20 - head - body));
-    this.title.centerAt(w / 2, y);
-    y += this.title.textHeight + 14;
-    this.crumb.centerAt(w / 2, y);
-    y += this.crumb.textHeight + 18;
-    for (const line of this.blurb) {
-      line.centerAt(w / 2, y);
-      y += line.textHeight + 5;
-    }
-    y += 22;
-    this.rowsBox.position.set(Math.round(w / 2), y);
-    [...this.views.values()].forEach((row, i) => {
-      row.box.position.set(0, i * (JOIN_ROW_H + JOIN_ROW_GAP));
-      row.stamp = ''; // a new width means a new plate
-    });
-    y += this.views.size * (JOIN_ROW_H + JOIN_ROW_GAP) + 2;
-    this.note.centerAt(w / 2, y);
-    y += this.note.textHeight + 12;
-    this.startBtn.position.set(Math.round(w / 2), y);
-    y += JOIN_BTN_H + 10;
-    this.backBtn.position.set(Math.round(w / 2), y);
-  }
-
   layout(w: number, h: number) {
     this.w = w;
     this.h = h;
-    centerShade(this.shade, w, h);
-    const beam = pillarBounds(w);
+    centerShade(this.shade, w, h, Math.min(COUCH_PANE, w - 60));
+    const beam = pillarBounds(w, Math.min(COUCH_PANE, w - 60));
     pitchMark(this.mark, w, h, beam.x0, beam.x1);
     this.motes.layout(beam.x0, beam.x1, h);
     this.grass.layout(beam.x0, beam.coreW, h);
-    this.place();
+    // a resize is a hard cut: anything still in the air lands before the room
+    // re-measures, or it would keep writing the old size's rest
+    this.drop.finish();
+    this.rebuild();
+  }
+
+  // ---------------------------------------------------------------- painting
+  private put(into: Container, text: string, size: number, color: number, x: number, y: number, center = true, micro = false) {
+    const t = new PixelText(this.assets, size, color, micro ? 'micro' : 'main');
+    t.text = text;
+    if (center) t.centerAt(x, y);
+    else t.position.set(x, y);
+    into.addChild(t);
+    return t;
+  }
+
+  // A pixel button that answers the hand: cloth plate, corner studs, the
+  // label on its TRUE ink height. The shell's button, without a second dialect.
+  private button(into: Container, label: string, cx: number, y: number, bw: number, tone: number, tap: (() => void) | null, size = 3): number {
+    const bh = size >= 3 ? 36 : 28;
+    const live = tap !== null;
+    const box = new Container();
+    const g = new Graphics();
+    const x = Math.round(cx - bw / 2);
+    g.rect(x, y, bw, bh).fill({ color: 0x0d1119, alpha: live ? 0.92 : 0.62 });
+    g.rect(x, y, bw, 2).fill({ color: tone, alpha: live ? 0.6 : 0.18 });
+    g.rect(x, y + bh - 2, bw, 2).fill({ color: 0x000000, alpha: 0.5 });
+    g.rect(x, y + 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    g.rect(x + bw - 1, y + 2, 1, bh - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    cornerMarks(g, x, y, bw, bh, tone, live ? 0.68 : 0.18);
+    const t = new PixelText(this.assets, size, live ? 0xe8ecf4 : 0x4a5160);
+    t.text = label;
+    t.centerAt(cx, y + Math.round((bh - t.textHeight) / 2));
+    box.addChild(g, t);
+    if (live) {
+      box.eventMode = 'static';
+      box.cursor = 'pointer';
+      box.hitArea = new Rectangle(x, y, bw, bh);
+      box.on('pointerover', () => { t.tint = tone; audio.ui('move', 0.35); });
+      box.on('pointerout', () => { t.tint = 0xe8ecf4; });
+      box.on('pointertap', tap);
+    }
+    into.addChild(box);
+    return bh;
+  }
+
+  private rebuild() {
+    const { w, h } = this;
+    this.stamp = this.roomStamp();
+    this.glows.clear();
+    for (const box of [this.head, this.boards[0], this.boards[1], this.tunnel, this.foot]) {
+      box.removeChildren().forEach((c) => c.destroy({ children: true }));
+    }
+    this.reveal.clear();
+
+    // the invitation plate — the couch's answer to the online room code
+    const headG = new Graphics();
+    this.head.addChild(headG);
+    this.plate(headG, w / 2 - 190, 20, 380, 92, GOLD);
+    const title = this.put(this.head, 'LOCAL MULTIPLAYER', 4, GOLD, w / 2, 38);
+    const crumb = this.put(this.head, 'ONE SCREEN - ONE BALL - EVERYBODY IN THE ROOM', 2, 0x8a91a0, w / 2, 76, true, true);
+    const sub = this.put(this.head, 'SIT DOWN - PICK A SIDE - NOD WHEN YOU ARE READY', 2, 0x69707f, w / 2, 126, true, true);
+    this.reveal.add(title, 0);
+    this.reveal.add(crumb, 0.07);
+    this.reveal.add(sub, 0.13);
+
+    const bw = Math.round(Math.min(400, w * 0.3));
+    const by = 158;
+    // the board is exactly as tall as the eleven shirts it holds — the plate
+    // never runs on past its last chair
+    const crown = 18 + this.assets.manifest.font.cellH * 5 + 14 + 12 + 24 + 28 + 14;
+    const consoleY = h - CONSOLE_H;
+    const pitch = Math.max(15, Math.min(28, Math.floor((consoleY - 28 - by - crown) / CHAIRS)));
+    const bh = crown + pitch * CHAIRS + 14;
+    const bx = [Math.round(w * 0.055), Math.round(w - w * 0.055 - bw)];
+
+    ([0, 1] as const).forEach((team) => {
+      const box = this.boards[team];
+      const g = new Graphics();
+      box.addChild(g);
+      const x = bx[team];
+      const cx = x + bw / 2;
+      const tint = SIDE_TINT[team];
+      this.plate(g, x, by, bw, bh, tint);
+      const name = this.put(box, SIDE_NAME[team], 5, tint, cx, by + 18);
+      let y = by + 18 + name.textHeight + 14;
+      // kit swatch: shirt and change shirt, a whisper of the wardrobe
+      g.rect(cx - 23, y, 20, 12).fill({ color: tint, alpha: 0.95 });
+      g.rect(cx + 3, y, 20, 12).fill({ color: 0xf2f5fa, alpha: 0.8 });
+      y += 24;
+
+      // the mouse always speaks for the keyboard — one button, like online
+      const keysSeat = roster.seat('keys0');
+      const mine = keysSeat?.team === team;
+      const label = !keysSeat ? 'SIT HERE' : mine ? 'STAND UP' : 'MOVE HERE';
+      const btnH = this.button(box, label, cx, y, bw - 44, mine ? 0x8a91a0 : tint, () => {
+        if (!keysSeat) { this.sit({ kind: 'keys', hands: 0 }); return; }
+        if (mine) this.stand('keys0');
+        else this.side(keysSeat, team);
+      }, 2);
+
+      // eleven chairs: the room's humans first, then the shirts the AI wears
+      const top = y + btnH + 14;
+      const seated = roster.forTeam(team);
+      for (let i = 0; i < CHAIRS; i++) {
+        const cy = top + i * pitch;
+        const seat = seated[i];
+        const nodded = seat && this.nods.has(seat.id);
+        g.rect(x + 16, cy, bw - 32, pitch - 4).fill({ color: seat ? 0x161b26 : 0x10141c, alpha: seat ? 0.95 : 0.5 });
+        g.rect(x + 16, cy, 3, pitch - 4).fill({ color: seat ? (nodded ? MINT : tint) : 0x2a3040, alpha: 0.9 });
+        const ty = cy + Math.round((pitch - 4 - 10) / 2);
+        if (!seat) {
+          this.put(box, 'AI', 2, 0x3d4454, x + 30, ty, false, true);
+          continue;
+        }
+        this.put(box, seat.label, 2, nodded ? MINT : 0xdfe4ee, x + 30, ty, false, true);
+        const chip = this.put(box, nodded ? 'READY' : '...', 2, nodded ? MINT : 0x565d6d, 0, ty, false, true);
+        chip.position.x = x + bw - 30 - chip.textWidth;
+        const glow = new Graphics();
+        glow.rect(x + 17, cy + 1, bw - 34, pitch - 6).fill({ color: MINT, alpha: 0.2 });
+        glow.alpha = 0;
+        box.addChild(glow);
+        this.glows.set(seat.id, glow);
+      }
+    });
+
+    // ------------------------------------------------------- the tunnel
+    // everything still on the table, waiting to be picked up
+    const tg = new Graphics();
+    this.tunnel.addChild(tg);
+    const mid = Math.round(w / 2);
+    const midW = Math.min(360, Math.max(240, bx[1] - (bx[0] + bw) - 80));
+    const waiting = this.bench().filter((d) => !roster.has(d));
+    this.put(this.tunnel, 'ON THE TABLE', 2, 0x8a91a0, mid, by + 6, true, true);
+    if (!waiting.length) {
+      this.put(this.tunnel, 'EVERY DEVICE IS SEATED', 2, MINT, mid, by + 34, true, true);
+    }
+    waiting.forEach((device, i) => {
+      const id = deviceId(device);
+      const cy = by + 30 + i * 62;
+      tg.rect(mid - midW / 2, cy, midW, 54).fill({ color: 0x0d1119, alpha: 0.72 });
+      tg.rect(mid - midW / 2, cy + 52, midW, 2).fill({ color: 0x000000, alpha: 0.5 });
+      cornerMarks(tg, mid - midW / 2, cy, midW, 54, 0x8a91a0, 0.24);
+      const glow = new Graphics();
+      glow.rect(mid - midW / 2 + 1, cy + 1, midW - 2, 52).fill({ color: MINT, alpha: 0.18 });
+      glow.alpha = 0;
+      this.tunnel.addChild(glow);
+      this.glows.set(id, glow);
+      this.put(this.tunnel, deviceLabel(device), 3, 0xdfe4ee, mid, cy + 10);
+      this.put(this.tunnel, device.kind === 'pad' ? 'PRESS A TO SIT DOWN'
+        : device.hands === 0 ? 'PRESS BACKSPACE TO SIT DOWN'
+        : 'PRESS . AND / TO SIT DOWN', 2, 0x69707f, mid, cy + 34, true, true);
+      const hit = new Container();
+      hit.eventMode = 'static';
+      hit.cursor = 'pointer';
+      hit.hitArea = new Rectangle(mid - midW / 2, cy, midW, 54);
+      hit.on('pointerover', () => { this.lit.set(id, 0.5); });
+      hit.on('pointertap', () => this.sit(device));
+      this.tunnel.addChild(hit);
+    });
+
+    // ------------------------------------------------------- the console
+    // the whistle, the mouse's own nod, and the dialects — the party room's
+    // rhythm: what you are waiting for, what you press, then the fine print
+    const blocker = this.blocker();
+    const keys = roster.seat('keys0');
+    const nodded = this.nods.has('keys0');
+    this.put(this.foot, blocker ?? 'EVERYBODY IS READY - KICK IT OFF', 2, blocker ? 0x8a91a0 : MINT, w / 2, consoleY, true, true);
+    this.button(this.foot, 'KICK OFF!', w / 2, consoleY + 22, 320, GOLD, blocker ? null : () => this.go());
+    const half = 168;
+    this.button(this.foot, nodded ? 'NOT READY' : 'READY UP', w / 2 - half / 2 - 5, consoleY + 68, half,
+      nodded ? 0x8a91a0 : MINT, keys ? () => this.nod('keys0', !nodded) : null, 2);
+    this.button(this.foot, 'BACK', w / 2 + half / 2 + 5, consoleY + 68, half, 0x8a91a0, () => this.back(), 2);
+    // a legend, not three loose sentences: the device names hang off one
+    // gutter and their buttons all start on the next
+    const rows = COUCH_HANDSHAKE.map(([device, line], i) => ({
+      name: this.put(this.foot, device, 2, GOLD, 0, consoleY + 112 + i * 16, false, true),
+      body: this.put(this.foot, line, 2, 0x69707f, 0, consoleY + 112 + i * 16, false, true),
+    }));
+    const gutter = Math.max(...rows.map((r) => r.name.textWidth));
+    const block = gutter + 12 + Math.max(...rows.map((r) => r.body.textWidth));
+    for (const r of rows) {
+      r.name.position.x = Math.round(w / 2 - block / 2 + gutter - r.name.textWidth);
+      r.body.position.x = Math.round(w / 2 - block / 2 + gutter + 12);
+    }
+  }
+
+
+  // A beveled plate with corner studs — the game's panel grammar
+  private plate(g: Graphics, x: number, y: number, pw: number, ph: number, tone: number) {
+    g.rect(x, y, pw, ph).fill({ color: 0x0d1119, alpha: 0.9 });
+    g.rect(x, y, pw, 2).fill({ color: tone, alpha: 0.55 });
+    g.rect(x, y + ph - 2, pw, 2).fill({ color: 0x000000, alpha: 0.5 });
+    g.rect(x, y + 2, 1, ph - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    g.rect(x + pw - 1, y + 2, 1, ph - 4).fill({ color: 0xfff8e0, alpha: 0.12 });
+    cornerMarks(g, x, y, pw, ph, tone, 0.55);
   }
 }
 
@@ -1328,6 +1408,7 @@ const PAUSE_COL = 150; // half the gap between the two number columns
 export class PauseScreen implements Screen {
   root = new Container();
   onResume: () => void = () => {};
+  onControls: () => void = () => {}; // the controls card, called up from the board
   onQuit: () => void = () => {};
   onClosed: () => void = () => {}; // fired when the lift-out finishes
   private list: PixelList;
@@ -1356,8 +1437,8 @@ export class PauseScreen implements Screen {
     this.foot = new PixelText(assets, 2, 0x69707f);
     this.foot.text = 'ESC RESUME - W S PICK - ENTER GO';
     this.list = new PixelList(assets, 3, 30, 4, 13, true);
-    this.list.setRows([{ label: 'RESUME', enabled: true }, { label: 'QUIT TO MENU', enabled: true }]);
-    this.list.onPick = (i) => (i === 0 ? this.onResume() : this.onQuit());
+    this.list.setRows([{ label: 'RESUME', enabled: true }, { label: 'CONTROLS', enabled: true }, { label: 'QUIT TO MENU', enabled: true }]);
+    this.list.onPick = (i) => (i === 0 ? this.onResume() : i === 1 ? this.onControls() : this.onQuit());
     for (const label of ['POSSESSION', 'SHOTS', 'ON TARGET', 'PASSES', 'PASS ACC', 'TACKLES', 'SAVES', 'CORNERS']) {
       const l = new PixelText(assets, 2, 0x8f97a8);
       l.text = label;
