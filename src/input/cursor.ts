@@ -4,14 +4,15 @@ import { TeamBrain } from '../ai/blackboard';
 import { leadTarget } from '../ai/brain';
 
 // The team cursor, possession-first: the ball IS control. Whoever on your
-// team has it — after your pass, an interception, a loose-ball pickup — is
-// instantly you. Off the ball nothing moves on its own: E or a click takes the
-// previewed man and OWNS him for a beat, and the T auto-switch mode (off by
-// default) lets the best-placed hunter be handed to you without the press.
-// The preview is never "whoever stands nearest the ball" — when they carry it,
-// it is the man whose legs can still get in FRONT of the run. Never the keeper.
+// team HAS it — after your pass, an interception, a loose-ball pickup — is
+// instantly you. A ball in flight has nobody: it can be cut out, it can be
+// missed, so it never moves you. Off the ball nothing moves on its own: E or a
+// click takes the previewed man and OWNS him for a beat, and the T auto-switch
+// mode (off by default) lets the best-placed hunter be handed to you without
+// the press. The preview is never "whoever stands nearest the ball" — when
+// they carry it, it is the man whose legs can still get in FRONT of the run.
+// Never the keeper.
 
-const MY_BALL_WINDOW = 1.8;  // seconds a kick of yours owns the next receiver call
 const AUTO_COOLDOWN = 0.7;   // auto-mode hunter re-elections never strobe
 const SWITCH_GRACE = 1.2;    // seconds a switch YOU asked for outranks the ball
 const SWITCH_BEAT = 0.25;    // seconds a body change costs before the legs go
@@ -33,7 +34,6 @@ export class TeamCursor {
   // Set pieces belong to the captain — with several seats on a team, only
   // one pair of hands reaches for the dead ball
   isCaptain = true;
-  private myBallT = 0;
   private autoT = 0;
   private graceT = 0;       // the deliberate switch's beat of immunity
   private graceTouch = -1;  // ...whose touch it was granted against
@@ -64,7 +64,6 @@ export class TeamCursor {
   }
 
   update(world: World, bb: TeamBrain, dt: number) {
-    this.myBallT = Math.max(0, this.myBallT - dt);
     this.autoT = Math.max(0, this.autoT - dt);
     // The tick a switch was granted only takes its baseline: whatever the ball
     // was already doing when you pressed is old news, never a reason to snap back
@@ -83,8 +82,6 @@ export class TeamCursor {
       // marks, and you do not restart a half parked at centre-back. Our own
       // kickoff still lands on the taker: he is the one standing over it.
       if (e.kind === 'kickoff') this.take(this.nearestToBall(world, true));
-      // A ball leaving YOUR boot is yours to follow
-      if (e.kind === 'kick' && e.idx === this.idx) this.myBallT = MY_BALL_WINDOW;
       // A ball struck or won is genuinely new business — the grace is spent
       if (!graceFresh && (e.kind === 'kick' || e.kind === 'steal')) this.graceT = 0;
     }
@@ -94,48 +91,28 @@ export class TeamCursor {
     if (graceFresh) this.graceTouch = touchIdx;
     else if (touchIdx !== this.graceTouch) this.graceT = 0; // the ball changed hands
 
-    // The ball is control, from the very first TOUCH: the last teammate to
-    // play it, still standing over it, is YOU — no waiting for an arriving
-    // ball to stop bouncing into formal 'possession' (the possessor gate
-    // ignores airborne balls, which read as switch lag). A carrier another
-    // seat is wearing stays THEIRS; the keeper is never taken.
+    // Control moves on RECEIPT and never a moment sooner: the last teammate to
+    // play it, still standing over it, is YOU — no waiting for an arriving ball
+    // to stop bouncing into formal 'possession' (the possessor gate ignores
+    // airborne balls, which read as switch lag), and equally no being handed a
+    // man a pass was merely AIMED at. A ball cut out or a ball missed leaves
+    // you exactly where you were, in the body you chose. A carrier another seat
+    // is wearing stays THEIRS; the keeper is never taken.
     if (this.graceT <= 0 && world.restartLock <= 0 && lt && lt.team === this.team && lt.idx !== this.idx &&
         world.players[lt.idx].id.role !== 'GK' && !this.claimed(lt.idx) &&
         dist(world.players[lt.idx].pos, world.ball.pos) < 1.7) {
       this.take(lt.idx);
-      this.myBallT = 0;
     }
     // ...and a settled ball at a teammate's feet outranks any pass still
     // being called after it
     if (this.graceT <= 0 && bb.phase === 'attack' && bb.possessorIdx !== null &&
         world.players[bb.possessorIdx].id.role !== 'GK' && !this.claimed(bb.possessorIdx)) {
       this.take(bb.possessorIdx);
-      this.myBallT = 0;
-    }
-    // ...and a pass of yours in flight is switched THE SECOND it leaves: to
-    // the team's named receiver, else to whoever the ball is heading TOWARDS
-    // (the flight-ray prediction). A blocked kick that goes nowhere keeps you.
-    // A receiver worn by a teammate seat keeps his owner — you stay put.
-    if (this.myBallT > 0) {
-      if (bb.calledReceiver >= 0 && bb.calledReceiver !== this.idx && this.take(bb.calledReceiver)) {
-        this.myBallT = 0;
-      } else if (bb.calledReceiver >= 0 && bb.calledReceiver !== this.idx && this.claimed(bb.calledReceiver)) {
-        this.myBallT = 0; // his owner plays the reception; the pass is delivered
-      } else {
-        const predicted = this.myBallT < MY_BALL_WINDOW - 0.033 && world.ball.speed() > 4
-          ? this.receiverOnRay(world)
-          : -1;
-        if (predicted >= 0) {
-          this.take(predicted);
-          this.myBallT = 0;
-        } else if (this.myBallT < MY_BALL_WINDOW - 0.3) {
-          const closest = this.nearestToBall(world, true);
-          if (closest >= 0) this.take(closest);
-          this.myBallT = 0;
-        }
-      }
     }
 
+    // The chevron rides ahead of the switch instead of replacing it: while your
+    // pass is in the air it names the man you are ABOUT to become, and E takes
+    // him early if you back the ball to get there.
     this.suggested = this.elect(world, bb);
 
     // Auto-switch mode: the hunt is handed to you, gently — never mid-chase,
@@ -214,29 +191,6 @@ export class TeamCursor {
       }
       if (i === this.suggested) eta -= HOLD_CREDIT;
       if (eta < bestEta) { bestEta = eta; best = i; }
-    });
-    return best;
-  }
-
-  // The teammate my moving ball is heading TOWARDS: closest to the flight
-  // ray, ahead of the ball — the predicted receiver of the pass just played
-  private receiverOnRay(world: World): number {
-    const sp = world.ball.speed();
-    if (sp < 1e-4) return -1;
-    const dx = world.ball.vel.x / sp;
-    const dy = world.ball.vel.y / sp;
-    let best = -1;
-    let bestScore = Infinity;
-    world.players.forEach((p, i) => {
-      if (p.id.team !== this.team || p.id.role === 'GK' || i === this.idx || this.claimed(i)) return;
-      const tx = p.pos.x - world.ball.pos.x;
-      const ty = p.pos.y - world.ball.pos.y;
-      const along = tx * dx + ty * dy;
-      if (along < 1) return; // behind the ball is not where it's going
-      const perp = Math.abs(tx * dy - ty * dx);
-      if (perp > 10) return;
-      const score = perp * 2 + along * 0.05;
-      if (score < bestScore) { bestScore = score; best = i; }
     });
     return best;
   }
