@@ -287,7 +287,9 @@ export class MenuScreen implements Screen {
     // The stick is the one thing that CANNOT wake a pad — the browser hides it
     // until a button is pressed — so the prompt names the button instead of
     // saying "any input" and leaving a man pushing a dead stick.
-    return pads.connected ? `${here}  -  ${pads.report()}` : `${here}  -  HOLDING A CONTROLLER? PRESS (A) - A STICK ALONE CANNOT WAKE IT`;
+    if (pads.connected) return `${here}  -  ${pads.report()}`;
+    if (pads.blocked !== 'none') return `${here}  -  THIS BROWSER IS BLOCKING CONTROLLERS - CHECK ITS PRIVACY SHIELDS`;
+    return `${here}  -  HOLDING A CONTROLLER? PRESS (A) - A STICK ALONE CANNOT WAKE IT`;
   }
 
   // The plaque redraws for its two lives: loud rookie beacon, quiet veteran row

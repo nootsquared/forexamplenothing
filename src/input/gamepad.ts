@@ -169,6 +169,25 @@ const mergeState = (squad: Pad[]): PadState | null => {
   };
 };
 
+// Some browsers refuse the Gamepad API outright — fingerprint shields and
+// lockdown modes either hide it or THROW on the call. Either way that is news
+// worth printing, not a frame worth crashing: a refused pad must leave the
+// keyboard game running exactly as it was.
+export type PadBlock = 'none' | 'no-api' | 'refused';
+let padBlock: PadBlock = 'none';
+const readBench = (): (Gamepad | null)[] => {
+  if (typeof navigator === 'undefined') return [];
+  if (typeof navigator.getGamepads !== 'function') { padBlock = 'no-api'; return []; }
+  try {
+    const live = navigator.getGamepads() ?? [];
+    padBlock = 'none';
+    return [...live];
+  } catch {
+    padBlock = 'refused';
+    return [];
+  }
+};
+
 export class Gamepads {
   state: PadState | null = null; // the driving hands' freshest poll; null = no pad
   connected = false;
@@ -180,7 +199,7 @@ export class Gamepads {
 
   poll(dt: number) {
     this.holdT = Math.max(0, this.holdT - dt);
-    const live = (typeof navigator === 'undefined' ? [] : navigator.getGamepads?.()) ?? [];
+    const live = readBench();
     const bench: Pad[] = [];
     for (const g of live) {
       if (!g?.connected) continue;
@@ -205,6 +224,13 @@ export class Gamepads {
   // layout is the one everybody agrees on, and echoes the live button and
   // stick — so a pad that arrives but lands wrong looks different on screen
   // from a pad the browser never woke at all.
+  // Why the pads are silent, when they are — a browser refusing the API is a
+  // different sentence from a pad simply asleep, and the man holding it
+  // deserves to be told which
+  get blocked(): PadBlock {
+    return padBlock;
+  }
+
   report(): string {
     const p = this.devices[0];
     if (!p) return '';
