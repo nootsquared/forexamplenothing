@@ -92,6 +92,7 @@ export class MenuScreen implements Screen {
   private crumb: PixelText;
   private crumbY = 0;          // its own rest, so a waking pad can rewrite it in place
   private padAwake = false;
+  private padPulse = 0; // how long a connected-but-sleeping pad has gone unheard
   private socials = new Container();
   private socialBox = new Graphics();
   private socialHeader: PixelText;
@@ -283,7 +284,10 @@ export class MenuScreen implements Screen {
     // A pad that IS awake says so out loud, live. A silent line under a pad
     // you are holding means the browser never woke it — and that is a very
     // different problem from one the game is simply routing wrong.
-    return pads.connected ? `${here}  -  ${pads.report()}` : `${here}  -  CONTROLLER? PRESS ANY BUTTON TO WAKE IT`;
+    // The stick is the one thing that CANNOT wake a pad — the browser hides it
+    // until a button is pressed — so the prompt names the button instead of
+    // saying "any input" and leaving a man pushing a dead stick.
+    return pads.connected ? `${here}  -  ${pads.report()}` : `${here}  -  HOLDING A CONTROLLER? PRESS (A) - A STICK ALONE CANNOT WAKE IT`;
   }
 
   // The plaque redraws for its two lives: loud rookie beacon, quiet veteran row
@@ -452,6 +456,11 @@ export class MenuScreen implements Screen {
       this.crumb.text = padLine;
       this.crumb.centerAt(this.w / 2, this.crumbY);
     }
+    // A sleeping pad is the one thing worth shouting about: gold and breathing
+    // until it wakes, then back to quiet grey furniture the moment it does
+    this.padPulse = pads.connected ? 0 : this.padPulse + dt;
+    this.crumb.tint = pads.connected ? 0xffffff : GOLD;
+    this.crumb.alpha = pads.connected ? 1 : 0.72 + 0.28 * Math.sin(this.padPulse * 3.2);
     // the rookie beacon breathes; a finished tutorial stands still, and a
     // plaque under the walk holds steady so the selection reads as selection
     if (this.tutorFresh && this.tutorBtn.visible && !this.plaqueFocus) {
