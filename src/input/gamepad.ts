@@ -173,8 +173,16 @@ const mergeState = (squad: Pad[]): PadState | null => {
 // lockdown modes either hide it or THROW on the call. Either way that is news
 // worth printing, not a frame worth crashing: a refused pad must leave the
 // keyboard game running exactly as it was.
-export type PadBlock = 'none' | 'no-api' | 'refused';
+export type PadBlock = 'none' | 'no-api' | 'refused' | 'shielded';
 let padBlock: PadBlock = 'none';
+// Brave hides pads behind its fingerprint shields and hands back an EMPTY
+// bench instead of throwing — indistinguishable from "nobody plugged one in"
+// unless we ask the browser who it is. A man holding a live controller has
+// earned the real reason and the one switch that undoes it.
+let shielded = false;
+(navigator as Navigator & { brave?: { isBrave?: () => Promise<boolean> } }).brave
+  ?.isBrave?.().then((yes) => { shielded = yes; })
+  .catch(() => { /* every other browser simply has no lion */ });
 const readBench = (): (Gamepad | null)[] => {
   if (typeof navigator === 'undefined') return [];
   if (typeof navigator.getGamepads !== 'function') { padBlock = 'no-api'; return []; }
@@ -228,6 +236,9 @@ export class Gamepads {
   // different sentence from a pad simply asleep, and the man holding it
   // deserves to be told which
   get blocked(): PadBlock {
+    // a shielded browser only indicts itself once the bench is actually empty
+    // — a pad that got through proves the shields let it
+    if (padBlock === 'none' && shielded && !this.devices.length) return 'shielded';
     return padBlock;
   }
 
