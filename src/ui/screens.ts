@@ -280,7 +280,10 @@ export class MenuScreen implements Screen {
   // usually just asleep. The line disappears the moment one answers.
   private crumbText() {
     const here = this.page === 'root' ? 'MAIN MENU' : this.page === 'play' ? 'PLAY' : 'SETTINGS';
-    return pads.connected ? here : `${here}  -  CONTROLLER? PRESS ANY BUTTON TO WAKE IT`;
+    // A pad that IS awake says so out loud, live. A silent line under a pad
+    // you are holding means the browser never woke it — and that is a very
+    // different problem from one the game is simply routing wrong.
+    return pads.connected ? `${here}  -  ${pads.report()}` : `${here}  -  CONTROLLER? PRESS ANY BUTTON TO WAKE IT`;
   }
 
   // The plaque redraws for its two lives: loud rookie beacon, quiet veteran row
@@ -441,10 +444,12 @@ export class MenuScreen implements Screen {
   }
 
   update(dt: number) {
-    // a pad waking up (or walking off) rewrites its own line, in place
-    if (pads.connected !== this.padAwake) {
+    // the pad's line is LIVE: waking up, walking off, or just a thumb moving —
+    // whatever the pad is doing shows up here the frame it happens
+    const padLine = this.crumbText();
+    if (pads.connected !== this.padAwake || padLine !== this.crumb.text) {
       this.padAwake = pads.connected;
-      this.crumb.text = this.crumbText();
+      this.crumb.text = padLine;
       this.crumb.centerAt(this.w / 2, this.crumbY);
     }
     // the rookie beacon breathes; a finished tutorial stands still, and a

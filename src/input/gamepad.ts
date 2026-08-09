@@ -48,12 +48,29 @@ export interface PadState {
 export class Pad {
   state: PadState | null = null;
   down = 0; // buttons down RIGHT NOW — how the lobby feels you leaning on it
+  standard = true;   // does the browser hand us the layout everyone agrees on?
+  lastBtn = -1;      // raw index of whatever went down last — proof it arrives
   private ref: Gamepad | null = null;
   private edges = new Set<PadButton>();
   private prev = new Set<PadButton>();
   private navDir: NavDir | null = null;
   private navT = 0;
   private navQueue: NavDir[] = [];
+  private rest: number[] | null = null; // where each axis SITS untouched
+
+  // Which two axes are the right stick. A pad that reports the agreed layout
+  // is taken at its word; anything else gets measured instead of guessed —
+  // an axis resting hard against a stop is a TRIGGER, not a thumb, and letting
+  // one masquerade as the sling is what pins a pass arrow on at full power.
+  private aimAxes(pad: Gamepad): [number, number] {
+    if (this.standard) return [2, 3];
+    const rest = this.rest ?? [];
+    const thumbs: number[] = [];
+    for (let i = 2; i < pad.axes.length && thumbs.length < 2; i++) {
+      if (Math.abs(rest[i] ?? 0) < 0.6) thumbs.push(i);
+    }
+    return [thumbs[0] ?? 2, thumbs[1] ?? 3];
+  }
 
   constructor(readonly index: number, readonly id: string) {}
 
@@ -62,11 +79,19 @@ export class Pad {
     this.ref = pad;
     this.edges.clear();
     this.navQueue.length = 0;
+    this.standard = pad.mapping === 'standard';
+    // The raw index of whatever is held, whatever the layout — so a pad that
+    // reaches the game but lands on the wrong verbs can still SAY so
+    this.lastBtn = pad.buttons.findIndex((b) => b?.pressed);
+    // the first sight of a pad is its resting pose — the baseline every
+    // odd-layout guess below is measured against
+    if (!this.rest) this.rest = [...pad.axes];
     const lx = pad.axes[0] ?? 0;
     const ly = pad.axes[1] ?? 0;
     const lm = Math.hypot(lx, ly);
-    const ax = pad.axes[2] ?? 0;
-    const ay = pad.axes[3] ?? 0;
+    const [aix, aiy] = this.aimAxes(pad);
+    const ax = pad.axes[aix] ?? 0;
+    const ay = pad.axes[aiy] ?? 0;
     const am = Math.hypot(ax, ay);
     this.state = {
       move: lm < MOVE_DEAD ? vec() : scale(norm(vec(lx, ly)), throwCurve(clamp((lm - MOVE_DEAD) / (SATURATE - MOVE_DEAD), 0, 1))),
@@ -173,6 +198,22 @@ export class Gamepads {
 
   device(index: number): Pad | null {
     return this.devices.find((p) => p.index === index) ?? null;
+  }
+
+  // What the browser can actually SEE, in one line: the only honest answer to
+  // "why is my controller doing nothing". Names the pad, says whether its
+  // layout is the one everybody agrees on, and echoes the live button and
+  // stick — so a pad that arrives but lands wrong looks different on screen
+  // from a pad the browser never woke at all.
+  report(): string {
+    const p = this.devices[0];
+    if (!p) return '';
+    const name = p.id.replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim().toUpperCase().slice(0, 20);
+    const btn = p.lastBtn >= 0 ? `B${p.lastBtn}` : '--';
+    const s = p.state;
+    const stick = s ? `${s.move.x.toFixed(1)},${s.move.y.toFixed(1)}` : '-,-';
+    const extra = this.devices.length > 1 ? ` +${this.devices.length - 1}` : '';
+    return `${name || 'PAD'} [${p.standard ? 'STD' : 'NON-STD'}] ${btn} ${stick}${extra}`;
   }
 
   // A screen that reads the whole bench itself (the couch lobby) claims it
