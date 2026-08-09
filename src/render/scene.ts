@@ -3,6 +3,7 @@ import { GameLoop } from '../core/loop';
 import { Vec2, vec, add, sub, scale, clamp, clampLen, rotate } from '../core/math';
 import { director } from '../director';
 import { PITCH } from '../sim/constants';
+import { pullOf } from '../sim/tuning';
 import { World } from '../sim/world';
 import { SimEvent } from '../sim/events';
 import { GameAssets } from './assets';
@@ -478,7 +479,11 @@ export class Scene {
     this.dragHead.visible = live && !!this.kickDrag;
     if (live && this.kickDrag) {
       const kd = this.kickDrag;
-      const color = kd.power > 0.72 ? 0xff5340 : kd.power > 0.38 ? 0xffd95e : 0x9ff0b8;
+      // Red is the top of the throw and NOTHING else: a stick buried to the
+      // pin. Everything a thumb does on the way there reads mint or amber, so
+      // the colour is news about YOUR hand instead of a permanent warning.
+      const pull = pullOf(kd.power);
+      const color = pull > 0.85 ? 0xff5340 : pull > 0.35 ? 0xffd95e : 0x9ff0b8;
       const reach = 1.4 + kd.power * 5.6;      // meters of arrow
       const q = Math.round(2 + kd.power * 2);  // chalk-dot size, px
       for (let t = 1.0; t < reach - 0.35; t += 0.62) {

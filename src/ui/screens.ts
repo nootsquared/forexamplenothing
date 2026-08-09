@@ -90,6 +90,8 @@ export class MenuScreen implements Screen {
   private sub: PixelText;
   private ver: PixelText;
   private crumb: PixelText;
+  private crumbY = 0;          // its own rest, so a waking pad can rewrite it in place
+  private padAwake = false;
   private socials = new Container();
   private socialBox = new Graphics();
   private socialHeader: PixelText;
@@ -194,10 +196,11 @@ export class MenuScreen implements Screen {
 
   private setPage(page: MenuPage, animate = true) {
     this.page = page;
+    this.padAwake = pads.connected;
     this.socials.visible = page === 'root'; // the addresses live on the front door
     this.tutorBtn.visible = page === 'root'; // and so does the coach's plaque
     this.list.sel = 0; // a fresh page starts at its top
-    this.crumb.text = page === 'root' ? 'MAIN MENU' : page === 'play' ? 'PLAY' : 'SETTINGS';
+    this.crumb.text = this.crumbText();
     this.refresh(animate, 0.08);
     // the last hop settles FIRST: a finished drop stamps the rest it was born
     // with, so letting it land after the re-measure would paste a stale y — and
@@ -270,6 +273,14 @@ export class MenuScreen implements Screen {
     for (const [cx, cy] of [[bx + 3, 5], [bx + bw - 6, 5], [bx + 3, bh - 8], [bx + bw - 6, bh - 8]]) {
       g.rect(cx, cy, 3, 3).fill({ color: 0xffd95e, alpha: 0.55 });
     }
+  }
+
+  // The breadcrumb, plus the one thing a silent pad needs told: the browser
+  // hides a controller until a BUTTON wakes it, so a pad that looks dead is
+  // usually just asleep. The line disappears the moment one answers.
+  private crumbText() {
+    const here = this.page === 'root' ? 'MAIN MENU' : this.page === 'play' ? 'PLAY' : 'SETTINGS';
+    return pads.connected ? here : `${here}  -  CONTROLLER? PRESS ANY BUTTON TO WAKE IT`;
   }
 
   // The plaque redraws for its two lives: loud rookie beacon, quiet veteran row
@@ -430,6 +441,12 @@ export class MenuScreen implements Screen {
   }
 
   update(dt: number) {
+    // a pad waking up (or walking off) rewrites its own line, in place
+    if (pads.connected !== this.padAwake) {
+      this.padAwake = pads.connected;
+      this.crumb.text = this.crumbText();
+      this.crumb.centerAt(this.w / 2, this.crumbY);
+    }
     // the rookie beacon breathes; a finished tutorial stands still, and a
     // plaque under the walk holds steady so the selection reads as selection
     if (this.tutorFresh && this.tutorBtn.visible && !this.plaqueFocus) {
@@ -510,6 +527,7 @@ export class MenuScreen implements Screen {
     y += this.sub.textHeight + g.ver;
     this.ver.centerAt(w / 2, y); // the ledger, breathing under the studio line
     y += this.ver.textHeight + g.crumb;
+    this.crumbY = y;
     this.crumb.centerAt(w / 2, y);
     y += this.crumb.textHeight + g.plate;
     this.plate.position.set(Math.round(w / 2), y);
@@ -570,6 +588,7 @@ export class LocalJoinScreen implements Screen {
   root = new Container();
   onStart: () => void = () => {};
   onBack: () => void = () => {};
+  openedBy: SeatDevice = { kind: 'keys', hands: 0 }; // the hands that picked this room
   private head = new Container();
   private boards = [new Container(), new Container()];
   private tunnel = new Container();
@@ -753,7 +772,9 @@ export class LocalJoinScreen implements Screen {
   }
 
   // The room opens with the hands that opened it already seated — whoever
-  // walked in here is player one, and the rest of the table joins around them
+  // walked in here is player one, and the rest of the table joins around them.
+  // A pad that picked this room sits in the pad's chair: the keyboard is never
+  // seated for somebody who never touched it.
   enter() {
     pads.hold();
     roster.clear();
@@ -764,7 +785,11 @@ export class LocalJoinScreen implements Screen {
     this.comboHeld = false;
     this.nodHeld = false;
     this.settle = true;
-    roster.join({ kind: 'keys', hands: 0 }, 0);
+    // a pad that walked off between menus leaves the keyboard holding the room
+    const opener = this.openedBy.kind === 'pad' && !pads.device(this.openedBy.index)
+      ? { kind: 'keys' as const, hands: 0 as const }
+      : this.openedBy;
+    roster.join(opener, 0);
     this.stamp = '';
     this.rebuild();
     this.reveal.play();

@@ -1,5 +1,6 @@
 import { Vec2, vec, norm, len, clamp } from '../core/math';
 import { PlayerInput } from '../sim/player';
+import { HUMAN_KICK_FLOOR } from '../sim/tuning';
 import { Keyboard } from './keyboard';
 import { pads } from './gamepad';
 
@@ -10,8 +11,13 @@ const AIM_UNLOCK = AIM_MAX * 1.15; // running past this leaves the lock behind
 const FLICK_ARM = 0.38;     // right-stick throw that starts winding a pass
 const FLICK_KEEP = 0.16;    // falling back through this means you let go
 const FLICK_SNAP = 0.03;    // a wind of one single frame was a knuckle, not a pass
-// Even the softest flick is a real ball; a full throw is a full-blooded hit
-const flickPower = (peak: number) => 0.45 + clamp((peak - FLICK_ARM) / (1 - FLICK_ARM), 0, 1) * 0.55;
+// Even the softest flick is a real ball; a full throw is a full-blooded hit.
+// The curve leans late on purpose: most of the stick buys the SOFT half of the
+// range, so a five-yard ball is a thumb away and the full-blooded hit is a
+// deliberate act. Same floor, same ceiling — only the road between them moved.
+const FLICK_GAMMA = 1.45;
+const flickPower = (peak: number) =>
+  HUMAN_KICK_FLOOR + Math.pow(clamp((peak - FLICK_ARM) / (1 - FLICK_ARM), 0, 1), FLICK_GAMMA) * (1 - HUMAN_KICK_FLOOR);
 
 // Merges keyboard + pad into one player's intent, owns kick charge and aim.
 // J/L paint the aim on the FIELD: the angle locks in world space and stays
@@ -85,7 +91,7 @@ export class LocalControls {
         // The human floor sits at what used to be MEDIUM: even a tap is a real
         // ball — the charge rides the upper half of the range
         kickReleased = {
-          power: 0.45 + clamp(this.chargeT / CHARGE_TIME, 0, 1) * 0.55,
+          power: HUMAN_KICK_FLOOR + clamp(this.chargeT / CHARGE_TIME, 0, 1) * (1 - HUMAN_KICK_FLOOR),
           aimOffset: this.resolve(move, facing).offset,
         };
         this.chargeT = 0;

@@ -127,14 +127,31 @@ export class Pad {
   }
 }
 
+// One pair of hands may be holding SEVERAL pads — a man who puts one down and
+// picks another up never announces it. So a squad reads as one device: the pad
+// being pushed hardest speaks for the run and the sling, and a button held on
+// any of them is held. Two pads nobody else has claimed are still one player.
+const mergeState = (squad: Pad[]): PadState | null => {
+  const live = squad.map((p) => p.state).filter((s): s is PadState => !!s);
+  if (!live.length) return null;
+  const loudest = (heat: (s: PadState) => number) => live.reduce((a, b) => (heat(b) > heat(a) ? b : a));
+  return {
+    move: loudest((s) => Math.hypot(s.move.x, s.move.y)).move,
+    aim: loudest((s) => s.aim.mag).aim,
+    kick: live.some((s) => s.kick),
+    tackle: live.some((s) => s.tackle),
+    sprint: live.some((s) => s.sprint),
+  };
+};
+
 export class Gamepads {
-  state: PadState | null = null; // the driving pad's freshest poll; null = no pad
+  state: PadState | null = null; // the driving hands' freshest poll; null = no pad
   connected = false;
   onConnect: () => void = () => {};
   onDisconnect: () => void = () => {};
   devices: Pad[] = []; // every live pad, hardware-slot order
   private holdT = 0;
-  private driving: Pad | null | undefined = undefined; // undefined = the whole bench
+  private squad: Pad[] | undefined = undefined; // undefined = the whole bench
 
   poll(dt: number) {
     this.holdT = Math.max(0, this.holdT - dt);
@@ -147,7 +164,7 @@ export class Gamepads {
       bench.push(pad);
     }
     this.devices = bench;
-    this.state = this.voice?.state ?? null;
+    this.state = mergeState(this.hands);
     const any = bench.length > 0;
     if (any === this.connected) return;
     this.connected = any;
@@ -170,41 +187,41 @@ export class Gamepads {
     return this.holdT > 0;
   }
 
-  // Nobody named a pad: the shell means the first one plugged in
-  private get voice(): Pad | null {
-    return this.driving === undefined ? this.devices[0] ?? null : this.driving;
+  // Nobody named a pad: the shell means every pad on the table, read as one.
+  // Solo play never has to know WHICH pad a hand reached for.
+  private get hands(): Pad[] {
+    return this.squad ?? this.devices;
   }
 
   // Unnamed, this is the whole room — whoever grabs a pad can press the button
   pressed(b: PadButton): boolean {
-    if (this.driving !== undefined) return !!this.driving?.pressed(b);
+    if (this.squad !== undefined) return this.hands.some((p) => p.pressed(b));
     return !this.exclusive && this.devices.some((p) => p.pressed(b));
   }
 
   navCodes(): string[] {
-    if (this.driving !== undefined) return this.driving?.navCodes() ?? [];
-    if (this.exclusive) return [];
+    if (this.squad === undefined && this.exclusive) return [];
     // two people pushing the same way is still one step down the list
-    return [...new Set(this.devices.flatMap((p) => p.navCodes()))];
+    return [...new Set(this.hands.flatMap((p) => p.navCodes()))];
   }
 
   rumble(intensity: number, ms: number) {
-    if (this.driving !== undefined) return this.driving?.rumble(intensity, ms);
-    for (const pad of this.devices) pad.rumble(intensity, ms);
+    for (const pad of this.hands) pad.rumble(intensity, ms);
   }
 
-  // For the length of one call, every reader downstream is holding THIS pad —
-  // how a couch seat samples its own hands through the shared controls. A
-  // null slot deafens the pads entirely, so keyboard seats stay keyboard-only.
-  drive<T>(index: number | null, fn: () => T): T {
-    const wasPad = this.driving;
+  // For the length of one call, every reader downstream is holding THESE pads —
+  // how a couch seat samples its own hands through the shared controls. An
+  // empty list deafens the pads entirely, so a seat that owns none stays
+  // keyboard-only.
+  drive<T>(indices: number[], fn: () => T): T {
+    const wasSquad = this.squad;
     const wasState = this.state;
-    this.driving = index === null ? null : this.device(index);
-    this.state = this.driving?.state ?? null;
+    this.squad = indices.map((i) => this.device(i)).filter((p): p is Pad => !!p);
+    this.state = mergeState(this.hands);
     try {
       return fn();
     } finally {
-      this.driving = wasPad;
+      this.squad = wasSquad;
       this.state = wasState;
     }
   }

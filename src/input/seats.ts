@@ -38,14 +38,6 @@ const secondHands = (kb: Keyboard): Keyboard => {
   return front;
 };
 
-// A board with nobody at it. A pad seat has to be DEAF to the keyboard, or
-// the man typing on it walks every controller's player at once.
-const noHands = (kb: Keyboard): Keyboard => {
-  const front: Keyboard = Object.create(kb);
-  front.has = () => false;
-  return front;
-};
-
 export class Seat {
   readonly id: string;
   readonly label: string;
@@ -58,15 +50,11 @@ export class Seat {
     this.controls = new LocalControls(squash);
   }
 
-  // What these hands are asking for this tick — the pad this seat owns, or
-  // its own half of the keyboard, never both
+  // What these hands are asking for this tick. The board arrives already cut
+  // to what this seat may touch; the pads it may touch it asks the roster for.
   sample(dt: number, kb: Keyboard, facing: Vec2): PlayerInput {
-    if (this.device.kind === 'pad') {
-      if (!this.front) this.front = noHands(kb);
-      return pads.drive(this.device.index, () => this.controls.sample(dt, this.front!, facing));
-    }
-    if (this.device.hands === 1 && !this.front) this.front = secondHands(kb);
-    return pads.drive(null, () => this.controls.sample(dt, this.front ?? kb, facing));
+    if (this.device.kind === 'keys' && this.device.hands === 1 && !this.front) this.front = secondHands(kb);
+    return pads.drive(roster.padsFor(this), () => this.controls.sample(dt, this.front ?? kb, facing));
   }
 
   // The pass this seat's right stick just fired, if any — consumed once
@@ -74,10 +62,11 @@ export class Seat {
     return this.controls.takeFlick();
   }
 
-  // A button edge on THIS seat's pad. Verbs that belong to one man — switch
-  // me, auto-switch, cheer — ask here, so pad two never answers for pad one.
+  // A button edge on the pads THIS seat is holding. Verbs that belong to one
+  // man — switch me, auto-switch, cheer — ask here, so pad two never answers
+  // for pad one.
   pressed(button: PadButton): boolean {
-    return this.device.kind === 'pad' && !!pads.device(this.device.index)?.pressed(button);
+    return roster.padsFor(this).some((i) => !!pads.device(i)?.pressed(button));
   }
 
   // A pad still on the table. Keyboard hands never walk off.
@@ -86,7 +75,7 @@ export class Seat {
   }
 
   rumble(intensity: number, ms: number) {
-    if (this.device.kind === 'pad') pads.device(this.device.index)?.rumble(intensity, ms);
+    for (const i of roster.padsFor(this)) pads.device(i)?.rumble(intensity, ms);
   }
 }
 
@@ -110,6 +99,34 @@ export class SeatRoster {
 
   has(device: SeatDevice): boolean {
     return !!this.seat(deviceId(device));
+  }
+
+  // Pads on the table that no seat owns, in slot order
+  private free(): number[] {
+    const taken = new Set(this.seats.flatMap((s) => (s.device.kind === 'pad' ? [s.device.index] : [])));
+    return pads.devices.map((p) => p.index).filter((i) => !taken.has(i));
+  }
+
+  // The first unclaimed pad always belongs to player one — that is the whole
+  // seamless switch: put the keyboard down, pick a pad up, keep playing, tell
+  // the game nothing. Every pad BEYOND it is a second pair of hands.
+  padsFor(seat: Seat): number[] {
+    const own = seat.device.kind === 'pad' ? [seat.device.index] : [];
+    if (seat !== this.primary) return own;
+    const spare = this.free()[0];
+    return spare === undefined ? own : [...own, spare];
+  }
+
+  // Nobody has formally sat down: one player, reaching for the first pad on
+  // the table and nothing else
+  get soloPads(): number[] {
+    return this.free().slice(0, 1);
+  }
+
+  // Pads nobody owns and player one is not already holding. A stranger's first
+  // button press is a second player asking to get on the field.
+  strangers(): number[] {
+    return this.free().slice(1);
   }
 
   join(device: SeatDevice, team: 0 | 1): Seat {
@@ -150,8 +167,10 @@ export class SeatRoster {
   }
 
   // The iso y-squash is a render number that moves with the camera, and every
-  // seat's aim has to be cut to it
+  // seat's aim has to be cut to it. Only a REAL change rebuilds: a man joining
+  // mid-match must not wipe the charge everybody else is holding.
   retune(squash: number) {
+    if (squash === this.squash) return;
     this.squash = squash;
     for (const seat of this.seats) seat.controls = new LocalControls(squash);
   }

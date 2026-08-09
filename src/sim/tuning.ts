@@ -11,6 +11,14 @@ export const INTENSITY = 1;
 // it blooms is the player. The ball lands UNIFORMLY inside it.
 export const CONE = { min: 0.021, span: 0.5, gamma: 1.8 };
 
+// Even the softest human touch is a real ball: every human kick — the charged
+// boot, the mouse sling, the stick flick — rides the upper half of the range.
+export const HUMAN_KICK_FLOOR = 0.45;
+// The kick as the HAND feels it: 0 is the gentlest human ball, 1 is the stick
+// buried to the pin. The sight colours off this, not off raw power, so the
+// arrow spends its life in the middle of the range instead of pinned hot.
+export const pullOf = (power: number) => clamp((power - HUMAN_KICK_FLOOR) / (1 - HUMAN_KICK_FLOOR), 0, 1);
+
 export function coneHalfAngle(acc: number, inputPower: number): number {
   const p = clamp((inputPower - 0.1) / 0.9, 0, 1);
   return CONE.min + CONE.span * INTENSITY * Math.pow(1 - clamp(acc, 0.02, 0.99), 1.15) * Math.pow(p, CONE.gamma);

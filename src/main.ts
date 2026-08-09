@@ -16,7 +16,7 @@ import { Keyboard } from './input/keyboard';
 import { LocalControls } from './input/controls';
 import { pads } from './input/gamepad';
 import { TeamCursor } from './input/cursor';
-import { Seat, roster } from './input/seats';
+import { Seat, SeatDevice, roster } from './input/seats';
 import { audio } from './audio/engine';
 import { MatchAudio } from './audio/matchAudio';
 import { loadAssets } from './render/assets';
@@ -109,6 +109,9 @@ async function boot() {
   // does. Both empty means one player, and nothing below changes.
   let primary: Seat | null = null;
   let couch: { seat: Seat; cursor: TeamCursor; team: 0 | 1 }[] = [];
+  // The hands the shell heard last, so a room opened with a pad opens FOR that
+  // pad — nobody is ever seated on somebody else's behalf
+  let lastHands: SeatDevice = { kind: 'keys', hands: 0 };
   const couchDown = new Set<string>(); // raw key edges the couch reads for itself
   // The goal party: whose arms X throws up, and whether anybody has asked yet
   let celebrate: { scorer: number; t: number; ask: boolean; taken: boolean; pop: number } | null = null;
@@ -300,7 +303,10 @@ async function boot() {
   menu.onTraining = () => startTraining();
   menu.onTutorial = () => startTutorial();
   menu.onOnline = () => { onlineScreen.begin('name', ''); show(onlineScreen); };
-  menu.onLocal = () => show(localScreen); // still the front room: the attract match plays on behind it
+  // still the front room: the attract match plays on behind it, and the hands
+  // that picked the room already have the first chair when it opens
+  menu.onLocal = () => { localScreen.openedBy = lastHands; show(localScreen); };
+  window.addEventListener('keydown', () => { lastHands = { kind: 'keys', hands: 0 }; });
   localScreen.onBack = () => { menu.openPage('root'); show(menu); };
   localScreen.onStart = () => startLocalMatch();
 
@@ -356,6 +362,32 @@ async function boot() {
     });
     wireSeatClaims();
     scene.toast(`${roster.seats.length} PLAYERS ON THE COUCH`);
+  }
+
+  // A pad picked up in the middle of a match: it takes a shirt of its own on
+  // the thinner side and plays from this very tick. The entire ceremony is one
+  // button — no lobby, no restart, no asking the man already playing to stop.
+  function padDropsIn(index: number) {
+    if (!match || !cursor || !scene) return;
+    const world = match.world;
+    roster.retune(squash()); // before anybody joins, so a fresh seat aims true
+    // player one has never been named — the hands already playing become the
+    // first chair, so the newcomer has somebody to sit down beside
+    if (!primary) primary = roster.join({ kind: 'keys', hands: 0 }, 0);
+    const heads = [1, 0]; // the first chair always wears sim team 0
+    for (const cs of couch) heads[cs.team]++;
+    const team: 0 | 1 = heads[1] <= heads[0] ? 1 : 0;
+    const seat = roster.join({ kind: 'pad', index }, team);
+    controls = primary.controls; // the shell's charge bar follows the first chair
+    const worn = new Set<number>([cursor.idx, ...couch.map((cs) => cs.cursor.idx)]);
+    const c = new TeamCursor(team, world, nearestOutfield(world, team, world.ball.pos, worn));
+    c.autoMode = menu.autoSwitch;
+    c.isCaptain = team !== 0 && !couch.some((cs) => cs.team === team); // his side's dead balls
+    couch.push({ seat, cursor: c, team });
+    wireSeatClaims();
+    seat.rumble(0.6, 140);
+    audio.ui('select');
+    scene.toast(`${seat.label} JOINED - ${team === 0 ? 'HOME' : 'AWAY'}`);
   }
 
   function exitTutorial(kind: 'menu' | 'training' | 'easy') {
@@ -669,6 +701,9 @@ async function boot() {
     endCelebration();
     primary = null;
     couch = [];
+    // the room empties with the match: a chair left standing here would go on
+    // hiding its pad from the next player to pick one up
+    roster.clear();
     matchAudio.end();
     screenName = 'menu';
     paused = false;
@@ -1251,15 +1286,14 @@ async function boot() {
     else couchDown.delete(code);
     return fresh;
   };
-  // What "switch me" looks like on each kind of hands — the pad's LB or X,
-  // seat one's E, seat two's comma beside its own tackle and sprint keys
+  // What "switch me" looks like on whichever hands he is using this second:
+  // LB or X on any pad this seat is holding, seat one's E while the keyboard
+  // is still his to press, seat two's comma beside its own tackle and sprint
   const seatSwitchPressed = (seat: Seat): boolean => {
-    if (seat.device.kind === 'pad') {
-      const pad = pads.device(seat.device.index);
-      // X belongs to the party while a goal is still being celebrated
-      return !!pad && (pad.pressed('lb') || (pad.pressed('x') && !celebrate));
-    }
-    return keyEdge(seat.device.hands === 0 ? 'KeyE' : 'Comma');
+    // X belongs to the party while a goal is still being celebrated
+    if (seat.pressed('lb') || (seat.pressed('x') && !celebrate)) return true;
+    if (seat.device.kind === 'keys' && seat.device.hands === 1) return keyEdge('Comma');
+    return boardFor(seat) !== deafBoard && keyEdge('KeyE');
   };
   const askSwitch = (c: TeamCursor) => {
     const was = c.idx;
@@ -1273,9 +1307,20 @@ async function boot() {
   const ARROW_CODES = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
   const armlessBoard: Keyboard = Object.create(kb);
   armlessBoard.has = (code: string) => !ARROW_CODES.includes(code) && kb.has(code);
-  const boardFor = (seat: Seat): Keyboard =>
-    seat.device.kind === 'keys' && seat.device.hands === 0 && roster.has({ kind: 'keys', hands: 1 })
-      ? armlessBoard : kb;
+  // A board with nobody at it: a seat that does not own the keyboard has to be
+  // DEAF to it, or one man typing walks every controller's player at once.
+  const deafBoard: Keyboard = Object.create(kb);
+  deafBoard.has = () => false;
+  // Which board a seat's hands may touch. Player one answers the keyboard even
+  // while holding a pad — as long as nobody has sat down on it — so the switch
+  // between hands and sticks needs no announcement. The arrow cluster is given
+  // up the instant seat two claims it.
+  const boardFor = (seat: Seat): Keyboard => {
+    const ownsKeys = seat.device.kind === 'keys';
+    if (!ownsKeys && !(seat === roster.primary && !roster.has({ kind: 'keys', hands: 0 }))) return deafBoard;
+    const keepsArrows = ownsKeys && seat.device.kind === 'keys' && seat.device.hands === 1;
+    return !keepsArrows && roster.has({ kind: 'keys', hands: 1 }) ? armlessBoard : kb;
+  };
 
   // ---- the pad speaks every language: sticks in play, dpad in menus ------
   pads.onConnect = () => {
@@ -1287,6 +1332,17 @@ async function boot() {
   const tickPad = (dt: number) => {
     pads.poll(dt);
     if (!pads.connected) return;
+    const speaking = pads.devices.find((p) => p.down > 0);
+    if (speaking) lastHands = { kind: 'pad', index: speaking.index };
+    // A pad nobody is holding, pressed during a live match: a second player
+    // asking to get on. Answered BEFORE anything the whole bench shares, so
+    // his first button never doubles as the room's Enter.
+    if (screenName === 'match' && !paused && !activeScreen && !netRole && !tutorial) {
+      for (const i of roster.strangers()) {
+        const pad = pads.device(i);
+        if (pad && (pad.pressed('a') || pad.pressed('start'))) { padDropsIn(i); return; }
+      }
+    }
     // the party takes X off every pad in the room before anything else does
     if (pads.devices.some((p) => p.pressed('x')) && takeCelebration()) return;
     if (activeScreen) for (const code of pads.navCodes()) routeKey(code);
@@ -1736,7 +1792,11 @@ async function boot() {
     // the first seat's hands are the shell's hands — read through ITS device,
     // so a couch pad in slot two still steers the man it is holding
     const facing = world.players[cursor.idx].facing;
-    input = primary ? primary.sample(dt, boardFor(primary), facing) : controls.sample(dt, kb, facing);
+    // Nobody has formally sat down: one player on the keyboard AND the first
+    // pad on the table, whichever he happens to be touching this tick
+    input = primary
+      ? primary.sample(dt, boardFor(primary), facing)
+      : pads.drive(roster.soloPads, () => controls.sample(dt, kb, facing));
     if (mouseKick) {
       input.kickReleased = { power: mouseKick.power, aimOffset: 0, aimAt: mouseKick.aimAt };
       mouseKick = null;
@@ -1758,6 +1818,7 @@ async function boot() {
     // the couch: every seat past the first drives its own body from its own
     // device, switches with its own hands, and feels its own boot
     for (const cs of couch) {
+      if (!cs.seat.live) continue; // a pad pulled out of the hub: the brain takes the shirt back
       if (seatSwitchPressed(cs.seat)) askSwitch(cs.cursor);
       const seatIn = cs.seat.sample(dt, boardFor(cs.seat), world.players[cs.cursor.idx].facing);
       applyFlick(seatIn, world, cs.seat);
