@@ -288,7 +288,11 @@ export class MenuScreen implements Screen {
     // until a button is pressed — so the prompt names the button instead of
     // saying "any input" and leaving a man pushing a dead stick.
     if (pads.connected) return `${here}  -  ${pads.report()}`;
-    if (pads.blocked === 'shielded') return `${here}  -  BRAVE IS BLOCKING YOUR PAD - CLICK THE LION AND DROP SHIELDS FOR THIS SITE`;
+    // What we KNOW is that no pad reached us — never why. Naming a culprit we
+    // cannot prove sends a man to turn off settings that were never the
+    // problem, so the line states the fact and offers the one test that splits
+    // a browser hiding the pad from a pad that never woke.
+    if (pads.blocked === 'shielded') return `${here}  -  NO PAD SEEN - CLICK THE PAGE, PRESS (A) - STILL NOTHING? TRY CHROME`;
     if (pads.blocked !== 'none') return `${here}  -  THIS BROWSER IS BLOCKING CONTROLLERS - CHECK ITS PRIVACY SHIELDS`;
     return `${here}  -  HOLDING A CONTROLLER? PRESS (A) - A STICK ALONE CANNOT WAKE IT`;
   }
