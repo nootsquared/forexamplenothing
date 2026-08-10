@@ -35,6 +35,14 @@ export const DIVE_TIME = 0.42; // the keeper's beat in the air — his brain tim
 const RESTART_PATIENCE = 5;  // seconds a placed ball may sit before the referee gets on with it
 // The goal, chapter by chapter: the party, the truck's cut, the long walk home.
 // Nothing here teleports, and the caps mean nothing here can hang either.
+// The keeper's hands: how slow a ball has to be dying, how close to his boots,
+// and how near his own goal he must be to simply pick it up instead of playing
+// it. Generous on pace — a keeper stooping on a rolling ball is the whole point
+// — and tight on reach, so he never hoovers one off a striker's toe.
+const GK_GATHER_PACE = 3.5;
+const GK_GATHER_REACH = 1.2;
+const GK_AREA = 16.5;
+
 const CEREMONY = {
   celebrate: 5,     // the scorers own this window outright
   claim: 0.5,       // the truck's beat to say "I have a replay" before we walk on
@@ -1006,6 +1014,22 @@ export class World {
     if (held && this.carrier!.idx !== idx && held.id.team !== p.id.team &&
         dist(this.ball.pos, held.pos) <= CLAMP.protect) return;
     if (!held && this.looseClaimIdx !== null && this.looseClaimIdx !== idx) return;
+
+    // The keeper GATHERS. A ball dying at his feet inside his own area belongs
+    // in his gloves, not on his toe — gkPickup was written for exactly this and
+    // nothing ever called it, which is why he stood there dribbling it out with
+    // the duel bar over his head while a striker walked in on him. The dive
+    // contest above still owns anything struck AT him; this is the slow ball
+    // that simply arrives.
+    if (p.id.role === 'GK' && this.holdingGk < 0 && this.restartLock <= 0 &&
+        this.ball.speed() < GK_GATHER_PACE && d < GK_GATHER_REACH) {
+      const ownGoalX = this.attackSign(p.id.team) > 0 ? 0 : PITCH.length;
+      if (dist(p.pos, vec(ownGoalX, PITCH.width / 2)) < GK_AREA) {
+        this.gkPickup(idx);
+        return;
+      }
+    }
+
     const touch = (cooldown: number, sprint = false) => {
       p.touchCooldown = cooldown;
       this.throwInPending = false; // the throw has been played; the flag watches all of it now
