@@ -15,6 +15,7 @@ const SPAN = 10;         // seconds of tape — the longest buildup worth showin
 const LOOKBACK = 7;      // where a cut opens: pass, pass, pass, then the strike
 const MIN_BUILDUP = 1.2; // even a turnover finish gets a breath before the boot
 const TAIL = 0.55;       // ...and enough past the line to watch the net take it
+const SCRAMBLE_LOOKBACK = 1.6; // a goal with no boot on the tape opens this far back
 
 const at = (snap: MatchSnap) => snap.tick / 60;
 const eventsOf = (snap: MatchSnap) => snap.events as SimEvent[];
@@ -95,7 +96,17 @@ export function buildCut(ring: ReplayRing, side: 'left' | 'right', teamOf: (idx:
       if (e.kind === 'kick') { shotIdx = i; boot = vec(e.x, e.y); shooter = e.idx; }
     }
   }
-  if (shotIdx < 1 || !boot) return null;
+  // No boot on the tape — a rebound, a deflection, a goal bundled in off a
+  // scramble whose strike has already scrolled out of the ring. That is still
+  // a goal, and a goal ALWAYS gets its replay: anchor the cut on the ball
+  // itself a beat before it crossed, rather than refusing to cut at all. This
+  // silent bail is why replays only showed up half the time.
+  if (shotIdx < 1 || !boot) {
+    shotIdx = Math.max(1, goalIdx - Math.round(SCRAMBLE_LOOKBACK * 60));
+    const b = f[shotIdx].ball;
+    boot = vec(b[0], b[1]);
+    shooter = -1;
+  }
   const shooterTeam = teamOf(shooter);
   const shotT = at(f[shotIdx]);
   const goalT = at(f[goalIdx]);

@@ -85,6 +85,8 @@ export const CLAMP = {
                    // sprint knocks it past the protect ring every touch; the
                    // jaws holding only inside that ring is why they kept quitting
 
+  help: 0.45,      // what each EXTRA presser adds to the one man's squeeze — being
+                   // surrounded is faster than being marked, never a second duel
   protect: 1.1,    // the carrier's controlled bubble — beyond it the ball is honest prey
   decay: 1.5,      // jaws fall open per second once the engagement breaks
   grace: 0.35,     // beat of forgiveness before a broken engagement decays

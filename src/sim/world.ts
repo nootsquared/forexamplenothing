@@ -614,7 +614,17 @@ export class World {
     }
     const def = this.players[cl.idx];
     cl.graceT = CLAMP.grace;
-    cl.close += clampCloseRate(def.stats, cb!.stats, this.shieldsBallFrom(cb!, def)) * dt;
+    // A second man on the carrier does NOT open a second set of jaws — there is
+    // only ever one duel. He leans on the SAME squeeze, so being surrounded
+    // actually costs you the ball quicker instead of two defenders politely
+    // taking turns. Capped, or a crowd would vaporise possession on contact.
+    let helpers = 0;
+    this.players.forEach((p, i) => {
+      if (i === cl.idx || p.id.team !== def.id.team || p.id.role === 'GK') return;
+      if (dist(p.pos, cb!.pos) <= CLAMP.press) helpers++;
+    });
+    const swarm = 1 + Math.min(helpers, 2) * CLAMP.help;
+    cl.close += clampCloseRate(def.stats, cb!.stats, this.shieldsBallFrom(cb!, def)) * swarm * dt;
     if (cl.close >= CLAMP.feintAt && !cl.feintRolled && cb!.feintCooldown <= 0) {
       cl.feintRolled = true;
       if (this.rng.next() < cb!.stats.control * 0.78) {
