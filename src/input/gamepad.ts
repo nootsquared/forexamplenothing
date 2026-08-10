@@ -98,7 +98,11 @@ export class Pad {
       aim: am < AIM_DEAD ? { x: 0, y: 0, mag: 0 } : { x: ax, y: ay, mag: clamp((am - AIM_DEAD) / (SATURATE - AIM_DEAD), 0, 1) },
       kick: held(pad.buttons[BTN.a]),
       tackle: held(pad.buttons[BTN.b]),
-      sprint: held(pad.buttons[BTN.rb]) || held(pad.buttons[BTN.rt]),
+      // Sprint lives on the LEFT trigger. It used to sit on RB/RT, which asked
+      // one hand to hold a sprint and stab the kick at the same time — the
+      // thumb and the index finger fighting over one run at goal. RT stays as
+      // an alias for old hands; RB is now free for the kick to grow into.
+      sprint: held(pad.buttons[BTN.lt]) || held(pad.buttons[BTN.rt]),
     };
 
     this.down = 0;
