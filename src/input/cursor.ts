@@ -110,6 +110,21 @@ export class TeamCursor {
       this.take(bb.possessorIdx);
     }
 
+    // A teammate has put his jaws on their carrier: that duel IS the game on
+    // this tick, so the hands go to the man in it — in ANY phase, attacking or
+    // not. You are never left steering a spectator while somebody else does
+    // the defending. The jaws live on the body, not on whoever is driving it,
+    // and CLAMP.grace holds them open-mouthed for a beat, so the handover
+    // arrives mid-squeeze instead of resetting the duel.
+    // ...but our own carrier always outranks it: while WE have the ball you are
+    // the man on it, and a teammate still finishing a duel behind the play
+    // never drags the hands off him.
+    const jaws = world.clamp;
+    const weHaveIt = bb.phase === 'attack' && bb.possessorIdx !== null;
+    if (!weHaveIt && this.graceT <= 0 && jaws && this.wearable.has(jaws.idx) && !this.claimed(jaws.idx)) {
+      this.take(jaws.idx);
+    }
+
     // The chevron rides ahead of the switch instead of replacing it: while your
     // pass is in the air it names the man you are ABOUT to become, and E takes
     // him early if you back the ball to get there.

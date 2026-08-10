@@ -55,6 +55,7 @@ interface Belief {
 export class Brain {
   private intent: Intent = { kind: 'stand' };
   private kickPlan: { aim: Vec2; power: number; windup: number } | null = null;
+  private kickRest = 0; // beat owed to our own last strike before winding up again
   private settleLeft = 0;  // the settle touch: seconds before a fresh ball releases
   private hadBall = false;
   private beliefs = new Map<number, Belief>();
@@ -573,6 +574,7 @@ export class Brain {
 
   // extraErr piles onto the team's own scatter — hurried balls fly loose
   private planKick(aim: Vec2, power: number, extraErr = 0) {
+    if (this.kickRest > 0) return; // still recovering from our own last strike
     const err = this.bb.profile.error + extraErr;
     const dir = err > 0 ? rotate(aim, (this.rng.next() - 0.5) * 0.16 * err) : aim;
     this.kickPlan = { aim: dir, power, windup: Math.max(8, Math.round(10 + power * 26)) };
@@ -587,6 +589,12 @@ export class Brain {
   private act(world: World, dt: number): PlayerInput {
     const me = world.players[this.idx];
     const input: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+
+    // A boot that has just struck the ball is not allowed to wind up again on
+    // the next tick. When a clearance is blocked and the ball rebounds to the
+    // same feet, an ungated brain re-plans instantly and the man machine-guns
+    // it — pow, pow, pow — instead of taking a touch and looking up.
+    this.kickRest = Math.max(0, this.kickRest - dt);
 
     // The line only stops holding a run once the ball is genuinely struck —
     // a runner who beats the pass is a flag, not a chance
@@ -610,6 +618,7 @@ export class Brain {
         input.kickReleased = { power: plan.power, aimOffset: 0 };
         if (plan.power < 0.6) this.burst = 1.4; // pass and GO
         this.kickPlan = null;
+        this.kickRest = 0.7; // look up before you swing at it again
       }
       return input;
     }

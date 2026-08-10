@@ -34,7 +34,7 @@ describe('the possession-first cursor', () => {
     expect(strays.slice(0, 3)).toEqual([]);
   }, LONG_SIM);
 
-  it('off the ball, manual mode never moves you without a cause: possession, your kick, a restart, or E', () => {
+  it('off the ball, manual mode never moves you without a cause: possession, your kick, a restart, jaws on their carrier, or E', () => {
     const match = createMatch();
     const cursor = new TeamCursor(0, match.world);
     let sinceMyKick = Infinity;
@@ -48,7 +48,10 @@ describe('the possession-first cursor', () => {
         const causedByPossession = bb.phase === 'attack' && bb.possessorIdx === cursor.idx;
         const causedByTouch = world.lastTouch?.team === 0 && world.lastTouch.idx === cursor.idx;
         const causedByRestart = world.events.some((e) => e.kind === 'restart' && e.team === 0 && e.taker >= 0);
-        expect(causedByPossession || causedByTouch || causedByRestart || sinceMyKick < 1.9).toBe(true);
+        // ...and the newest cause: a teammate has his jaws on their carrier, so
+        // the defending is handed to you rather than watched
+        const causedByJaws = world.clamp?.idx === cursor.idx;
+        expect(causedByPossession || causedByTouch || causedByRestart || causedByJaws || sinceMyKick < 1.9).toBe(true);
       }
     }
   }, LONG_SIM);
