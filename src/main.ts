@@ -1446,16 +1446,36 @@ async function boot() {
 
   // The distribution sight's numbers — one math for the host's keeper, a
   // guest captain's keeper, and the referee desk validating a wire call
+  // Where a pair of hands is pointing a delivery. The right stick answers
+  // first — angle read through the iso squash so it goes where the eye looks,
+  // and throw DEPTH is distance — and the mouse answers when no stick is
+  // pushed. Without this a pad aimed every keeper at whatever the mouse
+  // pointer happened to be resting on, which is no aim at all.
+  const aimTarget = (origin: Vec2, maxR: number): { target: Vec2; d: number } => {
+    const aim = pads.state?.aim;
+    if (aim && aim.mag > 0.2) {
+      const dir = norm(vec(aim.x, aim.y / squash()));
+      const d = clamp(aim.mag, 0, 1) * maxR;
+      return { target: vec(origin.x + dir.x * d, origin.y + dir.y * d), d };
+    }
+    const m = scene!.screenToWorld(mouse.x, mouse.y);
+    const to = vec(m.x - origin.x, m.y - origin.y);
+    const raw = Math.hypot(to.x, to.y);
+    const d = Math.min(raw, maxR);
+    return {
+      target: raw > 1e-4
+        ? vec(origin.x + (to.x / raw) * d, origin.y + (to.y / raw) * d)
+        : vec(origin.x + 10, origin.y),
+      d,
+    };
+  };
+  // The hands saying GO: the mouse's click, or the pad's own kick button
+  const deliverPressed = () => mouse.clicked || pads.pressed('a');
+
   const readKeeperSight = (origin: Vec2, stats: { power: number; control: number }) => {
     const throwR = 24 + 14 * stats.power;
     const puntR = clamp(60 + 34 * stats.power, 60, 88);
-    const m = scene!.screenToWorld(mouse.x, mouse.y);
-    const toM = vec(m.x - origin.x, m.y - origin.y);
-    const dRaw = Math.hypot(toM.x, toM.y);
-    const d = Math.min(dRaw, puntR);
-    const target = dRaw > 1e-4
-      ? vec(origin.x + (toM.x / dRaw) * d, origin.y + (toM.y / dRaw) * d)
-      : vec(origin.x + 10, origin.y);
+    const { target, d } = aimTarget(origin, puntR);
     const kind: 'throw' | 'punt' = d <= throwR ? 'throw' : 'punt';
     const scatter = keeperScatter(kind, d, stats.control);
     const pCenter = Math.pow(0.5, 1 / keeperCentering(stats.control));
@@ -1806,8 +1826,11 @@ async function boot() {
     // over a corner the tackle key changes jobs — it calls the box in, and
     // nobody lunges at a dead ball of his own
     if (cornerAim && cursor.idx === cornerAim.taker) input.tackle = false;
+    // A thumb on the right stick is a man THINKING, not a man who walked away
+    // — the keeper's idle punt must never fire out from under an open sight
     const active = input.move.x !== 0 || input.move.y !== 0 ||
-      input.sprint || input.kickCharging || !!input.kickReleased || !!input.tackle || mouse.moved;
+      input.sprint || input.kickCharging || !!input.kickReleased || !!input.tackle || mouse.moved ||
+      (pads.state?.aim.mag ?? 0) > 0.2;
     mouse.moved = false;
     humanIdle = active ? 0 : humanIdle + dt;
 
@@ -2070,7 +2093,7 @@ async function boot() {
       } else {
         const sight = readKeeperSight(gk.pos, gk.stats);
         scene.setKeeperAim(sight);
-        if (mouse.clicked) launchKeeper(sight.target, sight.kind, sight.scatter);
+        if (deliverPressed()) launchKeeper(sight.target, sight.kind, sight.scatter);
       }
     }
     tickCornerAim(world, dt);
@@ -2100,17 +2123,11 @@ async function boot() {
           throwAim = null;
           if (!keeperAiming) scene.setKeeperAim(null, 'throwin');
         } else {
-          const m = scene.screenToWorld(mouse.x, mouse.y);
-          const toM = vec(m.x - origin.x, m.y - origin.y);
-          const dRaw = Math.hypot(toM.x, toM.y);
-          const d = Math.min(dRaw, throwR);
-          const target = dRaw > 1e-4
-            ? vec(origin.x + (toM.x / dRaw) * d, origin.y + (toM.y / dRaw) * d)
-            : vec(origin.x + world.attackSign(0) * 6, origin.y);
+          const { target, d } = aimTarget(origin, throwR);
           const scatter = (0.2 + d * 0.015) * (1.2 - taker.stats.control * 0.55);
           const pCenter = Math.pow(0.5, 1 / keeperCentering(taker.stats.control));
           scene.setKeeperAim({ gk: origin, target, throwR, puntR: throwR, scatter, kind: 'throw', pCenter }, 'throwin');
-          if (mouse.clicked) {
+          if (deliverPressed()) {
             world.gkLaunch(throwAim.taker, target, 'throw', scatter);
             let best = -1;
             let bestD = Infinity;
