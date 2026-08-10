@@ -97,7 +97,12 @@ export const CLAMP = {
 export const SHIELD_CLAMP = 0.45;
 
 // Ground the committed burst covers before the boot ever arrives
-const LUNGE_TRAVEL = 1.25;
+// The burst a lunge carries. Widened from 1.25: the window it paints was so
+// tight the red diamond flickered past unseen, and a signal nobody catches is
+// a mechanic nobody has. This is ONE number on purpose — the diamond, the
+// boot's reach and the referee's late-arrival ruler all move together, so a
+// window you can finally see is a challenge that can actually land.
+const LUNGE_TRAVEL = 1.9;
 
 // How far a lunging boot reaches — the only ruler a challenge is measured with
 export function lungeReach(defend: number): number {

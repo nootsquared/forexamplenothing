@@ -1342,6 +1342,11 @@ export class World {
     const spot = vec(PITCH.length / 2, PITCH.width / 2);
     const ballD = dist(this.ball.pos, spot);
     const roll = clamp(ballD * CEREMONY.ballEase, CEREMONY.ballFloor, CEREMONY.ballCap);
+    // The ball ROLLS home, it does not slide: the walk owns the position, but
+    // the sphere still has to carry a real velocity or the renderer — which
+    // spins the baked pattern off ball.speed() — drags a flat png to the spot.
+    // Physics is frozen here (ballLive is false), so this only ever paints.
+    this.ball.vel = ballD > 0.05 ? scale(sub(spot, this.ball.pos), roll / ballD) : vec();
     this.ball.pos = moveToward(this.ball.pos, spot, roll * dt);
     this.ball.z = Math.max(0, this.ball.z - 3 * dt);
     let farthest = 0;
