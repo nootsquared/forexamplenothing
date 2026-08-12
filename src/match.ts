@@ -175,7 +175,7 @@ export function advanceMatch(match: Match, dt: number, overrides: Record<number,
     if (o.assist) {
       const ai = match.brains[i].tick(match.world, dt);
       const idle = Math.hypot(o.move.x, o.move.y) < 0.15 &&
-        !o.sprint && !o.kickCharging && !o.kickReleased && !o.tackle;
+        !o.sprint && !o.kickCharging && !o.kickReleased && !o.tackle && !o.skill;
       if (idle) return { ...ai, kickCharging: false, kickReleased: null, tackle: false, dive: undefined };
       return o;
     }

@@ -1,4 +1,4 @@
-import { Vec2, vec, norm, len, clamp } from '../core/math';
+import { Vec2, vec, norm, len, clamp, perpRight } from '../core/math';
 import { PlayerInput } from '../sim/player';
 import { HUMAN_KICK_FLOOR } from '../sim/tuning';
 import { Keyboard } from './keyboard';
@@ -42,8 +42,7 @@ export class LocalControls {
   private fizzled = false;
   private wasHeld = false;
   private depthTrail: number[] = []; // the trigger's last few frames of pull
-  private tackleHeldT = 0;
-  private wasTackle = false;
+  private wasSlot = [false, false, false]; // the kit fires on the press, once
   private aimWorld: number | null = null; // the locked field angle
   private flickPeak = 0;
   private flickT = 0;
@@ -61,7 +60,8 @@ export class LocalControls {
     return norm(vec(sx, sy / this.aimSquash));
   }
 
-  sample(dt: number, kb: Keyboard, facing: Vec2): PlayerInput {
+  // carrying: whether THIS body has the ball — the kit's context switch
+  sample(dt: number, kb: Keyboard, facing: Vec2, carrying = false): PlayerInput {
     const pad = pads.state;
     let x = (kb.has('KeyD') || kb.has('ArrowRight') ? 1 : 0) - (kb.has('KeyA') || kb.has('ArrowLeft') ? 1 : 0);
     let y = (kb.has('KeyS') || kb.has('ArrowDown') ? 1 : 0) - (kb.has('KeyW') || kb.has('ArrowUp') ? 1 : 0);
@@ -161,25 +161,39 @@ export class LocalControls {
     this.charge = held && !this.fizzled ? Math.max(this.chargeT / CHARGE_TIME, depth) : 0;
     this.aimDir = held && !this.fizzled ? this.resolve(move, facing).dir : null;
 
-    // One honest job: a TAP (quick release) fires the lunge-poke. Holding the
-    // key does nothing — you get the ball or you don't. K is the defending
-    // hand; Space belongs to the boot.
-    const tackleHeld = kb.has('KeyK') || pad?.tackle || false;
-    let tacklePulse = false;
-    if (tackleHeld) {
-      this.tackleHeldT += dt;
-    } else {
-      if (this.wasTackle && this.tackleHeldT < 0.18) tacklePulse = true;
-      this.tackleHeldT = 0;
+    // The kit: three slots on J/K/L and X/B/Y, context-swapped by the ball at
+    // your feet, and every slot fires the INSTANT it is pressed — one button,
+    // one move. Slot one without the ball is the standing tackle: the lunge.
+    const slots = [
+      kb.has('KeyK') || pad?.tackle || false,
+      kb.has('KeyJ') || pad?.kitX || false,
+      kb.has('KeyL') || pad?.kitY || false,
+    ];
+    const stick = len(move) > 0.25 ? norm(move) : null;
+    let tackle = false;
+    let skill: PlayerInput['skill'] = null;
+    if (slots[0] && !this.wasSlot[0]) {
+      // the feint's stick names the SWAY; with no stick the shoulders drop right
+      if (carrying) skill = { kind: 'feint', dir: stick ?? perpRight(facing) };
+      else tackle = true;
     }
-    this.wasTackle = tackleHeld;
+    if (slots[1] && !this.wasSlot[1] && !skill) {
+      skill = carrying
+        ? { kind: 'croqueta', dir: stick ?? perpRight(facing) }
+        : { kind: 'slide', dir: stick ?? facing };
+    }
+    if (slots[2] && !this.wasSlot[2] && !skill) {
+      skill = { kind: carrying ? 'rainbow' : 'barge', dir: stick ?? facing };
+    }
+    this.wasSlot = slots;
 
     return {
       move,
       sprint: kb.has('ShiftLeft') || kb.has('ShiftRight') || pad?.sprint || false,
       kickCharging: held,
       kickReleased,
-      tackle: tacklePulse,
+      tackle,
+      skill,
     };
   }
 

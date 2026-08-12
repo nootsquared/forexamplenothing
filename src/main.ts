@@ -182,7 +182,9 @@ async function boot() {
   const TRAINING_TIPS: [string, string][] = [
     ['WASD RUNS - SHIFT SPRINTS', 'LEFT STICK RUNS - LT SPRINTS'],
     ['HOLD SPACE TO CHARGE A KICK - LET GO TO PLAY IT', 'PULL RT TO CHARGE - TRIGGER DEPTH IS POWER'],
-    ['TAP K TO LUNGE WHEN A TOUCH RUNS LOOSE', 'TAP B TO LUNGE WHEN A TOUCH RUNS LOOSE'],
+    ['ON THE BALL: K FEINTS - J CROQUETAS - L RAINBOWS', 'ON THE BALL: B FEINTS - X CROQUETAS - Y RAINBOWS'],
+    ['NO BALL: K TACKLES - J SLIDES - L BARGES A SHIELDER', 'NO BALL: B TACKLES - X SLIDES - Y BARGES A SHIELDER'],
+    ['A SLIDE FROM BEHIND IS A FREE KICK - COME AROUND HIM', 'A SLIDE FROM BEHIND IS A FREE KICK - COME AROUND HIM'],
     ['E TAKES THE MAN UNDER THE CHEVRON', 'A TAKES THE MAN UNDER THE CHEVRON'],
     ['T HANDS YOU THE HUNTER - AUTO SWITCH', 'DPAD UP HANDS YOU THE HUNTER - AUTO SWITCH'],
     ['PASS TO YOUR KEEPER - HIS HANDS OPEN THE SIGHT', 'PASS TO YOUR KEEPER - HIS HANDS OPEN THE SIGHT'],
@@ -1006,7 +1008,8 @@ async function boot() {
     }
     const myIdx = guestMyIdx();
     const facing = myIdx >= 0 ? match.world.players[myIdx].facing : vec(1, 0);
-    input = controls.sample(dt, kb, facing);
+    // a guest's context is his best local read — the host's sim validates it
+    input = controls.sample(dt, kb, facing, ballIsMine());
     if (mouseKick) {
       input.kickReleased = { power: mouseKick.power, aimOffset: 0, aimAt: mouseKick.aimAt };
       mouseKick = null;
@@ -1825,17 +1828,21 @@ async function boot() {
     // the first seat's hands are the shell's hands — read through ITS device,
     // so a couch pad in slot two still steers the man it is holding
     const facing = world.players[cursor.idx].facing;
+    const myCarrying = world.players[cursor.idx].carrying;
     // Nobody has formally sat down: one player on the keyboard AND the first
     // pad on the table, whichever he happens to be touching this tick
     input = primary
-      ? primary.sample(dt, boardFor(primary), facing)
-      : pads.drive(roster.soloPads, () => controls.sample(dt, kb, facing));
-    mouseKick = null; // the sling is retired — the boot answers to Space and A
+      ? primary.sample(dt, boardFor(primary), facing, myCarrying)
+      : pads.drive(roster.soloPads, () => controls.sample(dt, kb, facing, myCarrying));
+    mouseKick = null; // the sling is retired — the boot answers to Space and RT
     applyFlick(input, world, primary);
     if (primary && seatSwitchPressed(primary)) askSwitch(cursor);
-    // over a corner the tackle key changes jobs — it calls the box in, and
-    // nobody lunges at a dead ball of his own
-    if (cornerAim && cursor.idx === cornerAim.taker) input.tackle = false;
+    // over a corner the kit changes jobs — the button calls the box in, and
+    // nobody lunges or slides at a dead ball of his own
+    if (cornerAim && cursor.idx === cornerAim.taker) {
+      input.tackle = false;
+      input.skill = null;
+    }
     // A thumb on the right stick is a man THINKING, not a man who walked away
     // — the keeper's idle punt must never fire out from under an open sight
     const active = input.move.x !== 0 || input.move.y !== 0 ||
@@ -1860,7 +1867,7 @@ async function boot() {
         cs.cursor.autoMode = !cs.cursor.autoMode;
         scene.toast(`${cs.seat.label} AUTO SWITCH ${cs.cursor.autoMode ? 'ON' : 'OFF'}`);
       }
-      const seatIn = cs.seat.sample(dt, boardFor(cs.seat), world.players[cs.cursor.idx].facing);
+      const seatIn = cs.seat.sample(dt, boardFor(cs.seat), world.players[cs.cursor.idx].facing, world.players[cs.cursor.idx].carrying);
       applyFlick(seatIn, world, cs.seat);
       if (assistFor(cs.cursor, dt)) seatIn.assist = true;
       overrides[cs.cursor.idx] = seatIn;

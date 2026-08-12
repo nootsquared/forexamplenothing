@@ -54,9 +54,9 @@ export class Seat {
 
   // What these hands are asking for this tick. The board arrives already cut
   // to what this seat may touch; the pads it may touch it asks the roster for.
-  sample(dt: number, kb: Keyboard, facing: Vec2): PlayerInput {
+  sample(dt: number, kb: Keyboard, facing: Vec2, carrying = false): PlayerInput {
     if (this.device.kind === 'keys' && this.device.hands === 1 && !this.front) this.front = secondHands(kb);
-    return pads.drive(roster.padsFor(this), () => this.controls.sample(dt, this.front ?? kb, facing));
+    return pads.drive(roster.padsFor(this), () => this.controls.sample(dt, this.front ?? kb, facing, carrying));
   }
 
   // The pass this seat's right stick just fired, if any — consumed once

@@ -99,6 +99,23 @@ export function lungeWindowReach(defend: number): number {
   return lungeReach(defend) + LUNGE_TRAVEL;
 }
 
+// The skill kit's numbers. Moves always fire and the ball is displaced
+// deterministically — stats buy QUALITY (speed, reach, tightness, recovery)
+// and low stats buy a continuous scatter, never a coin flip.
+export const SKILL = {
+  lock: 0.5, // the breath between any two moves
+  cooldown: { feint: 2.2, croqueta: 3, rainbow: 6, slide: 4, barge: 2.4 } as Record<string, number>,
+  feintBurst: 6.4,      // scaled by agility quality
+  croquetaShift: (control: number) => 7 + 3.5 * control,
+  croquetaTouch: (control: number) => 0.3 - 0.12 * control, // tighter feet reconnect sooner
+  rainbowCarry: 4.0,    // m/s forward under the flip, plus quality
+  rainbowLift: 7.4,     // vz — quality raises the arc over heads, scatter sails it
+  slideTime: 0.55,
+  slideSpeed: (defend: number) => 9.6 + 1.2 * defend, // faster than any sprint
+  slideReach: (defend: number) => 0.85 + 0.35 * defend,
+  bargeRange: 1.35,
+};
+
 // The shoulder duel a lunge buys against a latched carrier's OPEN side:
 // attack beats hold and the poke is clean; near-even pokes it loose; lose big
 // and you bounce off. The shielded side is not a duel — it is a wall.

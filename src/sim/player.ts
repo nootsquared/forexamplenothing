@@ -34,14 +34,21 @@ export interface PlayerStats {
   handling: number;    // GK 0..1, catch versus spill
 }
 
+// The skill kit: three attacking verbs for the man ON the ball, two committed
+// challenges for the man without it (the standing tackle rides `tackle`).
+// Every move ALWAYS fires — whether it BEATS anyone is geometry, and stats
+// only scale its quality. Brains and hands emit these identically.
+export type SkillKind = 'feint' | 'croqueta' | 'rainbow' | 'slide' | 'barge';
+
 export interface PlayerInput {
   move: Vec2;          // unit-ish intent
   sprint: boolean;
   kickCharging: boolean;
-  // aimOffset: radians of J/L bend applied off the stick line at release.
-  // aimAt: a field POINT to strike toward (mouse passing) — overrides the stick line.
+  // aimOffset: radians of U/O bend applied off the stick line at release.
+  // aimAt: a field POINT to strike toward (dead-ball sights) — overrides the stick line.
   kickReleased: { power: number; aimOffset?: number; aimAt?: Vec2 } | null;
   tackle?: boolean;    // lunge-poke at the ball — win it clean or eat the recovery
+  skill?: { kind: SkillKind; dir: Vec2 } | null; // a kit move committed this tick
   attend?: Vec2;       // where the body FACES at walking pace (ball, mark) — sprint overrides
   dive?: { dirY: -1 | 1; height: 0 | 1 }; // keeper only: commit the leap the brain chose
   // The takeover blend: a freshly switched-into body whose hands are still
@@ -83,12 +90,17 @@ export class PlayerBody {
   lungeTimer = 0;
   tackleCooldown = 0;
   recoverTimer = 0;
+  // The slide rides the lunge window but answers to its own referee: any ball
+  // touched is won, a back gone through is a foul, a miss is a second on the grass
+  sliding = false;
+  // The kit's rhythm: every move on its own clock, plus one short breath
+  // between ANY two moves — a decision each time, never a drum roll
+  moveCd: Record<SkillKind, number> = { feint: 0, croqueta: 0, rainbow: 0, slide: 0, barge: 0 };
+  skillLock = 0;
   // Keeper only, committed by the world: the beat spent in the air, where the
   // leap is a decision you live with — no steering, no second thoughts
   diveTimer = 0;
   diveHeight: 0 | 1 = 0;
-  // A shoulder charge is a challenge, not a rhythm — one roll per contact
-  bargeCooldown = 0;
   isSprinting = false;
   isCharging = false;
   // The world's verdict that this body is running WITH the ball right now —
@@ -118,14 +130,22 @@ export class PlayerBody {
     this.isSprinting = input.sprint && moveLen > 0.4 && this.stamina > 0.05;
     this.isCharging = input.kickCharging;
 
-    // A lunge that expires without winning the ball becomes the recovery
-    if (this.lungeTimer > 0 && this.lungeTimer <= dt) this.recoverTimer = 0.5;
+    // A lunge that expires without winning the ball becomes the recovery —
+    // and a whiffed SLIDE is a whole second on the grass
+    if (this.lungeTimer > 0 && this.lungeTimer <= dt) {
+      this.recoverTimer = this.sliding ? 1 : 0.5;
+      this.sliding = false;
+    }
     this.lungeTimer = Math.max(0, this.lungeTimer - dt);
     this.tackleCooldown = Math.max(0, this.tackleCooldown - dt);
     this.recoverTimer = Math.max(0, this.recoverTimer - dt);
-    this.bargeCooldown = Math.max(0, this.bargeCooldown - dt);
+    this.skillLock = Math.max(0, this.skillLock - dt);
+    for (const kind of Object.keys(this.moveCd) as SkillKind[]) {
+      this.moveCd[kind] = Math.max(0, this.moveCd[kind] - dt);
+    }
     this.diveTimer = Math.max(0, this.diveTimer - dt);
-    const airborne = this.diveTimer > 0;
+    // A body mid-slide is as committed as one mid-air: no steering, no plant
+    const airborne = this.diveTimer > 0 || this.sliding;
     // The lunge: a committed burst toward the point of attack. Miss and the
     // recovery leaves you beaten — tackling is a bet, not a spam button.
     if (input.tackle && this.tackleCooldown <= 0 && this.lungeTimer <= 0 && this.recoverTimer <= 0) {

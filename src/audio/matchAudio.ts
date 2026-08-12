@@ -137,6 +137,11 @@ export class MatchAudio {
         case 'steal':
           audio.play('tackle-slide', { vol: 0.7, rate: 1.14, pan: panOf(e.x), jitter: 0.06 });
           break;
+        case 'skillmove':
+          // the barge lands as a body thud; the footwork moves stay under the
+          // crowd until the real recordings arrive
+          if (e.move === 'barge') audio.play('tackle-slide', { vol: 0.5, rate: 0.8, pan: panOf(e.x), jitter: 0.08 });
+          break;
         case 'save':
           audio.play('gk-catch', { pan: panOf(e.x) });
           this.crowd('crowd-cheer', 0.75, 0.15);

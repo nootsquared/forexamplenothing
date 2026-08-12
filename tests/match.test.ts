@@ -45,9 +45,16 @@ describe('the 22-brain match', () => {
 
   it('keeps a team shape instead of 22 players mobbing the ball', () => {
     const match = createMatch();
-    for (let i = 0; i < 60 * 20; i++) advanceMatch(match, DT);
-    const near = match.world.players.filter((p) => dist(p.pos, match.world.ball.pos) < 8).length;
-    expect(near).toBeLessThan(9); // some contest it; most hold their jobs
+    for (let i = 0; i < 60 * 15; i++) advanceMatch(match, DT);
+    // sampled across a stretch of play: a scramble may spike for a beat,
+    // but the SHAPE holds — some contest it; most hold their jobs
+    let sum = 0;
+    const SAMPLES = 10;
+    for (let s = 0; s < SAMPLES; s++) {
+      for (let i = 0; i < 60; i++) advanceMatch(match, DT);
+      sum += match.world.players.filter((p) => dist(p.pos, match.world.ball.pos) < 8).length;
+    }
+    expect(sum / SAMPLES).toBeLessThan(8);
   }, LONG_SIM);
 
   it('is fully deterministic — same seed, same match, tick for tick', () => {

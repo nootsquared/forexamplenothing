@@ -45,7 +45,9 @@ export interface PadState {
   move: Vec2;                                  // left stick, dead-zone rescaled
   aim: { x: number; y: number; mag: number };  // right stick, raw beyond the dead zone
   kickDepth: number;                           // RT pull 0–1 — the trigger IS the charge bar
-  tackle: boolean;
+  tackle: boolean;                             // B — kit slot one (tackle / feint)
+  kitX: boolean;                               // X — kit slot two (slide / croqueta)
+  kitY: boolean;                               // Y — kit slot three (barge / rainbow)
   sprint: boolean;
 }
 
@@ -108,6 +110,8 @@ export class Pad {
       aim: am < AIM_DEAD ? { x: 0, y: 0, mag: 0 } : { x: ax, y: ay, mag: clamp((am - AIM_DEAD) / (SATURATE - AIM_DEAD), 0, 1) },
       kickDepth: clamp((rtRaw - TRIG_DEAD) / (TRIG_SAT - TRIG_DEAD), 0, 1),
       tackle: held(pad.buttons[BTN.b]),
+      kitX: held(pad.buttons[BTN.x]),
+      kitY: held(pad.buttons[BTN.y]),
       // Sprint is the LEFT trigger — the right index finger belongs to the
       // boot, and one hand should never fight itself for two verbs at once
       sprint: held(pad.buttons[BTN.lt]),
@@ -177,6 +181,8 @@ const mergeState = (squad: Pad[]): PadState | null => {
     aim: loudest((s) => s.aim.mag).aim,
     kickDepth: Math.max(...live.map((s) => s.kickDepth)),
     tackle: live.some((s) => s.tackle),
+    kitX: live.some((s) => s.kitX),
+    kitY: live.some((s) => s.kitY),
     sprint: live.some((s) => s.sprint),
   };
 };

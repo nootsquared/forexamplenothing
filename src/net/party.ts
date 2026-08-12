@@ -1,5 +1,5 @@
 import { NetSession, LobbySnap, SeatSnap, GuestMsg, HostMsg, NetInput, DraftIntent } from './net';
-import { PlayerInput } from '../sim/player';
+import { PlayerInput, SkillKind } from '../sim/player';
 import { vec } from '../core/math';
 
 // The party, as the HOST's tab sees it: who's here, what they're named,
@@ -190,9 +190,15 @@ export function packInput(input: PlayerInput, sw: boolean): NetInput {
     kx: input.kickReleased?.aimAt?.x ?? 0,
     ky: input.kickReleased?.aimAt?.y ?? 0,
     tk: !!input.tackle,
+    sk: input.skill ? SKILL_WIRE.indexOf(input.skill.kind) + 1 : 0,
+    sx: input.skill?.dir.x ?? 0,
+    sy: input.skill?.dir.y ?? 0,
     sw,
   };
 }
+
+// The kit on the wire: one index per verb, stable on both ends
+const SKILL_WIRE: SkillKind[] = ['feint', 'croqueta', 'rainbow', 'slide', 'barge'];
 
 export function unpackInput(n: NetInput): PlayerInput {
   return {
@@ -201,5 +207,6 @@ export function unpackInput(n: NetInput): PlayerInput {
     kickCharging: n.ch,
     kickReleased: n.kp > 0 ? { power: n.kp, aimOffset: 0, aimAt: n.kx || n.ky ? vec(n.kx, n.ky) : undefined } : null,
     tackle: n.tk,
+    skill: n.sk > 0 && SKILL_WIRE[n.sk - 1] ? { kind: SKILL_WIRE[n.sk - 1], dir: vec(n.sx, n.sy) } : null,
   };
 }

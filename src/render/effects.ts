@@ -136,6 +136,21 @@ export class Effects {
             });
           }
           break;
+        case 'skillmove':
+          // The kit's signature: dust off the working foot along the move's
+          // line. The rainbow keeps it minimal — the ball's flight is the show.
+          if (e.move === 'barge') {
+            this.spawn(this.assets.dustFrames, e.x, e.y, { life: 0.28, vx: e.dx * 12, vy: -2 });
+            this.jolt(0.12);
+            pads.rumble(0.3, 70);
+          } else {
+            this.spawn(this.assets.dustFrames, e.x, e.y, {
+              life: e.move === 'rainbow' ? 0.2 : 0.3,
+              vx: e.dx * (e.move === 'croqueta' ? 14 : 6) + this.rng.range(-3, 3),
+              vy: -e.dy * 6,
+            });
+          }
+          break;
         case 'shrug':
           // Bounced off the shield — the ground takes the hit, not the ball
           this.spawn(this.assets.dustFrames, e.x, e.y, { life: 0.34, vx: this.rng.range(-12, 12), vy: -4 });

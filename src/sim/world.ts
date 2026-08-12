@@ -2,10 +2,10 @@ import { vec, len, dist, norm, sub, scale, add, rotate, clamp, angleBetween, sig
 import { Rng } from '../core/rng';
 import { GRAVITY, PITCH, SURFACES, Surface } from './constants';
 import { Ball } from './ball';
-import { PlayerBody, PlayerInput } from './player';
+import { PlayerBody, PlayerInput, SkillKind } from './player';
 import { SimEvent } from './events';
 import {
-  CLAMP, coneHalfAngle, duelScores, goalness, keeperCentering, kickAccuracy,
+  CLAMP, SKILL, coneHalfAngle, duelScores, goalness, keeperCentering, kickAccuracy,
   lungeReach, lungeWindowReach,
 } from './tuning';
 
@@ -193,13 +193,9 @@ export class World {
         if (d < bestD) { bestD = d; this.looseClaimIdx = i; }
       });
     }
-    // What each body ACTUALLY played this tick, press and all — the jaws read
-    // this, never the raw sheet, or every automatic press is dressed and dropped
-    const played: PlayerInput[] = [];
     this.players.forEach((p, i) => {
       const raw = inputs[i] ?? { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
       const input = this.ceremony === 'walkback' ? this.walkHomeInput(p, i, raw) : this.attended(raw, p, i);
-      played[i] = input;
       // The leap is committed before the legs run, so the burst rides this tick
       if (ballLive && input.dive && p.id.role === 'GK') this.commitDive(p, i, input.dive);
       // The verdict is taken BEFORE the legs move: a lunge that leaves after
@@ -209,6 +205,8 @@ export class World {
         this.humanIdxs.has(i) && this.tackleWindow(i) <= 0;
       p.carrying = ballLive && this.ball.z <= 1 && dist(p.pos, this.ball.pos) < CLAMP.carry &&
         (this.carrier?.idx === i || this.lastTouch?.idx === i);
+      // The kit commits before the legs run too, so its burst rides this tick
+      if (ballLive && input.skill) this.applySkill(p, i, input.skill);
       p.update(dt, input, this.events);
       if (p.lungeTimer <= 0) this.lateLunge.delete(i);
       else if (late) this.lateLunge.add(i);
@@ -421,6 +419,7 @@ export class World {
   // The poke slips the ball SIDEWAYS past the carrier, never back into their
   // shins: a dispossession changes the play's direction, it doesn't ping-pong.
   private resolveLunge(p: PlayerBody, idx: number) {
+    if (p.sliding) return this.resolveSlide(p, idx); // the slide answers to its own referee
     const gk = p.id.role === 'GK';
     const ceiling = gk ? (p.diveTimer > 0 && p.diveHeight === 1 ? 2.4 : 1.6) : 0.8;
     if (p.lungeTimer <= 0 || this.ball.z > ceiling) return;
@@ -539,6 +538,167 @@ export class World {
       carrier.touchCooldown = Math.max(carrier.touchCooldown, 0.5);
       carrier.playLock = Math.max(carrier.playLock, 0.5);
     }
+    this.touched(p.id.team, idx);
+    this.events.push({ kind: 'steal', x: this.ball.pos.x, y: this.ball.pos.y });
+  }
+
+  // ---- THE SKILL KIT ------------------------------------------------------
+  // Every move fires the instant it is asked for — no bars, no dice. The ball
+  // is displaced deterministically and whether that BEATS anyone is geometry
+  // plus the opponent's state. Stats scale the move's quality, and a low stat
+  // wears a continuous scatter, exactly like the kick cone. Brains commit
+  // through the same PlayerInput field as hands.
+
+  // The scatter a stat leaves on a move: zero-centred, continuous, honest
+  private skillScatter(stat: number, base: number): number {
+    return (this.rng.next() - 0.5) * 2 * base * (1 - stat);
+  }
+
+  private applySkill(p: PlayerBody, idx: number, skill: { kind: SkillKind; dir: Vec2 }) {
+    if (p.id.role === 'GK' || this.ceremony !== 'live' || this.restartLock > 0) return;
+    if (p.skillLock > 0 || p.moveCd[skill.kind] > 0) return;
+    if (p.lungeTimer > 0 || p.recoverTimer > 0 || p.diveTimer > 0) return;
+    // Context is the whole grammar: the ball at your feet swaps the kit to its
+    // attacking page, and a page you're not on simply doesn't answer
+    const attack = skill.kind === 'feint' || skill.kind === 'croqueta' || skill.kind === 'rainbow';
+    if (attack !== p.carrying) return;
+    if (attack && (this.ball.z > 0.8 || dist(p.pos, this.ball.pos) > CLAMP.carry)) return;
+    const dir = len(skill.dir) > 0.25 ? norm(skill.dir) : p.facing;
+    switch (skill.kind) {
+      case 'feint': {
+        // The stick names the SWAY — the lie the defender is invited to buy —
+        // and the burst goes the other way with the ball riding it
+        const q = 0.35 + 0.65 * p.stats.agility;
+        const burst = rotate(scale(dir, -1), this.skillScatter(p.stats.control, 0.3));
+        p.look = dir;
+        p.vel = add(scale(p.vel, 0.3), scale(burst, SKILL.feintBurst * q));
+        this.ball.vel = add(scale(p.vel, 1.02), scale(burst, 0.8));
+        this.ball.spin = 0;
+        p.touchCooldown = Math.max(p.touchCooldown, 0.15);
+        this.events.push({ kind: 'feint', x: p.pos.x, y: p.pos.y, dx: burst.x, dy: burst.y });
+        break;
+      }
+      case 'croqueta': {
+        // The lateral shift through the reach gap: the ball crosses, the body
+        // steps after it — control is how fast and how tight
+        const q = p.stats.control;
+        const shift = rotate(dir, this.skillScatter(q, 0.28));
+        this.ball.vel = add(scale(shift, SKILL.croquetaShift(q)), scale(p.vel, 0.35));
+        this.ball.z = 0;
+        this.ball.vz = 0;
+        this.ball.spin = 0;
+        p.vel = add(scale(p.vel, 0.55), scale(shift, 2.6 + 1.6 * q));
+        p.freshTouch = 0.5;
+        p.touchCooldown = Math.max(p.touchCooldown, SKILL.croquetaTouch(q));
+        this.events.push({ kind: 'skillmove', move: 'croqueta', idx, x: p.pos.x, y: p.pos.y, dx: shift.x, dy: shift.y });
+        break;
+      }
+      case 'rainbow': {
+        // The ball goes OVER him and you go round: agility and control buy the
+        // arc's shape, and a low pair sails it long or dumps it short
+        const q = 0.5 * (p.stats.agility + p.stats.control);
+        const arc = rotate(dir, this.skillScatter(q, 0.34));
+        this.ball.vel = scale(arc, SKILL.rainbowCarry + q * 2.2 + this.skillScatter(q, 1.6));
+        this.ball.vz = SKILL.rainbowLift + q * 1.3 + this.skillScatter(q, 1.4);
+        this.ball.spin = 0;
+        p.touchCooldown = Math.max(p.touchCooldown, 0.3);
+        this.events.push({ kind: 'skillmove', move: 'rainbow', idx, x: p.pos.x, y: p.pos.y, dx: arc.x, dy: arc.y });
+        break;
+      }
+      case 'slide': {
+        // The committed slide: faster than any sprint, along the stick, no
+        // steering once it leaves. resolveSlide judges what it finds.
+        p.sliding = true;
+        p.lungeTimer = SKILL.slideTime;
+        p.vel = scale(rotate(dir, this.skillScatter(p.stats.defend, 0.12)), SKILL.slideSpeed(p.stats.defend));
+        p.tackleCooldown = Math.max(p.tackleCooldown, 1.4);
+        this.events.push({ kind: 'tackle', x: p.pos.x, y: p.pos.y });
+        break;
+      }
+      case 'barge': {
+        // Shoulder to shoulder: a pure PHYS contest, and the honest answer to
+        // a shielder's wall. Win and his ball is nobody's for a beat.
+        let ti = -1;
+        let bestD = SKILL.bargeRange;
+        this.players.forEach((t, j) => {
+          if (t.id.team === p.id.team || t.id.role === 'GK') return;
+          const to = sub(t.pos, p.pos);
+          const d = len(to);
+          if (d > bestD || d < 1e-4) return;
+          if ((to.x * dir.x + to.y * dir.y) / d < 0.35) return; // the shoulder goes forward
+          bestD = d;
+          ti = j;
+        });
+        if (ti >= 0) {
+          const t = this.players[ti];
+          const margin = p.stats.phys - t.stats.phys + (this.rng.next() - 0.5) * 0.35;
+          if (margin >= -0.1) {
+            const push = clamp(0.45 + margin, 0.35, 1.3);
+            t.vel = add(t.vel, scale(dir, 3.6 + 3.4 * push));
+            t.recoverTimer = Math.max(t.recoverTimer, 0.3 + 0.35 * push);
+            p.vel = add(scale(p.vel, 0.6), scale(dir, 1.6));
+            if (this.carrier?.idx === ti && dist(this.ball.pos, t.pos) <= CLAMP.protect) {
+              this.ball.vel = add(scale(t.vel, 0.5), scale(dir, 2.6));
+              t.touchCooldown = Math.max(t.touchCooldown, 0.6);
+              t.playLock = Math.max(t.playLock, 0.5);
+              this.carrier = null;
+            }
+          } else {
+            // The wall won: you bounce, and the recovery is yours to wear
+            p.vel = scale(dir, -2.6);
+            p.recoverTimer = Math.max(p.recoverTimer, 0.5);
+            this.events.push({ kind: 'shrug', x: p.pos.x, y: p.pos.y });
+          }
+        }
+        this.events.push({ kind: 'skillmove', move: 'barge', idx, x: p.pos.x, y: p.pos.y, dx: dir.x, dy: dir.y });
+        break;
+      }
+    }
+    p.moveCd[skill.kind] = SKILL.cooldown[skill.kind];
+    p.skillLock = SKILL.lock;
+  }
+
+  // The slide's own referee, every tick it is live: a back gone through is a
+  // free kick, any ball the boot reaches is won outright and the dribbler goes
+  // down over it, and a slide that finds neither ends as a second on the grass
+  // (player.update charges that on expiry).
+  private resolveSlide(p: PlayerBody, idx: number) {
+    const latch = this.carrier;
+    const victim = latch && latch.idx !== idx ? this.players[latch.idx] : null;
+    const opp = victim && victim.id.team !== p.id.team ? victim : null;
+    // The whistle is human-only, same as the late lunge: a brain's slide
+    // target can spin his back into the contact mid-flight, and nobody's
+    // foul is ever handed to them by the computer
+    if (opp && this.foulsEnabled && this.ceremony === 'live' && this.humanIdxs.has(idx) &&
+        dist(p.pos, opp.pos) < SHOULDER_RANGE * 0.75 &&
+        dist(this.ball.pos, opp.pos) <= CLAMP.protect) {
+      const at = sub(p.pos, opp.pos);
+      const d = len(at);
+      if (d > 1e-6 && (opp.facing.x * at.x + opp.facing.y * at.y) / d < -0.25) {
+        p.sliding = false;
+        this.commitFoul(p, idx, opp);
+        return;
+      }
+    }
+    if (this.ball.z > 0.8 || dist(p.pos, this.ball.pos) > SKILL.slideReach(p.stats.defend)) return;
+    // Won outright — the ball is swept on along the slide's own line
+    const line = p.speed() > 0.5 ? norm(p.vel) : p.facing;
+    this.ball.vel = add(scale(line, 5.2), scale(p.vel, 0.2));
+    this.ball.z = 0;
+    this.ball.vz = 0;
+    this.ball.spin = 0;
+    if (opp && dist(p.pos, opp.pos) < SHOULDER_RANGE) {
+      const away = sub(opp.pos, p.pos);
+      opp.lungeTimer = Math.max(opp.lungeTimer, 0.85);
+      opp.vel = add(opp.vel, scale(len(away) > 1e-6 ? norm(away) : vec(1, 0), 3.2));
+      opp.touchCooldown = Math.max(opp.touchCooldown, 0.8);
+      opp.playLock = Math.max(opp.playLock, 0.6);
+    }
+    p.sliding = false;
+    p.lungeTimer = 0;
+    p.recoverTimer = Math.max(p.recoverTimer, 0.35); // the win pays: up quick
+    p.touchCooldown = Math.max(p.touchCooldown, 0.3);
+    this.carrier = null;
     this.touched(p.id.team, idx);
     this.events.push({ kind: 'steal', x: this.ball.pos.x, y: this.ball.pos.y });
   }
@@ -711,10 +871,16 @@ export class World {
     if (victim.id.team === p.id.team || dist(p.pos, victim.pos) > SHOULDER_RANGE) return false;
     if (dist(this.ball.pos, victim.pos) > CLAMP.protect) return false;
     this.lateLunge.delete(idx);
+    this.commitFoul(p, idx, victim);
+    return true;
+  }
+
+  // The shared verdict: the victim goes DOWN — sprawled, shoved, and briefly
+  // out of the game. Half theater, half truth: it sells the whistle and it's
+  // funny to watch. The late lunge and the from-behind slide both land here.
+  private commitFoul(p: PlayerBody, idx: number, victim: PlayerBody) {
     p.lungeTimer = 0;
     p.tackleCooldown = Math.max(p.tackleCooldown, 1.2);
-    // the victim goes DOWN — sprawled, shoved, and briefly out of the game.
-    // Half theater, half truth: it sells the whistle and it's funny to watch.
     const away = sub(victim.pos, p.pos);
     victim.lungeTimer = Math.max(victim.lungeTimer, 0.9);
     victim.vel = add(victim.vel, scale(len(away) > 1e-6 ? norm(away) : vec(1, 0), 3.6));
@@ -725,7 +891,6 @@ export class World {
       team: victim.id.team,
       by: idx,
     };
-    return true;
   }
 
   // The whistle lands at the END of the tick, once bodies and ball have had

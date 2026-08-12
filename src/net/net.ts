@@ -11,6 +11,9 @@ export interface NetInput {
   kx: number;   // kick aim point x (only meaningful when kp > 0)
   ky: number;
   tk: boolean;  // tackle (the tap — a lunge)
+  sk: number;   // kit move committed this frame (0 = none, 1..5 = SkillKind)
+  sx: number;   // ...and its direction
+  sy: number;
   sw: boolean;  // switch (E) pressed this frame
 }
 

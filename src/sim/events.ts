@@ -6,8 +6,11 @@ export type SimEvent =
   | { kind: 'bounce'; x: number; y: number; impact: number }
   | { kind: 'post'; x: number; y: number; impact: number } // off the woodwork!
   | { kind: 'tackle'; x: number; y: number }
-  | { kind: 'steal'; x: number; y: number } // a lunge or a closed clamp actually won the ball
-  | { kind: 'feint'; x: number; y: number; dx: number; dy: number } // the carrier's escape cut, jaws knocked open
+  | { kind: 'steal'; x: number; y: number } // a lunge or a slide actually won the ball
+  | { kind: 'feint'; x: number; y: number; dx: number; dy: number } // the sway sold, the burst gone the other way
+  // A kit move committed (croqueta / rainbow / barge — feint and slide speak
+  // through their own events above); dx/dy is the move's line
+  | { kind: 'skillmove'; move: 'croqueta' | 'rainbow' | 'barge'; idx: number; x: number; y: number; dx: number; dy: number }
   | { kind: 'shrug'; x: number; y: number } // a lunge bounced off the shield — physicality said no
   | { kind: 'save'; x: number; y: number }  // the keeper killed it in his gloves
   | { kind: 'parry'; x: number; y: number } // strong hands turned it away, ball live

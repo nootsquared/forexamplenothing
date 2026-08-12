@@ -2,7 +2,7 @@ import { Vec2, vec, len, dist, norm, sub, add, scale, clamp, angleBetween, signe
 import { Rng } from '../core/rng';
 import { GRAVITY, PITCH } from '../sim/constants';
 import { World } from '../sim/world';
-import { PlayerBody, PlayerInput } from '../sim/player';
+import { PlayerBody, PlayerInput, SkillKind } from '../sim/player';
 import { CORNER_TARGETS, CornerCall, TeamBrain, cornerGuard } from './blackboard';
 import { KeeperMind } from './keeper';
 import { leadTarget, passMargin } from './intercept';
@@ -75,6 +75,7 @@ export class Brain {
   private escapeT = 0;      // beat before this carrier may plant another cut
   private sizeT = 0;        // the take-on's tell: slowed approach, eyes on the defender
   private driveT = 0;       // ...and the committed burst that follows it
+  private skillPlan: { kind: SkillKind; dir: Vec2 } | null = null; // a kit move decided, fired once by act
   private coverMan = -1;
   private runCtx: RunCtx | null = null;
   private keeper: KeeperMind | null = null;
@@ -530,8 +531,21 @@ export class Brain {
           this.escapeT = 2.2;
           dir = weak;
         } else if (this.driveT > 0) {
-          // committed: THROUGH the side his stance left open, at pace
+          // committed: THROUGH the side his stance left open, at pace —
+          // and the burst IS the move. The size-up picked this fight;
+          // geometry picks the weapon, through the same verbs and the same
+          // sim gates as any pair of thumbs.
           dir = norm(add(dir, scale(weak, 1.1)));
+          if (this.driveT > 0.72 && gap < 2.7 && me.skillLock <= 0 && !this.skillPlan) {
+            const flair = (me.stats.agility + me.stats.control) / 2;
+            if (gap < 2 && flair > 0.62 && me.moveCd.rainbow <= 0 && this.rng.next() < 0.45) {
+              this.skillPlan = { kind: 'rainbow', dir: norm(dir) };
+            } else if (me.moveCd.croqueta <= 0 && this.rng.next() < 0.55) {
+              this.skillPlan = { kind: 'croqueta', dir: weak };
+            } else if (me.moveCd.feint <= 0 && this.rng.next() < 0.5) {
+              this.skillPlan = { kind: 'feint', dir: scale(weak, -1) }; // sway sells the wrong side
+            }
+          }
         } else if (this.sizeT > 0) {
           // The take-on's tell: half a second of slowed approach, squared up,
           // asking the defender the question. Anyone watching can read it —
@@ -658,6 +672,11 @@ export class Brain {
   private act(world: World, dt: number): PlayerInput {
     const me = world.players[this.idx];
     const input: PlayerInput = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
+    // the kit move the last decide committed to — same field as any human's
+    if (this.skillPlan) {
+      input.skill = this.skillPlan;
+      this.skillPlan = null;
+    }
 
     // A boot that has just struck the ball is not allowed to wind up again on
     // the next tick. When a clearance is blocked and the ball rebounds to the
@@ -748,7 +767,24 @@ export class Brain {
         // arriving first still wins it clean. There is no slow squeeze.
         if (this.bb.phase === 'defend' && me.tackleCooldown <= 0) {
           const d = dist(me.pos, world.ball.pos);
-          if (world.ballExposed() && d < 1.35) input.tackle = true;
+          if (world.ballExposed() && d < 1.35) {
+            input.tackle = true;
+          } else if (world.ballExposed() && d > 1.6 && d < 2.9 && me.skillLock <= 0 && me.moveCd.slide <= 0) {
+            // the committed slide: honest prey, a closing line — and never
+            // through a back, because a brain never gives a foul away
+            const toBall = norm(sub(world.ball.pos, me.pos));
+            const closing = me.vel.x * toBall.x + me.vel.y * toBall.y;
+            const cb = world.carrier ? world.players[world.carrier.idx] : null;
+            const off = cb ? norm(sub(me.pos, cb.pos)) : null;
+            const throughBack = !!cb && !!off && cb.facing.x * off.x + cb.facing.y * off.y < -0.05;
+            if (closing > 3.1 && !throughBack) input.skill = { kind: 'slide', dir: toBall };
+          }
+        }
+        // a shielder's wall gets the shoulder, never a patient orbit
+        if (this.bb.phase === 'defend' && world.shielding?.from === this.idx &&
+            me.skillLock <= 0 && me.moveCd.barge <= 0) {
+          const wall = world.players[world.shielding.idx];
+          if (dist(me.pos, wall.pos) < 1.3) input.skill = { kind: 'barge', dir: norm(sub(wall.pos, me.pos)) };
         }
         break;
       }

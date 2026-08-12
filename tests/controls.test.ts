@@ -126,7 +126,7 @@ describe('the right-stick sling', () => {
     expect(controls.takeFlick()).toBeNull();
   });
 
-  it('pad movement and buttons flow into the intent: a quick B tap lunges on release', () => {
+  it('pad movement and buttons flow into the intent: B lunges the instant it goes down', () => {
     pads.state!.move = vec(0.6, -0.3);
     pads.state!.sprint = true;
     pads.state!.tackle = true;
@@ -134,10 +134,9 @@ describe('the right-stick sling', () => {
     expect(out.move.x).toBeCloseTo(0.6, 5);
     expect(out.move.y).toBeCloseTo(-0.3, 5);
     expect(out.sprint).toBe(true);
-    expect(out.tackle).toBe(false); // the lunge waits for the release
-    pads.state!.tackle = false;
-    const released = step();
-    expect(released.tackle).toBe(true);  // a quick tap fires the poke
+    expect(out.tackle).toBe(true);  // the press IS the lunge — no waiting
+    const held = step();
+    expect(held.tackle).toBe(false); // ...and it fires exactly once per press
   });
 });
 
@@ -229,14 +228,31 @@ describe('SPACE is the boot, K is the defending hand', () => {
     expect(out.kickReleased).toBeNull();
   });
 
-  it('a quick K tap fires the lunge; a long hold releases into nothing', () => {
+  it('K lunges the instant it goes down, once per press — holding adds nothing', () => {
     let out = controls.sample(1 / 60, kbWith(['KeyK']), facing);
-    for (let i = 0; i < 30; i++) out = controls.sample(1 / 60, kbWith(['KeyK']), facing);
+    expect(out.tackle).toBe(true);  // the press is the lunge
     expect(out.kickCharging).toBe(false);
+    for (let i = 0; i < 30; i++) out = controls.sample(1 / 60, kbWith(['KeyK']), facing);
+    expect(out.tackle).toBe(false); // the hold is not a drum roll
     out = controls.sample(1 / 60, kbWith([]), facing);
-    expect(out.tackle).toBe(false); // holding was never the act — you win it or you don't
-    controls.sample(1 / 60, kbWith(['KeyK']), facing);
-    out = controls.sample(1 / 60, kbWith([]), facing);
-    expect(out.tackle).toBe(true); // the tap is the lunge
+    expect(out.tackle).toBe(false); // and the release is nothing at all
+  });
+
+  it('the kit swaps pages with the ball: J/K/L are moves carrying, challenges without', () => {
+    let out = controls.sample(1 / 60, kbWith(['KeyJ']), facing, true);
+    expect(out.skill?.kind).toBe('croqueta');
+    controls.sample(1 / 60, kbWith([]), facing, true);
+    out = controls.sample(1 / 60, kbWith(['KeyJ']), facing, false);
+    expect(out.skill?.kind).toBe('slide');
+    controls.sample(1 / 60, kbWith([]), facing, false);
+    out = controls.sample(1 / 60, kbWith(['KeyL']), facing, true);
+    expect(out.skill?.kind).toBe('rainbow');
+    controls.sample(1 / 60, kbWith([]), facing, true);
+    out = controls.sample(1 / 60, kbWith(['KeyL']), facing, false);
+    expect(out.skill?.kind).toBe('barge');
+    controls.sample(1 / 60, kbWith([]), facing, false);
+    out = controls.sample(1 / 60, kbWith(['KeyK']), facing, true);
+    expect(out.skill?.kind).toBe('feint');
+    expect(out.tackle).toBe(false); // carrying, the slot is the feint — never a lunge
   });
 });
