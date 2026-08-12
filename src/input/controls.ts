@@ -8,6 +8,10 @@ const CHARGE_TIME = 0.85;
 // The overcharge: a full bar holds for this long, then the kick FIZZLES — you
 // let go at the weight you want, or you lose the ball's moment entirely.
 const OVER_GRACE = 0.35;
+// The trigger's memory: the release is read off the deepest pull of the last
+// few frames, so the spring-back racing home never robs the strike — while a
+// deliberate ease-off still lands at the depth you settled on.
+const DEPTH_TRAIL = 6;
 // How fast the charged aim sweeps toward where the keys point (rad/s): eight-way
 // input names the destination, the arrow orbits there smoothly — never a snap
 const AIM_SWEEP = 6;
@@ -26,17 +30,18 @@ const flickPower = (peak: number) =>
   HUMAN_KICK_FLOOR + Math.pow(clamp((peak - FLICK_ARM) / (1 - FLICK_ARM), 0, 1), FLICK_GAMMA) * (1 - HUMAN_KICK_FLOOR);
 
 // Merges keyboard + pad into one player's intent, owns kick charge and aim.
-// J/L paint the aim on the FIELD: the angle locks in world space and stays
+// U/O paint the aim on the FIELD: the angle locks in world space and stays
 // put while you run — until you steer it again, or turn so far the spot falls
 // behind your strikeable cone and the lock lets go.
 // The right stick is the pad's sling: pushing it winds a pass (angle aims,
-// depth is power), the spring-back fires. While A holds a charge instead,
-// the stick POINTS the shot and releasing A plays the charged ball.
+// depth is power), the spring-back fires. While the right trigger holds a
+// charge instead, the stick POINTS the shot and the spring-back plays it.
 export class LocalControls {
   private chargeT = 0;
   private overT = 0;
   private fizzled = false;
   private wasHeld = false;
+  private depthTrail: number[] = []; // the trigger's last few frames of pull
   private tackleHeldT = 0;
   private wasTackle = false;
   private aimWorld: number | null = null; // the locked field angle
@@ -66,19 +71,27 @@ export class LocalControls {
     }
     const move = len(vec(x, y)) > 1 ? norm(vec(x, y)) : vec(x, y);
 
-    // SPACE is the boot now: face with the legs, CHARGE with the bar, and let
-    // go at the weight you mean — passing is aim plus timing, never a pointer.
-    // Hold it past full and the strike FIZZLES: the moment was yours to spend.
-    const held = kb.has('Space') || pad?.kick || false;
-    const bend = (kb.has('KeyL') ? 1 : 0) - (kb.has('KeyJ') ? 1 : 0);
+    // SPACE is the boot on the board — hold to charge, let go at the weight
+    // you mean. The RIGHT TRIGGER is the boot on the pad — the DEPTH of the
+    // pull is the charge, live in your finger, and the spring-back fires.
+    // Either way, sitting on full past the grace FIZZLES the strike: the
+    // moment was yours to spend.
+    const depth = pad?.kickDepth ?? 0;
+    const held = kb.has('Space') || depth > 0;
+    const bend = (kb.has('KeyO') ? 1 : 0) - (kb.has('KeyU') ? 1 : 0);
     const aim = pad?.aim ?? null;
     let kickReleased: { power: number; aimOffset: number } | null = null;
     if (held) {
-      this.chargeT = Math.min(CHARGE_TIME, this.chargeT + dt);
-      if (this.chargeT >= CHARGE_TIME) {
+      if (kb.has('Space')) this.chargeT = Math.min(CHARGE_TIME, this.chargeT + dt);
+      this.depthTrail.push(depth);
+      if (this.depthTrail.length > DEPTH_TRAIL) this.depthTrail.shift();
+      // Full is full whichever hand got there — a bar that sat there or a
+      // trigger pinned to the stop. Easing OFF the pin resets the clock:
+      // backing out of the overcook is exactly the skill being asked for.
+      if (Math.max(this.chargeT / CHARGE_TIME, depth) >= 1) {
         this.overT += dt;
         if (this.overT > OVER_GRACE) this.fizzled = true;
-      }
+      } else this.overT = 0;
       // The aim GLIDES: the keys name a destination and the arrow sweeps
       // toward it around the horn — a circle of taps reads as one smooth
       // orbit, never a snap between eight compass points
@@ -107,14 +120,16 @@ export class LocalControls {
       if (this.wasHeld && !this.fizzled) {
         // The human floor sits at what used to be MEDIUM: even a tap is a real
         // ball — the charge rides the upper half of the range
+        const releaseCharge = Math.max(clamp(this.chargeT / CHARGE_TIME, 0, 1), ...this.depthTrail, 0);
         kickReleased = {
-          power: HUMAN_KICK_FLOOR + clamp(this.chargeT / CHARGE_TIME, 0, 1) * (1 - HUMAN_KICK_FLOOR),
+          power: HUMAN_KICK_FLOOR + releaseCharge * (1 - HUMAN_KICK_FLOOR),
           aimOffset: this.resolve(move, facing).offset,
         };
       }
       this.chargeT = 0;
       this.overT = 0;
       this.fizzled = false;
+      this.depthTrail.length = 0;
       this.aimWorld = null; // every fresh charge opens where the legs point
       const mag = aim?.mag ?? 0;
       if (mag > (this.flickPeak > 0 ? FLICK_KEEP : FLICK_ARM)) {
@@ -140,8 +155,10 @@ export class LocalControls {
       }
     }
     this.wasHeld = held;
-    // A fizzled bar reads as DEAD — no arrow, no charge, the sight is spent
-    this.charge = held && !this.fizzled ? this.chargeT / CHARGE_TIME : 0;
+    // A fizzled bar reads as DEAD — no arrow, no charge, the sight is spent.
+    // On the pad the chalk lives in your finger: it grows and shrinks with
+    // the trigger itself.
+    this.charge = held && !this.fizzled ? Math.max(this.chargeT / CHARGE_TIME, depth) : 0;
     this.aimDir = held && !this.fizzled ? this.resolve(move, facing).dir : null;
 
     // One button, two verbs: a TAP (quick release) fires the lunge-poke, a

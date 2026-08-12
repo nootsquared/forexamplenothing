@@ -42,17 +42,18 @@ interface ControlLine {
 // Everything a player can do, in the order they learn it
 const LINES: ControlLine[] = [
   { action: 'MOVE', keys: [k('W'), k('A'), k('S'), k('D')], pad: [w('LEFT STICK')] },
-  { action: 'SPRINT', keys: [k('SHIFT')], pad: [k('RT'), w('/'), k('LT')] },
-  { action: 'KICK — CHARGE & RELEASE', keys: [w('HOLD'), k('SPACE')], pad: [w('HOLD'), k('A', MINT)], gap: true },
-  { action: 'HOLD TOO LONG = FIZZLE', keys: [w('LET GO IN TIME')], pad: [w('LET GO IN TIME')] },
+  { action: 'SPRINT', keys: [k('SHIFT')], pad: [w('HOLD'), k('LT')] },
+  { action: 'KICK — CHARGE & RELEASE', keys: [w('HOLD'), k('SPACE')], pad: [w('PULL'), k('RT', MINT)], gap: true },
+  { action: 'TRIGGER DEPTH IS POWER', keys: [w('HOLD TIME IS POWER')], pad: [w('EASE OFF TO GO SOFT')] },
+  { action: 'PIN IT FULL = FIZZLE', keys: [w('LET GO IN TIME')], pad: [w('LET GO IN TIME')] },
   { action: 'FLICK PASS', keys: [w('—')], pad: [w('FLICK'), k('RS', GOLD)] },
-  { action: 'BEND IT', keys: [k('J'), k('L')], pad: [w('AIM'), k('RS', GOLD)] },
+  { action: 'BEND IT', keys: [k('U'), k('O')], pad: [w('AIM'), k('RS', GOLD)] },
   { action: 'TACKLE', keys: [w('TAP'), k('K')], pad: [w('TAP'), k('B', CORAL)], gap: true },
   { action: 'HOLD HIM OFF', keys: [w('HOLD'), k('K')], pad: [w('HOLD'), k('B', CORAL)] },
-  { action: 'BREAK ON A CORNER', keys: [k('K')], pad: [k('B', CORAL)] },
-  { action: 'SWITCH MAN', keys: [k('E')], pad: [k('X', SKY)], gap: true },
-  { action: 'AUTO SWITCH', keys: [k('T')], pad: [k('Y', GOLD)] },
-  { action: 'CELEBRATE', keys: [k('X')], pad: [k('X', SKY)] },
+  { action: 'BREAK ON A CORNER', keys: [k('SPACE')], pad: [k('B', CORAL)] },
+  { action: 'SWITCH MAN', keys: [k('E')], pad: [k('A', SKY)], gap: true },
+  { action: 'AUTO SWITCH', keys: [k('T')], pad: [w('DPAD'), k('UP', GOLD)] },
+  { action: 'CELEBRATE', keys: [k('X')], pad: [w('ANY BUTTON')] },
   { action: 'LENS ZOOM', keys: [k('V')], pad: [w('KEYS ONLY')] },
   { action: 'PAUSE', keys: [k('ESC')], pad: [k('START')], gap: true },
   { action: 'THIS CARD', keys: [k('C')], pad: [k('SELECT')] },
@@ -60,13 +61,14 @@ const LINES: ControlLine[] = [
 ];
 
 // The friend sharing one board: his half of the keys, in the same grammar.
-// The pixel font has no comma, so the switch key wears its name.
+// The pixel font has no comma, so the tackle key wears its name.
 const SEAT_TWO: ControlLine[] = [
   { action: 'SEAT TWO', keys: [], pad: [], gap: true, head: true },
   { action: 'MOVE', keys: [k('ARROWS')], pad: [k('ARROWS')] },
   { action: 'SPRINT', keys: [k('/')], pad: [k('/')] },
-  { action: 'TACKLE', keys: [k('.')], pad: [k('.')] },
-  { action: 'SWITCH MAN', keys: [k('COMMA')], pad: [k('COMMA')] },
+  { action: 'KICK', keys: [k('.')], pad: [k('.')] },
+  { action: 'TACKLE', keys: [k('COMMA')], pad: [k('COMMA')] },
+  { action: 'SWITCH MAN', keys: [k('M')], pad: [k('M')] },
 ];
 
 export type ControlsDevice = 'pad' | 'keys';

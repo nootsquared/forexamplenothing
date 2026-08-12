@@ -18,13 +18,15 @@ export const deviceLabel = (d: SeatDevice) =>
 
 // The SECOND pair of hands on one keyboard. Seat one keeps WASD, shift and
 // space exactly as they have always been; seat two lives in the right-hand
-// cluster — arrows to run, / to sprint, . to kick, , to defend, ; and ' to
-// bend.
+// cluster — arrows to run, / to sprint, . to kick, the ;/,/' arc for the
+// skill hand (comma defends, the rest wake with the kit), M to switch, and
+// the brackets to bend.
 export const SECOND_HANDS: Record<string, string> = {
   KeyW: 'ArrowUp', KeyS: 'ArrowDown', KeyA: 'ArrowLeft', KeyD: 'ArrowRight',
   ShiftLeft: 'Slash', ShiftRight: 'Slash',
-  Space: 'Period', KeyK: 'Comma',
-  KeyJ: 'Semicolon', KeyL: 'Quote',
+  Space: 'Period',
+  KeyJ: 'Semicolon', KeyK: 'Comma', KeyL: 'Quote',
+  KeyU: 'BracketLeft', KeyO: 'BracketRight',
 };
 // The two keys seat two presses together to sit down — its own sprint and
 // kick, so the handshake teaches the controls

@@ -180,11 +180,11 @@ async function boot() {
   // The coach's lines, keyboard and pad wordings — rotated slowly on the
   // training ground so a new player learns the sticks without reading a menu
   const TRAINING_TIPS: [string, string][] = [
-    ['WASD RUNS - SHIFT SPRINTS', 'LEFT STICK RUNS - RT SPRINTS'],
-    ['DRAG BACK OFF YOUR MAN, RELEASE TO PASS', 'FLICK THE RIGHT STICK TO SLING A PASS'],
-    ['HOLD SPACE NEAR A CARRIER TO CLAMP, TAP IT TO LUNGE', 'HOLD B NEAR A CARRIER TO CLAMP, TAP IT TO LUNGE'],
-    ['E TAKES THE MAN UNDER THE CHEVRON', 'LB TAKES THE MAN UNDER THE CHEVRON'],
-    ['T HANDS YOU THE HUNTER - AUTO SWITCH', 'Y HANDS YOU THE HUNTER - AUTO SWITCH'],
+    ['WASD RUNS - SHIFT SPRINTS', 'LEFT STICK RUNS - LT SPRINTS'],
+    ['HOLD SPACE TO CHARGE A KICK - LET GO TO PLAY IT', 'PULL RT TO CHARGE - TRIGGER DEPTH IS POWER'],
+    ['HOLD K NEAR A CARRIER TO CLAMP, TAP IT TO LUNGE', 'HOLD B NEAR A CARRIER TO CLAMP, TAP IT TO LUNGE'],
+    ['E TAKES THE MAN UNDER THE CHEVRON', 'A TAKES THE MAN UNDER THE CHEVRON'],
+    ['T HANDS YOU THE HUNTER - AUTO SWITCH', 'DPAD UP HANDS YOU THE HUNTER - AUTO SWITCH'],
     ['PASS TO YOUR KEEPER - HIS HANDS OPEN THE SIGHT', 'PASS TO YOUR KEEPER - HIS HANDS OPEN THE SIGHT'],
     ['KICK IT OUT ANYWHERE - EVERY RESTART IS YOURS', 'KICK IT OUT ANYWHERE - EVERY RESTART IS YOURS'],
     ['STAND STILL - THE WHOLE FIELD WAITS WITH YOU', 'STAND STILL - THE WHOLE FIELD WAITS WITH YOU'],
@@ -1274,6 +1274,7 @@ async function boot() {
   const soundSwitch = () => audio.ui('select', 0.7);
   const pressSwitch = () => {
     if (screenName !== 'match' || paused) return;
+    if (keeperAiming || throwAim) return; // over an open sight the confirm hand DELIVERS — it must not also switch
     if (primary) return; // a couch room: every seat asks with its own hands, in the tick
     if (netRole === 'guest') {
       guestSwitch = true; // rides the next packet up to the host...
@@ -1305,12 +1306,13 @@ async function boot() {
     return fresh;
   };
   // What "switch me" looks like on whichever hands he is using this second:
-  // LB or X on any pad this seat is holding, seat one's E while the keyboard
-  // is still his to press, seat two's comma beside its own tackle and sprint
+  // A on any pad this seat is holding, seat one's E while the keyboard is
+  // still his to press, seat two's M beside its own cluster — the same key
+  // the join room already taught it as "yes"
   const seatSwitchPressed = (seat: Seat): boolean => {
-    // X belongs to the party while a goal is still being celebrated
-    if (seat.pressed('x') && !celebrate) return true;
-    if (seat.device.kind === 'keys' && seat.device.hands === 1) return keyEdge('Comma');
+    // the face buttons belong to the party while a goal is still being celebrated
+    if (seat.pressed('a') && !celebrate) return true;
+    if (seat.device.kind === 'keys' && seat.device.hands === 1) return keyEdge('KeyM');
     return boardFor(seat) !== deafBoard && keyEdge('KeyE');
   };
   const askSwitch = (c: TeamCursor) => {
@@ -1361,19 +1363,20 @@ async function boot() {
         if (pad && (pad.pressed('a') || pad.pressed('start'))) { padDropsIn(i); return; }
       }
     }
-    // the party takes X off every pad in the room before anything else does
-    if (pads.devices.some((p) => p.pressed('x')) && takeCelebration()) return;
+    // the party takes EVERY face button in the room before anything else does
+    // — no moves exist mid-ceremony, any of them is a cheer
+    if (pads.devices.some((p) => (['a', 'b', 'x', 'y'] as const).some((b) => p.pressed(b))) && takeCelebration()) return;
     if (activeScreen) for (const code of pads.navCodes()) routeKey(code);
     if (pads.pressed('a')) routeKey('Enter');
     if (pads.pressed('start')) pressEscape();
     if (pads.pressed('b') && !activeScreen && callCornerRun()) return; // over a corner, B is the call
     if (pads.pressed('b') && activeScreen) pressEscape(); // B backs out of menus; in play it tackles
     if (pads.pressed(CONTROLS_PAD_BUTTON)) toggleControls('pad'); // SELECT: what does this button do
-    if (pads.pressed('x')) pressSwitch(); // X is the switch; the bumpers stay retired
-    if (pads.pressed('y')) {
-      toggleAutoSwitch();                  // in play: hand-me-the-hunter mode
-      if (activeScreen) routeKey('KeyF');  // in the lobby: READY UP
-    }
+    if (pads.pressed('a')) pressSwitch(); // A is the switch; X and Y wait for the skill kit, bumpers stay retired
+    // dpad-up hands you the hunter — per seat once a couch forms, so one
+    // player's toggle never flips a mode out from under another's thumbs
+    if (pads.pressed('up') && !activeScreen && !primary) toggleAutoSwitch();
+    if (pads.pressed('y') && activeScreen) routeKey('KeyF'); // in the lobby: READY UP
   };
   // Numbers belong to the pitch's mood — except on the training ground, where
   // the modifier rail borrows them and hands back whatever it doesn't use
@@ -1479,7 +1482,7 @@ async function boot() {
       d,
     };
   };
-  // The hands saying GO: the mouse's click, or the pad's own kick button
+  // The hands saying GO: the mouse's click, or the pad's confirm button
   const deliverPressed = () => mouse.clicked || pads.pressed('a');
 
   const readKeeperSight = (origin: Vec2, stats: { power: number; control: number }) => {
@@ -1849,9 +1852,14 @@ async function boot() {
     if (throwAim) overrides[throwAim.taker] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
     // the couch: every seat past the first drives its own body from its own
     // device, switches with its own hands, and feels its own boot
+    if (primary?.pressed('up')) toggleAutoSwitch();
     for (const cs of couch) {
       if (!cs.seat.live) continue; // a pad pulled out of the hub: the brain takes the shirt back
       if (seatSwitchPressed(cs.seat)) askSwitch(cs.cursor);
+      if (cs.seat.pressed('up')) {
+        cs.cursor.autoMode = !cs.cursor.autoMode;
+        scene.toast(`${cs.seat.label} AUTO SWITCH ${cs.cursor.autoMode ? 'ON' : 'OFF'}`);
+      }
       const seatIn = cs.seat.sample(dt, boardFor(cs.seat), world.players[cs.cursor.idx].facing);
       applyFlick(seatIn, world, cs.seat);
       if (assistFor(cs.cursor, dt)) seatIn.assist = true;

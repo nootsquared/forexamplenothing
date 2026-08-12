@@ -40,19 +40,19 @@ type Row = { label: string; run: () => void };
 // player is never told about a stick he hasn't got.
 const pad = () => pads.connected;
 const KEY = {
-  sprint: () => (pad() ? 'RB' : 'SHIFT'),
-  swap: () => (pad() ? 'LB' : 'E'),
-  clamp: () => (pad() ? 'B' : 'SPACE'),
+  sprint: () => (pad() ? 'LT' : 'SHIFT'),
+  swap: () => (pad() ? 'A' : 'E'),
+  clamp: () => (pad() ? 'B' : 'K'),
   go: () => (pad() ? 'A' : 'ENTER'),
 };
 const SAY = {
   move: () => (pad() ? 'THE LEFT STICK' : 'W A S D'),
   moveCaps: (): Seg[] => (pad() ? [{ key: 'LS' }] : [{ key: 'W' }, { key: 'A' }, { key: 'S' }, { key: 'D' }]),
-  sprint: () => (pad() ? 'HOLD RB' : 'HOLD SHIFT'),
-  sling: () => (pad() ? 'PULL THE RIGHT STICK BACK. LET IT SPRING.' : 'CLICK AND DRAG BACK. THEN LET GO.'),
-  slingHow: () => (pad() ? 'PULL THE RIGHT STICK BACK AND LET IT SPRING' : 'CLICK ANYWHERE AND DRAG BACKWARD THEN LET GO'),
-  swap: () => (pad() ? 'PRESS LB' : 'PRESS E'),
-  clampHow: () => (pad() ? 'HOLD B' : 'HOLD SPACE'),
+  sprint: () => (pad() ? 'HOLD LT' : 'HOLD SHIFT'),
+  sling: () => (pad() ? 'PULL RT. LET IT SPRING.' : 'HOLD SPACE. LET GO IN TIME.'),
+  slingHow: () => (pad() ? 'PULL RT TO CHARGE AND LET IT SPRING' : 'HOLD SPACE TO CHARGE AND RELEASE TO PLAY IT'),
+  swap: () => (pad() ? 'PRESS A' : 'PRESS E'),
+  clampHow: () => (pad() ? 'HOLD B' : 'HOLD K'),
 };
 // The four legs of the movement drill, in whichever hand is holding the game
 const STEPS_OF_MOVE: [string, string][] = [['W', 'UP'], ['A', 'LEFT'], ['S', 'DOWN'], ['D', 'RIGHT']];
@@ -446,10 +446,10 @@ export class Tutorial {
         ],
       },
       { kind: 'card', lines: [
-          ['KICKING IS ONE MOTION'],
+          ['KICKING IS CHARGE AND RELEASE'],
           [SAY.slingHow()],
-          ['THE BALL FLIES THE OTHER WAY LIKE A SLINGSHOT'],
-          ['SOFT PULL SOFT BALL. HARD PULL ROCKET.'],
+          ['THE BALL GOES WHERE YOUR LEGS ARE FACING'],
+          ['LIGHT CHARGE SOFT BALL. FULL CHARGE ROCKET.'],
         ] },
       {
         kind: 'stage', line: SAY.sling(),
@@ -495,7 +495,6 @@ export class Tutorial {
           ['THE GOLD ARROW POINTS AT THE PLAYER YOU ARE'],
           ['THE GREY ARROW IS WHO YOU CAN SWAP TO'],
           ['PRESS ', K(KEY.swap()), ' TO CONTROL THE OTHER PLAYER'],
-          ...(pad() ? [] : [['OR CLICK A TEAMMATE TO TAKE HIM' as Seg]]),
         ] },
       {
         kind: 'stage', allowSwitch: true,
@@ -511,7 +510,7 @@ export class Tutorial {
           ['WHEN YOU PASS TO A PLAYER'],
           ['YOU AUTOMATICALLY BECOME THAT PLAYER'],
           ['SO YOU CAN MAKE THE PLAYS YOURSELF'],
-          [pad() ? 'PULL THE STICK AWAY FROM HIM. LET IT SPRING.' : 'DRAG BACK. AIM AT YOUR TEAMMATE. LET GO.'],
+          [pad() ? 'PUSH THE RIGHT STICK AT HIM. LET IT SPRING.' : 'FACE HIM. HOLD SPACE. LET GO.'],
         ] },
       {
         kind: 'stage', allowSwitch: true,

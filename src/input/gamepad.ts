@@ -3,11 +3,13 @@ import { Vec2, vec, norm, scale, clamp } from '../core/math';
 // Twin-stick pads, EVERY slot, hot-plugged. The left stick moves (analog, with
 // a radial dead zone and a walk-then-sprint curve), the right stick IS the
 // pass: push it and you're winding, angle aims, throw depth is power, and the
-// spring-back fires the ball. A charges the big kick, B defends (hold to
-// squeeze, tap to lunge), X switches, RT sprints (LT answers too), Y toggles
-// auto-switch, Start pauses, Select calls up the controls card, and the dpad
-// walks every menu. The bumpers are deliberately EMPTY — the hand sits wrong
-// on them, so no verb lives there.
+// spring-back fires the ball. The RIGHT TRIGGER is the boot — how deep you
+// pull it is how hard you'll hit it, letting it spring fires, pinning it full
+// past the grace fizzles. LT sprints, A switches, B defends (hold to squeeze,
+// tap to lunge), dpad-up toggles auto-switch, Start pauses, Select calls up
+// the controls card, and the dpad walks every menu. X and Y sit empty until
+// the skill kit claims them. The bumpers are deliberately EMPTY — the hand
+// sits wrong on them, so no verb lives there.
 // Each pad is read on its own so a couch full of them can play at once; the
 // shell's unnamed calls speak for the WHOLE bench, so the man holding pad two
 // can pause, back out and walk a menu exactly like the man holding pad one.
@@ -18,6 +20,8 @@ const AIM_DEAD = 0.22;    // the sling arms higher — a lazy thumb never passes
 // thousand matches still reaches full sprint and full-blooded passes
 const SATURATE = 0.86;
 const TRIGGER = 0.3;      // analog pull that counts as a held trigger
+const TRIG_DEAD = 0.05;   // a finger resting on the trigger is not a wind-up
+const TRIG_SAT = 0.94;    // full power arrives just short of the physical stop
 const NAV_PUSH = 0.55;    // left-stick throw that counts as a menu step
 const NAV_HOLD = 0.4;     // ...and where the step disarms again
 const NAV_DELAY = 0.36;   // the first repeat waits, so one push is one row...
@@ -40,7 +44,7 @@ const held = (b: GamepadButton | undefined) => !!b && (b.pressed || b.value > TR
 export interface PadState {
   move: Vec2;                                  // left stick, dead-zone rescaled
   aim: { x: number; y: number; mag: number };  // right stick, raw beyond the dead zone
-  kick: boolean;
+  kickDepth: number;                           // RT pull 0–1 — the trigger IS the charge bar
   tackle: boolean;
   sprint: boolean;
 }
@@ -95,15 +99,18 @@ export class Pad {
     const ax = pad.axes[aix] ?? 0;
     const ay = pad.axes[aiy] ?? 0;
     const am = Math.hypot(ax, ay);
+    // The trigger's honest depth: analog drivers report travel in value,
+    // digital-only drivers report pressed with value stuck at zero
+    const rt = pad.buttons[BTN.rt];
+    const rtRaw = rt ? (rt.value > 0 ? rt.value : rt.pressed ? 1 : 0) : 0;
     this.state = {
       move: lm < MOVE_DEAD ? vec() : scale(norm(vec(lx, ly)), throwCurve(clamp((lm - MOVE_DEAD) / (SATURATE - MOVE_DEAD), 0, 1))),
       aim: am < AIM_DEAD ? { x: 0, y: 0, mag: 0 } : { x: ax, y: ay, mag: clamp((am - AIM_DEAD) / (SATURATE - AIM_DEAD), 0, 1) },
-      kick: held(pad.buttons[BTN.a]),
+      kickDepth: clamp((rtRaw - TRIG_DEAD) / (TRIG_SAT - TRIG_DEAD), 0, 1),
       tackle: held(pad.buttons[BTN.b]),
-      // Sprint lives on the RIGHT trigger — the couch's pick — and the left
-      // trigger answers too, so neither index finger ever rests on a dead key
-      // and old habits keep working.
-      sprint: held(pad.buttons[BTN.rt]) || held(pad.buttons[BTN.lt]),
+      // Sprint is the LEFT trigger — the right index finger belongs to the
+      // boot, and one hand should never fight itself for two verbs at once
+      sprint: held(pad.buttons[BTN.lt]),
     };
 
     this.down = 0;
@@ -168,7 +175,7 @@ const mergeState = (squad: Pad[]): PadState | null => {
   return {
     move: loudest((s) => Math.hypot(s.move.x, s.move.y)).move,
     aim: loudest((s) => s.aim.mag).aim,
-    kick: live.some((s) => s.kick),
+    kickDepth: Math.max(...live.map((s) => s.kickDepth)),
     tackle: live.some((s) => s.tackle),
     sprint: live.some((s) => s.sprint),
   };

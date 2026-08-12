@@ -3,6 +3,7 @@ import { LocalControls } from '../src/input/controls';
 import { pads, PadState } from '../src/input/gamepad';
 import { vec } from '../src/core/math';
 import { Keyboard } from '../src/input/keyboard';
+import { HUMAN_KICK_FLOOR } from '../src/sim/tuning';
 
 // The twin-stick sling, headless: pads.state is a plain object the poller
 // would have written — these tests write it by hand and read the intent out.
@@ -14,7 +15,7 @@ const facing = vec(1, 0);
 const idlePad = (): PadState => ({
   move: vec(),
   aim: { x: 0, y: 0, mag: 0 },
-  kick: false,
+  kickDepth: 0,
   tackle: false,
   sprint: false,
 });
@@ -94,14 +95,14 @@ describe('the right-stick sling', () => {
     expect(Math.abs(fired.dir.y)).toBeLessThan(0.05);
   });
 
-  it('holding the kick button turns the stick into a pointer, not a trigger', () => {
-    pads.state!.kick = true;
+  it('a pulled trigger turns the stick into a pointer, not a trigger', () => {
+    pads.state!.kickDepth = 0.7;
     pads.state!.aim = { x: 0, y: -1, mag: 1 };
     const charging = step(10);
     expect(charging.kickCharging).toBe(true);
     expect(controls.flickAim).toBeNull();          // no sling while charging
     expect(controls.aimDir!.y).toBeLessThan(-0.9); // the arrow points up the glass
-    pads.state!.kick = false;
+    pads.state!.kickDepth = 0;
     pads.state!.aim = { x: 0, y: 0, mag: 0 };
     const released = step();
     expect(released.kickReleased).not.toBeNull();  // the charged ball plays
@@ -142,8 +143,72 @@ describe('the right-stick sling', () => {
   });
 });
 
+describe('the right trigger is the boot: depth is power', () => {
+  const FLOOR = HUMAN_KICK_FLOOR; // even a tap is a real ball
+
+  it('the chalk lives in your finger: charge tracks the pull, both ways', () => {
+    pads.state!.kickDepth = 0.6;
+    const out = step(4);
+    expect(out.kickCharging).toBe(true);
+    expect(controls.charge).toBeCloseTo(0.6, 5);
+    pads.state!.kickDepth = 0.3; // easing off shrinks the sight — no ratchet
+    step(8);
+    expect(controls.charge).toBeCloseTo(0.3, 5);
+  });
+
+  it('release fires at the held depth, floored like the bar', () => {
+    pads.state!.kickDepth = 0.6;
+    step(8);
+    pads.state!.kickDepth = 0;
+    const out = step();
+    expect(out.kickReleased).not.toBeNull();
+    expect(out.kickReleased!.power).toBeCloseTo(FLOOR + 0.6 * (1 - FLOOR), 2);
+  });
+
+  it('the spring-back never robs the strike — the trail remembers the pull', () => {
+    pads.state!.kickDepth = 0.9;
+    step(8);
+    pads.state!.kickDepth = 0.2; // one frame of the trigger racing home
+    step();
+    pads.state!.kickDepth = 0;
+    const out = step();
+    expect(out.kickReleased!.power).toBeCloseTo(FLOOR + 0.9 * (1 - FLOOR), 2);
+  });
+
+  it('pinning the trigger full past the grace FIZZLES the strike', () => {
+    pads.state!.kickDepth = 1;
+    step(25); // ~0.42s pinned — past the 0.35s grace
+    expect(controls.charge).toBe(0); // dead in your hands
+    pads.state!.kickDepth = 0;
+    const out = step();
+    expect(out.kickReleased).toBeNull();
+  });
+
+  it('easing off the pin resets the clock — backing out saves the ball', () => {
+    pads.state!.kickDepth = 1;
+    step(15); // 0.25s on the pin, still inside the grace
+    pads.state!.kickDepth = 0.6;
+    step(20); // well past what WOULD have fizzled, but off the pin
+    pads.state!.kickDepth = 0;
+    const out = step();
+    expect(out.kickReleased).not.toBeNull();
+    expect(out.kickReleased!.power).toBeCloseTo(FLOOR + 0.6 * (1 - FLOOR), 2);
+  });
+});
+
 describe('SPACE is the boot, K is the defending hand', () => {
   const kbWith = (codes: string[]) => ({ has: (c: string) => codes.includes(c) }) as unknown as Keyboard;
+
+  it('U and O bend the locked aim; the old J/L keys no longer steer it', () => {
+    for (let i = 0; i < 12; i++) controls.sample(1 / 60, kbWith(['Space', 'KeyO']), facing);
+    expect(controls.aimDir!.y).toBeGreaterThan(0.15); // O sweeps the arrow one way
+    controls.sample(1 / 60, kbWith([]), facing);
+    for (let i = 0; i < 12; i++) controls.sample(1 / 60, kbWith(['Space', 'KeyU']), facing);
+    expect(controls.aimDir!.y).toBeLessThan(-0.15);   // U the other
+    controls.sample(1 / 60, kbWith([]), facing);
+    for (let i = 0; i < 12; i++) controls.sample(1 / 60, kbWith(['Space', 'KeyJ', 'KeyL']), facing);
+    expect(Math.abs(controls.aimDir!.y)).toBeLessThan(0.01); // J/L retired to the kit
+  });
 
   it('holding space charges, releasing fires at the held weight', () => {
     let out = controls.sample(1 / 60, kbWith(['Space']), facing);
