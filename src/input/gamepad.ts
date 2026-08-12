@@ -5,8 +5,8 @@ import { Vec2, vec, norm, scale, clamp } from '../core/math';
 // pass: push it and you're winding, angle aims, throw depth is power, and the
 // spring-back fires the ball. The RIGHT TRIGGER is the boot — how deep you
 // pull it is how hard you'll hit it, letting it spring fires, pinning it full
-// past the grace fizzles. LT sprints, A switches, B defends (hold to squeeze,
-// tap to lunge), dpad-up toggles auto-switch, Start pauses, Select calls up
+// past the grace fizzles. LT sprints, A switches, B defends (a tap is the
+// lunge), dpad-up toggles auto-switch, Start pauses, Select calls up
 // the controls card, and the dpad walks every menu. X and Y sit empty until
 // the skill kit claims them. The bumpers are deliberately EMPTY — the hand
 // sits wrong on them, so no verb lives there.

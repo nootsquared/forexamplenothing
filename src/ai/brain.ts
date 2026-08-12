@@ -743,16 +743,12 @@ export class Brain {
         }
         sprint = this.intent.sprint;
         band = 0;
-        // The press bites INTENTIONALLY: a latched carrier gets the CLAMP —
-        // jaws, not dives — and the lunge is saved for honest prey (a heavy
-        // touch, a loose ball) where arriving first still wins it clean
+        // The press bites INTENTIONALLY: contain the carrier and wait — the
+        // lunge is spent on honest prey (a heavy touch, a loose ball) where
+        // arriving first still wins it clean. There is no slow squeeze.
         if (this.bb.phase === 'defend' && me.tackleCooldown <= 0) {
           const d = dist(me.pos, world.ball.pos);
-          if (!world.ballExposed()) {
-            if (d < 2.4) input.clamp = true;
-          } else if (d < 1.35) {
-            input.tackle = true;
-          }
+          if (world.ballExposed() && d < 1.35) input.tackle = true;
         }
         break;
       }

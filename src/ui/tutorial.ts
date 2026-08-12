@@ -42,7 +42,7 @@ const pad = () => pads.connected;
 const KEY = {
   sprint: () => (pad() ? 'LT' : 'SHIFT'),
   swap: () => (pad() ? 'A' : 'E'),
-  clamp: () => (pad() ? 'B' : 'K'),
+  tackle: () => (pad() ? 'B' : 'K'),
   go: () => (pad() ? 'A' : 'ENTER'),
 };
 const SAY = {
@@ -52,7 +52,7 @@ const SAY = {
   sling: () => (pad() ? 'PULL RT. LET IT SPRING.' : 'HOLD SPACE. LET GO IN TIME.'),
   slingHow: () => (pad() ? 'PULL RT TO CHARGE AND LET IT SPRING' : 'HOLD SPACE TO CHARGE AND RELEASE TO PLAY IT'),
   swap: () => (pad() ? 'PRESS A' : 'PRESS E'),
-  clampHow: () => (pad() ? 'HOLD B' : 'HOLD K'),
+  tackleHow: () => (pad() ? 'TAP B' : 'TAP K'),
 };
 // The four legs of the movement drill, in whichever hand is holding the game
 const STEPS_OF_MOVE: [string, string][] = [['W', 'UP'], ['A', 'LEFT'], ['S', 'DOWN'], ['D', 'RIGHT']];
@@ -548,15 +548,14 @@ export class Tutorial {
       },
       { kind: 'card', lines: [
           ['HERE IS HOW TO DEFEND AGAINST A PLAYER'],
-          ['FIRST GET CLOSE TO THE BALL CARRIER'],
-          ['1. TAP ', K(KEY.clamp()), ' TO LUNGE AT HIM'],
-          ['A LUNGE OFTEN MISSES AND HE RUNS PAST YOU'],
-          ['2. HOLD ', K(KEY.clamp()), ' TO CLAMP HIM INSTEAD'],
-          ['IT TAKES LONGER BUT THE BALL IS THEN YOURS'],
+          ['GET GOAL SIDE AND STAY WITH HIM'],
+          ['TAP ', K(KEY.tackle()), ' TO LUNGE AT HIS BALL'],
+          ['A LUNGE IS A BET. MISS AND YOU ARE BEATEN'],
+          ['THERE IS NO SLOW SQUEEZE. YOU WIN IT OR YOU DONT'],
         ] },
       {
         kind: 'stage', zoom: 2.45,
-        line: `GET CLOSE AND ${SAY.clampHow()} UNTIL THE MARK CLOSES. THEN GO SCORE.`,
+        line: `GET CLOSE AND ${SAY.tackleHow()} TO TAKE HIS BALL. THEN GO SCORE.`,
         focus: () => vec(this.world().goalXOf(0), PITCH.width / 2),
         arrange: () => this.arrangeSteal(),
         objectives: [
@@ -568,7 +567,7 @@ export class Tutorial {
       },
       { kind: 'card', lines: [
           ['LAST DRILL. A REAL DEFENDER CHASES YOU NOW'],
-          ['HE WILL CLAMP YOU THE WAY YOU JUST CLAMPED HIM'],
+          ['HE LUNGES THE MOMENT YOUR TOUCH RUNS LOOSE'],
           ['KEEP THE BALL AWAY FROM HIM'],
           ['THEN PASS TO YOUR TEAMMATE AND SCORE'],
         ] },
@@ -637,7 +636,7 @@ export class Tutorial {
     const gk = this.awayOf('GK', 0);
     this.setHero(this.homeOf('DF', 0));
     this.clearField([this.heroIdx, victim, gk]);
-    this.dress(victim, { control: 0.18, phys: 0.35 }); // lesson one: he barely fights the jaws
+    this.dress(victim, { control: 0.18, phys: 0.35 }); // lesson one: his hold barely fights the poke
     this.dress(this.heroIdx, { shoot: 0.7, control: 0.8 });
     this.put(this.heroIdx, 74, 37);
     this.put(victim, 82, 37);
@@ -726,8 +725,9 @@ export class Tutorial {
   }
 
   // The chaser: he comes at a jog and only sprints from distance, so a rookie
-  // can actually get away — and he wins the ball with the jaws you were just
-  // taught, never with a lunge that would put the referee in the lesson
+  // can actually get away — and he only bets a lunge on a touch that ran
+  // loose, the same honest window you were just taught, so the referee
+  // never enters the lesson
   private tickHunter(idx: number) {
     const w = this.world();
     const h = w.players[idx];
@@ -746,7 +746,7 @@ export class Tutorial {
       ...IDLE(),
       move: scale(to, 1 / d),
       sprint: d > 6,
-      clamp: this.myBall() && d < 2.4,
+      tackle: this.myBall() && d < 1.4 && w.ballExposed() && h.tackleCooldown <= 0,
       attend,
     });
   }
@@ -784,7 +784,7 @@ export class Tutorial {
       this.staleBall(dt, 'THAT ONE IS DEAD. GO AND TAKE IT OFF HIM AGAIN.', () => this.arrangeSteal());
     }
     // he stands over his ball until it is taken — the latch stays his, so the
-    // jaws have something honest to bite on
+    // lunge has a real duel to win
     if (w.lastTouch?.team !== 0 && dist(w.ball.pos, w.players[victim].pos) < 1.5) {
       w.carrier = { idx: victim, t: 0.8 };
     }

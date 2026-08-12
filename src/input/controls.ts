@@ -161,9 +161,9 @@ export class LocalControls {
     this.charge = held && !this.fizzled ? Math.max(this.chargeT / CHARGE_TIME, depth) : 0;
     this.aimDir = held && !this.fizzled ? this.resolve(move, facing).dir : null;
 
-    // One button, two verbs: a TAP (quick release) fires the lunge-poke, a
-    // HOLD is the clamp — jaws squeezing a carrier's ball for the clean take.
-    // K is the defending hand; Space belongs to the boot.
+    // One honest job: a TAP (quick release) fires the lunge-poke. Holding the
+    // key does nothing — you get the ball or you don't. K is the defending
+    // hand; Space belongs to the boot.
     const tackleHeld = kb.has('KeyK') || pad?.tackle || false;
     let tacklePulse = false;
     if (tackleHeld) {
@@ -180,7 +180,6 @@ export class LocalControls {
       kickCharging: held,
       kickReleased,
       tackle: tacklePulse,
-      clamp: tackleHeld,
     };
   }
 

@@ -42,7 +42,6 @@ export interface PlayerInput {
   // aimAt: a field POINT to strike toward (mouse passing) — overrides the stick line.
   kickReleased: { power: number; aimOffset?: number; aimAt?: Vec2 } | null;
   tackle?: boolean;    // lunge-poke at the ball — win it clean or eat the recovery
-  clamp?: boolean;     // held: engage the clamp on a nearby carrier's ball
   attend?: Vec2;       // where the body FACES at walking pace (ball, mark) — sprint overrides
   dive?: { dirY: -1 | 1; height: 0 | 1 }; // keeper only: commit the leap the brain chose
   // The takeover blend: a freshly switched-into body whose hands are still
@@ -84,8 +83,6 @@ export class PlayerBody {
   lungeTimer = 0;
   tackleCooldown = 0;
   recoverTimer = 0;
-  // The escape cut can't chain — one feint, then the carrier is honest again
-  feintCooldown = 0;
   // Keeper only, committed by the world: the beat spent in the air, where the
   // leap is a decision you live with — no steering, no second thoughts
   diveTimer = 0;
@@ -126,7 +123,6 @@ export class PlayerBody {
     this.lungeTimer = Math.max(0, this.lungeTimer - dt);
     this.tackleCooldown = Math.max(0, this.tackleCooldown - dt);
     this.recoverTimer = Math.max(0, this.recoverTimer - dt);
-    this.feintCooldown = Math.max(0, this.feintCooldown - dt);
     this.bargeCooldown = Math.max(0, this.bargeCooldown - dt);
     this.diveTimer = Math.max(0, this.diveTimer - dt);
     const airborne = this.diveTimer > 0;
@@ -147,7 +143,6 @@ export class PlayerBody {
     // boot is taxed, so a chasing defender genuinely reels a carrier in. Touch
     // decides the trade — better feet keep more of the pace.
     if (this.carrying && this.isSprinting) maxSpeed *= 0.84 + 0.05 * this.stats.control;
-    if (input.clamp) maxSpeed *= 0.85;     // squeezing costs a step — attach with your legs first
     if (this.recoverTimer > 0) maxSpeed *= 0.45; // beaten after a whiffed lunge
 
     // A hard cut plants the foot, and the plant costs exactly as much as the

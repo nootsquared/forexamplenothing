@@ -72,31 +72,13 @@ export function keeperCentering(control: number): number {
   return 0.5 + 0.6 * control;
 }
 
-// The clamp: hold-to-take. Chalk jaws close around a latched carrier's ball;
-// when they meet, the take is clean. Stealing is a DUEL now, never osmosis.
+// The carrier's ball, measured: possession is a pair of radii, and every take
+// is an EVENT — a tackle landed, a shoulder won, a pass cut, a heavy touch
+// claimed. Nothing changes hands by standing near a man.
 export const CLAMP = {
-  engage: 2.6,     // how close the squeezing defender must stay to the ball
-  press: 1.9,      // ...and how close he must be for the jaws to close on their
-                   // own. Tighter than engage on purpose: brushing past a man
-                   // is not pressing him, or every loose 7v7 seizes up
-  pressMan: 1.8,   // being next to the MAN arms them too — his touch running
-                   // ahead of him is not an excuse to stop pressing him
-  carry: 2.0,      // how far his ball may run and still be his to squeeze. A
-                   // sprint knocks it past the protect ring every touch; the
-                   // jaws holding only inside that ring is why they kept quitting
-
-  help: 0.45,      // what each EXTRA presser adds to the one man's squeeze — being
-                   // surrounded is faster than being marked, never a second duel
+  carry: 2.0,      // how far his ball may run and still read as HIS run
   protect: 1.1,    // the carrier's controlled bubble — beyond it the ball is honest prey
-  decay: 1.5,      // jaws fall open per second once the engagement breaks
-  grace: 0.35,     // beat of forgiveness before a broken engagement decays
-  feintAt: 0.65,   // closure that forces the carrier's escape roll
-  feintReset: 0.5, // dropping back under here re-arms the roll
 };
-
-// A back turned into the challenge is worth more than any stat: the jaws
-// crawl, and a lunge from that side never finds the ball at all.
-export const SHIELD_CLAMP = 0.45;
 
 // Ground the committed burst covers before the boot ever arrives
 // The burst a lunge carries. Widened from 1.25: the window it paints was so
@@ -115,14 +97,6 @@ export function lungeReach(defend: number): number {
 // the same number the referee judges a late arrival against
 export function lungeWindowReach(defend: number): number {
   return lungeReach(defend) + LUNGE_TRAVEL;
-}
-
-// How fast the jaws close: the defender's trade against the carrier's hold.
-// A striker's clamp barely moves; gold DF on a gray carrier snaps shut in ~1s.
-export function clampCloseRate(defender: PlayerStats, carrier: PlayerStats, shielded: boolean): number {
-  const squeeze = 0.22 + defender.defend * 1.35 * INTENSITY;
-  const resist = 0.55 + carrier.control * 0.55 + carrier.phys * 0.5;
-  return (squeeze / resist) * (shielded ? SHIELD_CLAMP : 1);
 }
 
 // The shoulder duel a lunge buys against a latched carrier's OPEN side:

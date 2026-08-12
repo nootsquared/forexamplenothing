@@ -37,7 +37,6 @@ export class TeamCursor {
   private autoT = 0;
   private graceT = 0;       // the deliberate switch's beat of immunity
   private graceTouch = -1;  // ...whose touch it was granted against
-  private jawsCd = 0;       // breath between duel handoffs — never twice in a blink
   private wearable = new Set<number>(); // every outfield body on my side
 
   constructor(private team: 0 | 1, world: World, preferIdx = -1) {
@@ -109,26 +108,6 @@ export class TeamCursor {
     if (this.graceT <= 0 && bb.phase === 'attack' && bb.possessorIdx !== null &&
         world.players[bb.possessorIdx].id.role !== 'GK' && !this.claimed(bb.possessorIdx)) {
       this.take(bb.possessorIdx);
-    }
-
-    // A teammate has put his jaws on their carrier: that duel IS the game on
-    // this tick, so the hands go to the man in it — in ANY phase, attacking or
-    // not. You are never left steering a spectator while somebody else does
-    // the defending. The jaws live on the body, not on whoever is driving it,
-    // and CLAMP.grace holds them open-mouthed for a beat, so the handover
-    // arrives mid-squeeze instead of resetting the duel.
-    // ...but our own carrier always outranks it: while WE have the ball you are
-    // the man on it, and a teammate still finishing a duel behind the play
-    // never drags the hands off him.
-    // ...and only a duel that is genuinely BITING earns the yank: ambient
-    // pressure arms jaws constantly now, and being snatched into every brush
-    // reads as chaos, not as help. A real squeeze, and not twice in a breath.
-    this.jawsCd = Math.max(0, this.jawsCd - dt);
-    const jaws = world.clamp;
-    const weHaveIt = bb.phase === 'attack' && bb.possessorIdx !== null;
-    if (!weHaveIt && this.graceT <= 0 && this.jawsCd <= 0 && jaws && jaws.close > 0.3 &&
-        this.wearable.has(jaws.idx) && !this.claimed(jaws.idx)) {
-      if (this.take(jaws.idx)) this.jawsCd = 2;
     }
 
     // The chevron rides ahead of the switch instead of replacing it: while your

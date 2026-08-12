@@ -35,29 +35,17 @@ describe('the possession war', () => {
     expect(dist(world.ball.pos, carrier.pos)).toBeLessThan(1.5);
   });
 
-  it('a gold defender CLAMPS a gray carrier and takes the ball clean', () => {
-    const { world, other } = latchedStage(mk({ control: 0.45, phys: 0.42 }), mk({ defend: 0.92, phys: 0.84 }));
-    let wonAt = -1;
-    for (let i = 0; i < 220 && wonAt < 0; i++) {
-      // a real clamper CHASES — feints buy the carrier ground, not freedom.
-      // The duel ends either way a defender wins: jaws closing, or the escape
-      // breaking down and the loose ball collected clean.
-      const to = vec(world.ball.pos.x - other.pos.x, world.ball.pos.y - other.pos.y);
-      const l = Math.hypot(to.x, to.y) || 1;
-      world.step(1 / 60, [idle, { ...idle, move: vec(to.x / l, to.y / l), clamp: true }]);
-      const owns = world.carrier && world.players[world.carrier.idx].id.team === 1;
-      if (owns || world.events.some((e) => e.kind === 'steal')) wonAt = i;
+  it('a gold defender STOOD on a gray carrier takes nothing anymore — no osmosis', () => {
+    // The exact stage the old jaws closed on in under two seconds: a weak
+    // carrier, a gold defender parked on his shoulder. Possession now changes
+    // ONLY on events — a tackle landed, a shoulder won, a touch run loose.
+    const { world } = latchedStage(mk({ control: 0.2, phys: 0.3 }), mk({ defend: 0.95, phys: 0.9 }), vec(50.9, 34));
+    let stole = false;
+    for (let i = 0; i < 240; i++) {
+      world.step(1 / 60, [idle, idle]);
+      stole ||= world.events.some((e) => e.kind === 'steal');
     }
-    expect(wonAt).toBeGreaterThanOrEqual(0);
-    expect(wonAt / 60).toBeLessThan(2.5);
-    expect(world.lastTouch?.team).toBe(1);
-  });
-
-  it("a striker's clamp on a gold carrier basically never closes", () => {
-    const { world } = latchedStage(mk({ control: 0.95, phys: 0.6 }), mk({ defend: 0.06, phys: 0.3 }));
-    const squeeze: PlayerInput = { ...idle, clamp: true };
-    for (let i = 0; i < 180; i++) world.step(1 / 60, [idle, squeeze]);
-    expect(world.events.some((e) => e.kind === 'steal')).toBe(false);
+    expect(stole).toBe(false);
     expect(world.lastTouch?.team).toBe(0);
   });
 
@@ -87,40 +75,12 @@ describe('the possession war', () => {
     expect(world.players[world.carrier!.idx].id.team).toBe(0);
   });
 
-  it('standing beside the man IS the press — nobody holds a button for it', () => {
-    // Off his boot by more than the old ball-radius, but right on his shoulder
-    const { world } = latchedStage(mk({}), mk({ defend: 0.6, phys: 0.6 }), vec(50.8, 34));
-    world.step(1 / 60, [idle, idle]);
-    expect(world.clamp?.idx).toBe(1);
-  });
+  // (the lunge that wins a loose touch clean is pinned in rules.test.ts —
+  // 'the same challenge inside the window is simply football')
 
-  it('the press does not quit in the gap between his touches', () => {
-    const { world, carrier } = latchedStage(mk({}), mk({ defend: 0.6, phys: 0.6 }), vec(51.2, 34));
-    // He knocks it ahead: the latch lapses, but the ball is plainly still his
-    world.carrier = null;
-    world.clamp = null;
-    world.ball.pos = vec(53.4, 34);
-    world.ball.vel = vec();
-    carrier.touchCooldown = 0.5;
-    world.step(1 / 60, [idle, idle]);
-    expect(world.carrier).toBeNull();
-    expect(world.clamp?.idx).toBe(1);
-  });
-
-  it('a man who breaks off hands the jaws to the mate stood on the carrier', () => {
-    const { world, other } = latchedStage(mk({}), mk({ defend: 0.6, phys: 0.6 }), vec(51.1, 34));
-    const relief = new PlayerBody(vec(52, 32.8), mk({ defend: 0.6, phys: 0.6 }), id(1));
-    world.players.push(relief);
-    world.step(1 / 60, [idle, idle, idle]);
-    expect(world.clamp?.idx).toBe(1);
-    other.pos = vec(30, 34); // he's gone — and the jaws go with the man who stayed
-    world.step(1 / 60, [idle, idle, idle]);
-    expect(world.clamp?.idx).toBe(2);
-  });
-
-  it('the clamp bit rides the wire', () => {
-    const round = unpackInput(packInput({ ...idle, clamp: true, tackle: false }, false));
-    expect(round.clamp).toBe(true);
-    expect(round.tackle).toBe(false);
+  it('the tackle bit rides the wire', () => {
+    const round = unpackInput(packInput({ ...idle, tackle: true }, false));
+    expect(round.tackle).toBe(true);
+    expect(round.sprint).toBe(false);
   });
 });

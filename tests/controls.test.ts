@@ -126,7 +126,7 @@ describe('the right-stick sling', () => {
     expect(controls.takeFlick()).toBeNull();
   });
 
-  it('pad movement and buttons flow into the intent: hold clamps, a tap lunges on release', () => {
+  it('pad movement and buttons flow into the intent: a quick B tap lunges on release', () => {
     pads.state!.move = vec(0.6, -0.3);
     pads.state!.sprint = true;
     pads.state!.tackle = true;
@@ -134,12 +134,10 @@ describe('the right-stick sling', () => {
     expect(out.move.x).toBeCloseTo(0.6, 5);
     expect(out.move.y).toBeCloseTo(-0.3, 5);
     expect(out.sprint).toBe(true);
-    expect(out.clamp).toBe(true);   // held = the squeeze
     expect(out.tackle).toBe(false); // the lunge waits for the release
     pads.state!.tackle = false;
     const released = step();
     expect(released.tackle).toBe(true);  // a quick tap fires the poke
-    expect(released.clamp).toBe(false);
   });
 });
 
@@ -214,7 +212,7 @@ describe('SPACE is the boot, K is the defending hand', () => {
     let out = controls.sample(1 / 60, kbWith(['Space']), facing);
     for (let i = 0; i < 30; i++) out = controls.sample(1 / 60, kbWith(['Space']), facing);
     expect(out.kickCharging).toBe(true);
-    expect(out.clamp).toBe(false);
+    expect(out.tackle).toBe(false);
     expect(controls.charge).toBeGreaterThan(0.3);
     out = controls.sample(1 / 60, kbWith([]), facing);
     expect(out.kickReleased).not.toBeNull();
@@ -231,13 +229,12 @@ describe('SPACE is the boot, K is the defending hand', () => {
     expect(out.kickReleased).toBeNull();
   });
 
-  it('K holds the clamp and a quick K tap fires the lunge', () => {
+  it('a quick K tap fires the lunge; a long hold releases into nothing', () => {
     let out = controls.sample(1 / 60, kbWith(['KeyK']), facing);
     for (let i = 0; i < 30; i++) out = controls.sample(1 / 60, kbWith(['KeyK']), facing);
-    expect(out.clamp).toBe(true);
     expect(out.kickCharging).toBe(false);
     out = controls.sample(1 / 60, kbWith([]), facing);
-    expect(out.tackle).toBe(false); // a long hold releases into nothing — the clamp was the act
+    expect(out.tackle).toBe(false); // holding was never the act — you win it or you don't
     controls.sample(1 / 60, kbWith(['KeyK']), facing);
     out = controls.sample(1 / 60, kbWith([]), facing);
     expect(out.tackle).toBe(true); // the tap is the lunge

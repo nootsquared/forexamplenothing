@@ -27,7 +27,6 @@ export function takeSnap(match: Match, tick: number, cursors: Record<number, num
     half: match.half,
     restartLock: q(w.restartLock),
     celebration: !!w.celebration,
-    clamp: w.clamp ? [w.clamp.idx, q(w.clamp.close)] : null,
     cursors,
     suggest,
     events,
@@ -66,13 +65,6 @@ export function poseWorld(world: World, a: MatchSnap, b: MatchSnap, k: number) {
     p.isSprinting = pb[8] > 0;   // the dust trail reads this
     p.stamina = pb[9] ?? 1;      // ...and the HUD meter reads this
   });
-
-  // the jaws are the host's truth, closure lerped for smoothness
-  world.clamp = a.clamp && b.clamp && a.clamp[0] === b.clamp[0]
-    ? { idx: b.clamp[0], close: lerp(a.clamp[1], b.clamp[1]), graceT: 0, feintRolled: false }
-    : b.clamp
-      ? { idx: b.clamp[0], close: b.clamp[1], graceT: 0, feintRolled: false }
-      : null;
 }
 
 // A guest rides a short interpolation BUFFER: it renders the match ~3 sim

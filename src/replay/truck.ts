@@ -35,7 +35,6 @@ type Phase = 'off' | 'armed' | 'blipIn' | 'rolling' | 'hold' | 'wait' | 'blipOut
 interface FrozenPose {
   ball: number[];
   players: number[][];
-  clamp: World['clamp'];
 }
 
 function capture(world: World): FrozenPose {
@@ -46,7 +45,6 @@ function capture(world: World): FrozenPose {
       p.pos.x, p.pos.y, p.vel.x, p.vel.y, p.facing.x, p.facing.y,
       p.prev.x, p.prev.y, p.lungeTimer, p.isCharging ? 1 : 0, p.isSprinting ? 1 : 0, p.stamina,
     ]),
-    clamp: world.clamp,
   };
 }
 
@@ -61,7 +59,6 @@ function restore(world: World, pose: FrozenPose) {
     p.isSprinting = s[10] > 0;
     p.stamina = s[11];
   });
-  world.clamp = pose.clamp;
 }
 
 export class ReplayTruck {

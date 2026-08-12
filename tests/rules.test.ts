@@ -257,18 +257,16 @@ describe('the shield', () => {
     return { world, carrier, defender };
   };
 
-  it('a turned back slows the jaws to a crawl, and the sim says who is shielding whom', () => {
+  it('a turned back is a wall: the sim says who is shielding whom, and nothing changes hands', () => {
     const { world } = shieldStage();
-    const squeeze: PlayerInput = { ...idle, move: vec(1, 0), clamp: true };
-    let closeAfterASecond = 0;
+    let stole = false;
     for (let t = 0; t < 60; t++) {
-      world.step(DT, [{ ...idle, move: vec(1, 0) }, squeeze]);
-      closeAfterASecond = world.clamp?.close ?? closeAfterASecond;
+      world.step(DT, [{ ...idle, move: vec(1, 0) }, { ...idle, move: vec(1, 0) }]);
+      stole ||= world.events.some((e) => e.kind === 'steal');
     }
     expect(world.shielding?.idx).toBe(0);
     expect(world.shielding?.from).toBe(1);
-    expect(closeAfterASecond).toBeLessThan(0.75); // a whole second and the jaws are still open
-    expect(world.events.some((e) => e.kind === 'steal')).toBe(false);
+    expect(stole).toBe(false);
   });
 
   it('a lunge from the shielded side wins a shoulder and nothing else', () => {

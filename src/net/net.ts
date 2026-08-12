@@ -11,7 +11,6 @@ export interface NetInput {
   kx: number;   // kick aim point x (only meaningful when kp > 0)
   ky: number;
   tk: boolean;  // tackle (the tap — a lunge)
-  cl: boolean;  // clamp held (the squeeze)
   sw: boolean;  // switch (E) pressed this frame
 }
 
@@ -114,7 +113,6 @@ export interface MatchSnap {
   half: number;
   restartLock: number;
   celebration: boolean;
-  clamp: [number, number] | null;  // active clamp: defender idx, closure 0..1 (the jaws, for guest eyes)
   cursors: Record<number, number>; // seat → body idx (for markers + own camera)
   suggest: Record<number, number>; // seat → the body E would take (the white chevron)
   events: unknown[];               // SimEvents raised since the last snap

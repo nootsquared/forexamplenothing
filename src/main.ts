@@ -182,7 +182,7 @@ async function boot() {
   const TRAINING_TIPS: [string, string][] = [
     ['WASD RUNS - SHIFT SPRINTS', 'LEFT STICK RUNS - LT SPRINTS'],
     ['HOLD SPACE TO CHARGE A KICK - LET GO TO PLAY IT', 'PULL RT TO CHARGE - TRIGGER DEPTH IS POWER'],
-    ['HOLD K NEAR A CARRIER TO CLAMP, TAP IT TO LUNGE', 'HOLD B NEAR A CARRIER TO CLAMP, TAP IT TO LUNGE'],
+    ['TAP K TO LUNGE WHEN A TOUCH RUNS LOOSE', 'TAP B TO LUNGE WHEN A TOUCH RUNS LOOSE'],
     ['E TAKES THE MAN UNDER THE CHEVRON', 'A TAKES THE MAN UNDER THE CHEVRON'],
     ['T HANDS YOU THE HUNTER - AUTO SWITCH', 'DPAD UP HANDS YOU THE HUNTER - AUTO SWITCH'],
     ['PASS TO YOUR KEEPER - HIS HANDS OPEN THE SIGHT', 'PASS TO YOUR KEEPER - HIS HANDS OPEN THE SIGHT'],
@@ -338,7 +338,7 @@ async function boot() {
   }
 
   // The tutorial: a full 11v11 stands frozen while the coach walks a new
-  // player through moving, kicking, the arc, switching, crossing, the clamp
+  // player through moving, kicking, the arc, switching, crossing, the duel
   // — hands-on every time, words only in between
   function startTutorial() {
     const [homeStars, awayStars] = quickSplit(11);

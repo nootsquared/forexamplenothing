@@ -5,7 +5,7 @@ import { Ball } from './ball';
 import { PlayerBody, PlayerInput } from './player';
 import { SimEvent } from './events';
 import {
-  CLAMP, clampCloseRate, coneHalfAngle, duelScores, goalness, keeperCentering, kickAccuracy,
+  CLAMP, coneHalfAngle, duelScores, goalness, keeperCentering, kickAccuracy,
   lungeReach, lungeWindowReach,
 } from './tuning';
 
@@ -95,7 +95,6 @@ export class World {
   // An opponent inside the protect ring cannot osmose it — only clamp or lunge.
   carrier: { idx: number; t: number } | null = null;
   // One defender's jaws squeezing the carrier's ball — the hold-to-take duel
-  clamp: { idx: number; close: number; graceT: number; feintRolled: boolean } | null = null;
   private looseClaimIdx: number | null = null; // loose balls go to whoever is genuinely FIRST
   restartLock = 0; // dead-ball beat after a restart is placed
   // The restart law: the other team gives the dead ball this much space
@@ -219,7 +218,6 @@ export class World {
       this.handleDribble(p, input, i);
       this.collideBall(p, i);
     });
-    if (ballLive) this.updateClamp(dt, played);
     this.resolveBodies();
     this.updateShield();
 
@@ -296,37 +294,9 @@ export class World {
   // it. Brains name their own attend point, so this only dresses seats — and
   // never while a kick is being aimed, where the body IS the sight.
   private attended(input: PlayerInput, p: PlayerBody, idx: number): PlayerInput {
-    const dressed = this.pressing(input, p);
-    if (!this.humanIdxs.has(idx) || dressed.attend || dressed.sprint || dressed.kickCharging) return dressed;
-    if (dist(p.pos, this.ball.pos) > ATTEND_RANGE) return dressed;
-    return { ...dressed, attend: this.ball.pos };
-  }
-
-  // Standing over a man's ball IS the clamp — nobody holds a button to do what
-  // proximity already means. Everyone gets it, human and brain alike, so
-  // pressing stays symmetric; the button is left with one honest job, the lunge.
-  // Next to the ball OR next to the man both count: no version of standing on
-  // top of him is allowed to quietly do nothing.
-  private pressing(input: PlayerInput, p: PlayerBody): PlayerInput {
-    if (input.clamp) return input;
-    const man = this.pressedMan();
-    if (man === null) return input;
-    const cb = this.players[man];
-    if (cb.id.team === p.id.team) return input;
-    if (dist(p.pos, this.ball.pos) > CLAMP.press && dist(p.pos, cb.pos) > CLAMP.pressMan) return input;
-    return { ...input, clamp: true };
-  }
-
-  // Who the press is aimed at: the latched carrier, or — in the gaps between
-  // his touches, where the latch quietly lapses — the man the ball is still
-  // plainly running with. The latch is a possession rule; this is the honest
-  // eye test, and standing beside him has to mean the same thing either way.
-  private pressedMan(): number | null {
-    if (this.carrier) return this.carrier.idx;
-    const lt = this.lastTouch;
-    if (!lt || this.ball.z > 0.8) return null;
-    const man = this.players[lt.idx];
-    return man && dist(man.pos, this.ball.pos) <= CLAMP.carry ? lt.idx : null;
+    if (!this.humanIdxs.has(idx) || input.attend || input.sprint || input.kickCharging) return input;
+    if (dist(p.pos, this.ball.pos) > ATTEND_RANGE) return input;
+    return { ...input, attend: this.ball.pos };
   }
 
   // A placed ball nobody has played yet — the clock owes these seconds back,
@@ -571,106 +541,6 @@ export class World {
     }
     this.touched(p.id.team, idx);
     this.events.push({ kind: 'steal', x: this.ball.pos.x, y: this.ball.pos.y });
-  }
-
-  // THE CLAMP: stand on the man with the ball and chalk jaws close around it —
-  // DEF+PHY squeezing against DRI+PHY+shielding. When they meet, the take is
-  // clean; break off and they fall open; a skilled carrier FEINTS as they near
-  // closing and knocks them back. Being there is the whole intention — you are
-  // never stealing by accident, and never failing to try by accident either.
-  private updateClamp(dt: number, inputs: PlayerInput[]) {
-    const man = this.pressedMan();
-    const cb = man === null ? null : this.players[man];
-    const eligible = !!cb && dist(this.ball.pos, cb.pos) <= CLAMP.carry && this.ball.z <= 0.8;
-    const engagedBy = (i: number) => {
-      const p = this.players[i];
-      return !!inputs[i]?.clamp && p.lungeTimer <= 0 && p.recoverTimer <= 0 &&
-        dist(p.pos, this.ball.pos) <= CLAMP.engage + (this.clamp?.idx === i ? 0.4 : 0);
-    };
-    // Whoever is genuinely on him, nearest the ball first
-    const claimant = () => {
-      let best = -1;
-      let bestD = Infinity;
-      this.players.forEach((p, i) => {
-        if (p.id.team === cb!.id.team || !engagedBy(i)) return;
-        const d = dist(p.pos, this.ball.pos);
-        if (d < bestD) { bestD = d; best = i; }
-      });
-      return best;
-    };
-    if (!this.clamp) {
-      if (!eligible) return;
-      const first = claimant();
-      if (first < 0) return;
-      this.clamp = { idx: first, close: 0, graceT: CLAMP.grace, feintRolled: false };
-    }
-    const cl = this.clamp;
-    let holding = eligible && this.players[cl.idx].id.team !== cb!.id.team && engagedBy(cl.idx);
-    // The relief: a man who has broken off never keeps the job open while a
-    // mate is stood on the carrier. New jaws, and they start from nothing.
-    if (!holding && eligible) {
-      const relief = claimant();
-      if (relief >= 0 && relief !== cl.idx) {
-        cl.idx = relief;
-        cl.close = 0;
-        cl.feintRolled = false;
-        holding = true;
-      }
-    }
-    if (!holding) {
-      cl.graceT -= dt;
-      if (cl.graceT <= 0) {
-        cl.close -= CLAMP.decay * dt;
-        if (cl.close <= 0) this.clamp = null;
-      }
-      return;
-    }
-    const def = this.players[cl.idx];
-    cl.graceT = CLAMP.grace;
-    // A second man on the carrier does NOT open a second set of jaws — there is
-    // only ever one duel. He leans on the SAME squeeze, so being surrounded
-    // actually costs you the ball quicker instead of two defenders politely
-    // taking turns. Capped, or a crowd would vaporise possession on contact.
-    let helpers = 0;
-    this.players.forEach((p, i) => {
-      if (i === cl.idx || p.id.team !== def.id.team || p.id.role === 'GK') return;
-      if (dist(p.pos, cb!.pos) <= CLAMP.press) helpers++;
-    });
-    const swarm = 1 + Math.min(helpers, 2) * CLAMP.help;
-    cl.close += clampCloseRate(def.stats, cb!.stats, this.shieldsBallFrom(cb!, def)) * swarm * dt;
-    if (cl.close >= CLAMP.feintAt && !cl.feintRolled && cb!.feintCooldown <= 0) {
-      cl.feintRolled = true;
-      if (this.rng.next() < cb!.stats.control * 0.78) {
-        // The escape: a subtle cut AWAY from the jaws — momentum kept, ball along
-        cl.close = 0.22;
-        cb!.feintCooldown = 1.6;
-        const lane = cb!.speed() > 0.6 ? norm(cb!.vel) : cb!.facing;
-        const away = sub(cb!.pos, def.pos);
-        let cut = perpRight(lane);
-        if (cut.x * away.x + cut.y * away.y < 0) cut = scale(cut, -1);
-        cb!.vel = add(cb!.vel, scale(cut, 3.4));
-        // the ball RIDES the cut with him — an escape, never a giveaway
-        this.ball.vel = add(scale(cb!.vel, 1.02), scale(cut, 0.8));
-        this.events.push({ kind: 'feint', x: cb!.pos.x, y: cb!.pos.y, dx: cut.x, dy: cut.y });
-      }
-    }
-    if (cl.close < CLAMP.feintReset) cl.feintRolled = false;
-    if (cl.close >= 1) {
-      // The jaws meet: a clean, earned take — the ball pops to the winner's feet
-      const front = add(def.pos, scale(def.facing, 0.55));
-      this.ball.pos = vec(front.x, front.y);
-      this.ball.vel = scale(def.vel, 0.6);
-      this.ball.z = 0;
-      this.ball.vz = 0;
-      this.ball.spin = 0;
-      def.touchCooldown = 0.12;
-      cb!.touchCooldown = Math.max(cb!.touchCooldown, 0.6);
-      cb!.playLock = Math.max(cb!.playLock, 0.6);
-      this.carrier = { idx: cl.idx, t: 0.8 };
-      this.touched(def.id.team, cl.idx);
-      this.events.push({ kind: 'steal', x: this.ball.pos.x, y: this.ball.pos.y });
-      this.clamp = null;
-    }
   }
 
   // The keeper commits: a burst along the side he chose, gloves live for the

@@ -73,7 +73,6 @@ export class Scene {
   private hoverPulse = 0;
   private dragG = new Graphics();   // the slingshot pass sight (chalk dots)
   private wedgeG = new Graphics();  // the honesty wedge, painted INTO the turf under the bodies
-  private clampG = new Graphics();  // the clamp's jaws closing around a contested ball
   private cometG = new Graphics();  // the smoke a struck ball drags through a replay
   private comet: { x: number; y: number; z: number; a: number; wx: number; wy: number }[] | null = null;
   private replayOn = false;         // the truck has the room: every live aid steps off
@@ -108,7 +107,7 @@ export class Scene {
     this.dragHead = new Sprite(assets.aimFrames[0]);
     this.dragHead.anchor.set(0.5, 0.5);
     this.dragHead.visible = false;
-    this.viewport.addChild(this.pitchLayer.ground, this.lawRing, this.offsideG, this.hoverG, this.wedgeG, this.clampG, this.cornerG, this.keeperAim.rings, this.cometG, this.worldSorted, this.keeperAim.top, this.dragG, this.dragHead, this.tackleG);
+    this.viewport.addChild(this.pitchLayer.ground, this.lawRing, this.offsideG, this.hoverG, this.wedgeG, this.cornerG, this.keeperAim.rings, this.cometG, this.worldSorted, this.keeperAim.top, this.dragG, this.dragHead, this.tackleG);
 
     this.ballView = new BallView(assets, this.worldSorted);
     this.worldSorted.addChild(this.ballView.root);
@@ -552,27 +551,6 @@ export class Scene {
         this.dragHead.scale.set(0.75 + kd.power * 0.65);
         const tip = project(kd.from.x + kd.dir.x * reach, kd.from.y + kd.dir.y * reach, 0);
         this.dragHead.position.set(Math.round(tip.sx), Math.round(tip.sy));
-      }
-    }
-
-    // The clamp, visible: jaws of chalk dots biting around a contested ball
-    // from the defender's side — mint to gold to red as they close. Painted
-    // into the turf like every other law of this game.
-    this.clampG.clear();
-    const cl = this.world.clamp;
-    if (live && cl && cl.close > 0.03 && this.world.players[cl.idx]) {
-      const defP = this.world.players[cl.idx].pos;
-      const b = this.world.ball.pos;
-      const jawColor = cl.close > 0.8 ? 0xff5340 : cl.close > 0.45 ? 0xffd95e : 0x9ff0b8;
-      const start = Math.atan2(b.y - defP.y, b.x - defP.x) + Math.PI;
-      const sweep = Math.min(1, cl.close) * Math.PI;
-      for (const side of [1, -1]) {
-        for (let a = 0.1; a < sweep; a += 0.24) {
-          const pp = project(b.x + Math.cos(start + side * a) * 0.95, b.y + Math.sin(start + side * a) * 0.95, 0);
-          const dq = a > sweep - 0.3 ? 4 : 3;
-          this.clampG.rect(Math.round(pp.sx - dq / 2), Math.round(pp.sy - dq / 2), dq, dq)
-            .fill({ color: jawColor, alpha: 0.9 });
-        }
       }
     }
 
