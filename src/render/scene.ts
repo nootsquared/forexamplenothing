@@ -52,6 +52,7 @@ export class Scene {
   private flash = new Graphics();
   private flashAlpha = 0;
   private controlledIdx = -1;
+  private couchIdxs: number[] = []; // every body a couch seat is wearing — nobody plays blind
   private switchTargetIdx = -1;
   private keeperAim: KeeperAim;
   private keeperAimState: KeeperAimState | null = null;
@@ -130,11 +131,14 @@ export class Scene {
     this.hud.showToast(mood.name);
   }
 
-  // V cycles how tight the live game is framed — three densities to taste
+  // V cycles how tight the live game is framed — four densities to taste.
+  // TIGHT is the passing-nerf candidate: the notch between CLOSE and INTENSE
+  // the couch votes on with its thumbs.
   cycleDensity() {
     const modes = [
       { zoom: 1, name: 'LENS: BROADCAST' },
       { zoom: 1.16, name: 'LENS: CLOSE' },
+      { zoom: 1.24, name: 'LENS: TIGHT' },
       { zoom: 1.34, name: 'LENS: INTENSE' },
     ];
     this.densityIdx = (this.densityIdx + 1) % modes.length;
@@ -146,6 +150,12 @@ export class Scene {
     if (idx === this.controlledIdx) return;
     this.controlledIdx = idx;
     this.playerViews.forEach((v, i) => v.setControlled(i === idx));
+  }
+
+  // The couch's whole cast, for the camera's leash floor — the tight lens is
+  // a ceiling, never a promise, and it breathes out to hold every one of them
+  setCouchBodies(idxs: number[]) {
+    this.couchIdxs = idxs;
   }
 
   // Keeper distribution sight — non-null while the human is aiming
@@ -690,8 +700,13 @@ export class Scene {
       }
     }
 
-    const heroPos = this.world.players[this.controlledIdx]?.pos ?? null;
-    this.camera.update(dt, this.world.ball.pos, this.world.ball.vel, this.world.players.map((p) => p.pos), w, h, heroPos);
+    const heroBody = this.world.players[this.controlledIdx];
+    this.camera.update(dt, this.world.ball.pos, this.world.ball.vel, this.world.players.map((p) => p.pos), w, h, {
+      hero: heroBody?.pos ?? null,
+      face: heroBody?.facing ?? null,
+      couch: this.couchIdxs.map((i) => this.world.players[i]?.pos).filter((p): p is Vec2 => !!p),
+      charge: aim.charge,
+    });
     // Who gets a name over his boots: the man you hold, the man E would hand
     // you, and whoever has the ball. Twenty-two labels is not identity, it is
     // static — and they punch straight through every shade the shell draws.

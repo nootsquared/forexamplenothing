@@ -2207,6 +2207,7 @@ async function boot() {
     scene.setKickDrags(sights);
 
     scene.setControlled(cursor.idx);
+    scene.setCouchBodies(couch.length ? [cursor.idx, ...couch.filter((cs) => cs.seat.live).map((cs) => cs.cursor.idx)] : []);
     scene.setSwitchTarget(tutorial ? tutorial.switchTargetFor(cursor.suggested) : cursor.suggested);
     scene.setHoverTarget(pickTeammate()); // the man a click would hand you
     scene.setBallGlow(ballIsMine());

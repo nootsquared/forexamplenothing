@@ -20,6 +20,22 @@ const SHAKE_ROOM = 1;
 const ZOOM_CEIL = 3.0;
 const ZOOM_FLOOR = 1.75;
 const HERO_EASE = 9; // rad-ish/s the frame walks between bodies — ~0.3s to settle
+const LEASH_MARGIN = 5; // metres of air between any held man and the frame edge
+// Winding up is looking up: a full charge eases the lens out this fraction —
+// the tap pass stays tight, the 40-yard diagonal costs a visible beat
+const CHARGE_BREATH = 0.12;
+// Facing forward shows forward: metres the frame leans toward where the man
+// you hold is pointed — head-up posture literally buys sight
+const FACE_LEAD = 2.6;
+
+// What the frame answers to beyond the ball: the man you hold, where he is
+// looking, every other body a couch seat is wearing, and the charge in his boot
+export interface CameraFocus {
+  hero?: Vec2 | null;
+  face?: Vec2 | null;
+  couch?: Vec2[];
+  charge?: number;
+}
 
 // The drawn world's edges in ground meters, pulled in by whatever room the
 // shot wants to keep spare
@@ -86,8 +102,8 @@ export class FollowCamera {
     return this.heroAnchor;
   }
 
-  update(dt: number, ballPos: Vec2, ballVel: Vec2, players: Vec2[], viewW: number, viewH: number, heroNow: Vec2 | null = null) {
-    const hero = this.easedHero(heroNow, dt);
+  update(dt: number, ballPos: Vec2, ballVel: Vec2, players: Vec2[], viewW: number, viewH: number, focus: CameraFocus = {}) {
+    const hero = this.easedHero(focus.hero ?? null, dt);
     if (this.override) {
       this.center.x = expDecay(this.center.x, this.override.center.x, 4, dt);
       this.center.y = expDecay(this.center.y, this.override.center.y, 4, dt);
@@ -96,22 +112,27 @@ export class FollowCamera {
       return;
     }
     const lookAhead = clampLen(scale(ballVel, 0.4), 7);
-    const focus = add(ballPos, lookAhead);
+    const aim = add(ballPos, lookAhead);
+    const couch = focus.couch ?? [];
 
-    // Frame = ball, YOUR man, and everyone near the action. Your man is not
-    // negotiable: a chevron half-clipped by the left edge is the frame lying
-    // about who you are holding.
+    // Frame = ball, YOUR man, EVERY man a couch seat is wearing, and everyone
+    // near the action. The held bodies are not negotiable: a chevron half-
+    // clipped by the left edge is the frame lying about who somebody is.
     let minX = ballPos.x, maxX = ballPos.x, minY = ballPos.y, maxY = ballPos.y;
     const stretch = (p: Vec2) => {
       minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
       minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
     };
     if (hero) stretch(hero);
+    for (const p of couch) stretch(p);
     for (const p of players) {
       if (dist(p, ballPos) > 26) continue; // stragglers don't drag the frame
       stretch(p);
     }
-    const target = add(scale(focus, 0.6), scale(vec((minX + maxX) / 2, (minY + maxY) / 2), 0.4));
+    // Facing forward shows forward: the frame leans a few metres toward where
+    // the held man is pointed, so looking up the pitch buys sight up the pitch
+    const lean = focus.face ? scale(focus.face, FACE_LEAD) : vec();
+    const target = add(add(scale(aim, 0.6), scale(vec((minX + maxX) / 2, (minY + maxY) / 2), 0.4)), lean);
     this.center.x = expDecay(this.center.x, target.x, 3.2, dt);
     this.center.y = expDecay(this.center.y, target.y, 3.2, dt);
 
@@ -122,20 +143,35 @@ export class FollowCamera {
     const fit = Math.min(viewW / (2 * spanX * M), viewH / (2 * spanY * M * squash()));
     const pace = Math.hypot(ballVel.x, ballVel.y) > 15 ? 2.75 : ZOOM_CEIL;
     this.targetZoom = clamp(Math.min(pace, fit) * this.density, ZOOM_FLOOR, ZOOM_CEIL * this.density);
+    // Winding up is looking up: the charge eases the head up over the ball
+    this.targetZoom *= 1 - CHARGE_BREATH * clamp(focus.charge ?? 0, 0, 1);
+    // The couch leash floor: the tight lens is a ceiling, never a promise —
+    // the lens breathes out exactly as far as the most spread human and no
+    // further. Nobody at the party plays blind.
+    if (couch.length > 1) {
+      let cMinX = couch[0].x, cMaxX = couch[0].x, cMinY = couch[0].y, cMaxY = couch[0].y;
+      for (const p of couch) {
+        cMinX = Math.min(cMinX, p.x); cMaxX = Math.max(cMaxX, p.x);
+        cMinY = Math.min(cMinY, p.y); cMaxY = Math.max(cMaxY, p.y);
+      }
+      const needX = (cMaxX - cMinX) / 2 + LEASH_MARGIN;
+      const needY = (cMaxY - cMinY) / 2 + LEASH_MARGIN;
+      const couchFit = Math.min(viewW / (2 * needX * M), viewH / (2 * needY * M * squash()));
+      this.targetZoom = Math.min(this.targetZoom, couchFit);
+    }
     this.zoom = expDecay(this.zoom, this.targetZoom, 1.8, dt);
 
     this.zoom = this.clampView(this.center, this.zoom, viewW, viewH, SHAKE_ROOM);
     if (hero) this.leashTo(hero, viewW, viewH, SHAKE_ROOM);
+    for (const p of couch) this.leashTo(p, viewW, viewH, SHAKE_ROOM);
   }
 
-  // The last word on framing: if the smooth follow has let your man past the
+  // The last word on framing: if the smooth follow has let a held man past the
   // safe box, the frame is dragged back by exactly the difference — then the
   // law re-boxes it, because the world's edge outranks even this.
   private leashTo(hero: Vec2, viewW: number, viewH: number, pad: number) {
-    const margin = 5; // metres of air kept between your man and the frame edge —
-                      // enough that his chevron and his name clear it too
-    const halfW = Math.max(0, viewW / 2 / this.zoom / pxPerMeter() - margin);
-    const halfH = Math.max(0, viewH / 2 / this.zoom / (pxPerMeter() * squash()) - margin);
+    const halfW = Math.max(0, viewW / 2 / this.zoom / pxPerMeter() - LEASH_MARGIN);
+    const halfH = Math.max(0, viewH / 2 / this.zoom / (pxPerMeter() * squash()) - LEASH_MARGIN);
     this.center.x = clamp(this.center.x, hero.x - halfW, hero.x + halfW);
     this.center.y = clamp(this.center.y, hero.y - halfH, hero.y + halfH);
     this.zoom = this.clampView(this.center, this.zoom, viewW, viewH, pad);
