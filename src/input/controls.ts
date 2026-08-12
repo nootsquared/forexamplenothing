@@ -5,6 +5,12 @@ import { Keyboard } from './keyboard';
 import { pads } from './gamepad';
 
 const CHARGE_TIME = 0.85;
+// The overcharge: a full bar holds for this long, then the kick FIZZLES — you
+// let go at the weight you want, or you lose the ball's moment entirely.
+const OVER_GRACE = 0.35;
+// How fast the charged aim sweeps toward where the keys point (rad/s): eight-way
+// input names the destination, the arrow orbits there smoothly — never a snap
+const AIM_SWEEP = 6;
 const AIM_RATE = 7.0;       // rad/s the J/L sweep steers the aim
 const AIM_MAX = 1.31;       // ~75° — you strike across your body, never backward
 const AIM_UNLOCK = AIM_MAX * 1.15; // running past this leaves the lock behind
@@ -28,6 +34,8 @@ const flickPower = (peak: number) =>
 // the stick POINTS the shot and releasing A plays the charged ball.
 export class LocalControls {
   private chargeT = 0;
+  private overT = 0;
+  private fizzled = false;
   private wasHeld = false;
   private tackleHeldT = 0;
   private wasTackle = false;
@@ -58,21 +66,30 @@ export class LocalControls {
     }
     const move = len(vec(x, y)) > 1 ? norm(vec(x, y)) : vec(x, y);
 
-    // The keyboard kicks with the MOUSE sling only — Space belongs to
-    // DEFENDING now (hold = clamp, tap = lunge). The pad's A-charge remains.
-    const held = pad?.kick || false;
+    // SPACE is the boot now: face with the legs, CHARGE with the bar, and let
+    // go at the weight you mean — passing is aim plus timing, never a pointer.
+    // Hold it past full and the strike FIZZLES: the moment was yours to spend.
+    const held = kb.has('Space') || pad?.kick || false;
     const bend = (kb.has('KeyL') ? 1 : 0) - (kb.has('KeyJ') ? 1 : 0);
     const aim = pad?.aim ?? null;
     let kickReleased: { power: number; aimOffset: number } | null = null;
     if (held) {
       this.chargeT = Math.min(CHARGE_TIME, this.chargeT + dt);
-      if (bend !== 0) {
-        if (this.aimWorld === null) {
-          const base = len(move) > 0.25 ? move : facing;
-          this.aimWorld = Math.atan2(base.y, base.x);
-        }
-        this.aimWorld += bend * AIM_RATE * dt;
+      if (this.chargeT >= CHARGE_TIME) {
+        this.overT += dt;
+        if (this.overT > OVER_GRACE) this.fizzled = true;
       }
+      // The aim GLIDES: the keys name a destination and the arrow sweeps
+      // toward it around the horn — a circle of taps reads as one smooth
+      // orbit, never a snap between eight compass points
+      if (this.aimWorld === null) this.aimWorld = Math.atan2(facing.y, facing.x);
+      if (len(move) > 0.25) {
+        let turn = Math.atan2(move.y, move.x) - this.aimWorld;
+        while (turn > Math.PI) turn -= 2 * Math.PI;
+        while (turn < -Math.PI) turn += 2 * Math.PI;
+        this.aimWorld += clamp(turn, -AIM_SWEEP * dt, AIM_SWEEP * dt);
+      }
+      if (bend !== 0) this.aimWorld += bend * AIM_RATE * dt;
       // The stick doesn't sweep — it points. Wherever you hold it, the shot
       // goes, snapped inside the strikeable cone so a wild point still plays
       // the nearest ball the body can hit instead of being ignored.
@@ -87,15 +104,18 @@ export class LocalControls {
       }
       this.dropFlick();
     } else {
-      if (this.wasHeld) {
+      if (this.wasHeld && !this.fizzled) {
         // The human floor sits at what used to be MEDIUM: even a tap is a real
         // ball — the charge rides the upper half of the range
         kickReleased = {
           power: HUMAN_KICK_FLOOR + clamp(this.chargeT / CHARGE_TIME, 0, 1) * (1 - HUMAN_KICK_FLOOR),
           aimOffset: this.resolve(move, facing).offset,
         };
-        this.chargeT = 0;
       }
+      this.chargeT = 0;
+      this.overT = 0;
+      this.fizzled = false;
+      this.aimWorld = null; // every fresh charge opens where the legs point
       const mag = aim?.mag ?? 0;
       if (mag > (this.flickPeak > 0 ? FLICK_KEEP : FLICK_ARM)) {
         // winding: power remembers the deepest throw, and the direction is
@@ -120,13 +140,14 @@ export class LocalControls {
       }
     }
     this.wasHeld = held;
-    this.charge = held ? this.chargeT / CHARGE_TIME : 0;
-    this.aimDir = held ? this.resolve(move, facing).dir : null;
+    // A fizzled bar reads as DEAD — no arrow, no charge, the sight is spent
+    this.charge = held && !this.fizzled ? this.chargeT / CHARGE_TIME : 0;
+    this.aimDir = held && !this.fizzled ? this.resolve(move, facing).dir : null;
 
     // One button, two verbs: a TAP (quick release) fires the lunge-poke, a
     // HOLD is the clamp — jaws squeezing a carrier's ball for the clean take.
-    // SPACE is the defending hand now; K stays as the old habit's alias.
-    const tackleHeld = kb.has('Space') || kb.has('KeyK') || pad?.tackle || false;
+    // K is the defending hand; Space belongs to the boot.
+    const tackleHeld = kb.has('KeyK') || pad?.tackle || false;
     let tacklePulse = false;
     if (tackleHeld) {
       this.tackleHeldT += dt;

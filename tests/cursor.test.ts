@@ -96,7 +96,8 @@ describe('the possession-first cursor', () => {
         ? 0 : sinceRestart + DT;
       if (manual.teamBrains[0].phase === 'defend' && manualCursor.idx !== last &&
           manual.teamBrains[0].possessorIdx !== manualCursor.idx && sinceKick > 1.9 && sinceRestart > 1.9 &&
-          manual.world.lastTouch?.idx !== manualCursor.idx) { // possession-first carrier-take is designed
+          manual.world.lastTouch?.idx !== manualCursor.idx && // possession-first carrier-take is designed
+          manual.world.clamp?.idx !== manualCursor.idx) {     // ...and so is the jaws handoff into a live duel
         manualDefendSwitches++;
       }
       last = manualCursor.idx;

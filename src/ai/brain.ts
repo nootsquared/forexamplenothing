@@ -73,6 +73,8 @@ export class Brain {
   private runFree = 0;      // seconds the offside line stops holding my run back
   private parked = false;   // arrived and standing — the anti-jitter latch
   private escapeT = 0;      // beat before this carrier may plant another cut
+  private sizeT = 0;        // the take-on's tell: slowed approach, eyes on the defender
+  private driveT = 0;       // ...and the committed burst that follows it
   private coverMan = -1;
   private runCtx: RunCtx | null = null;
   private keeper: KeeperMind | null = null;
@@ -87,6 +89,14 @@ export class Brain {
   tick(world: World, dt: number): PlayerInput {
     this.t += dt;
     this.escapeT = Math.max(0, this.escapeT - dt);
+    // The sizing beat expiring IS the commitment: the burst begins exactly
+    // where the hesitation ends, so the tell always means something
+    if (this.sizeT > 0 && this.sizeT - dt <= 0) {
+      this.driveT = 0.9;
+      this.escapeT = Math.max(this.escapeT, 1.4);
+    }
+    this.sizeT = Math.max(0, this.sizeT - dt);
+    this.driveT = Math.max(0, this.driveT - dt);
     if (--this.thinkIn <= 0) {
       this.thinkIn = THINK_TICKS;
       this.perceive(world, THINK_TICKS / 60);
@@ -135,11 +145,13 @@ export class Brain {
     const thinkDt = THINK_TICKS / 60;
     this.commit = Math.max(0, this.commit - thinkDt);
     this.burst = Math.max(0, this.burst - thinkDt);
+    this.bb.runPlanOf[this.idx] = 'hold'; // decideRun re-publishes the live idea
     // A fresh RECEPTION starts the settle clock — the head has to come up.
     // Regaining your own dribble knock is not a reception; the clock runs on.
     const mine = this.bb.possessorIdx === this.idx;
     if (mine && !this.hadBall && world.lastTouch?.idx !== this.idx) {
       this.settleLeft = this.bb.profile.settle * (0.7 + this.rng.next() * 0.6);
+      if (this.bb.breakT > 0) this.settleLeft *= 0.35; // the break has no time for composure
     } else if (mine) {
       this.settleLeft = Math.max(0, this.settleLeft - thinkDt);
     }
@@ -274,6 +286,7 @@ export class Brain {
       this.run = next;
       this.commit = runCommit(next, this.rng);
     }
+    this.bb.runPlanOf[this.idx] = this.run; // the sheet knows what I'm running
     this.intent = { kind: 'run' };
   }
 
@@ -321,6 +334,12 @@ export class Brain {
       return;
     }
     if (this.bb.coverIdx === this.idx) {
+      // The hunt's second man: the trap closes from two sides or it isn't a
+      // trap — cover becomes the goal-side cutoff at a sprint while it burns
+      if (this.bb.huntT > 0) {
+        this.goto(add(world.ball.pos, scale(norm(sub(this.bb.goalWeDefend(), world.ball.pos)), 3.2)), true, 0.6);
+        return;
+      }
       this.coverMan = this.pickCoverMan(world);
       this.intent = { kind: 'cover', man: this.coverMan };
       return;
@@ -391,6 +410,9 @@ export class Brain {
     let passTo: PlayerBody | null = null;
     let passAim: Vec2 | null = null;
     let passSpeed = 14;
+    // The break plays on thinner margins — a window is worth a risk while
+    // their shape is still broken glass
+    const gate = this.bb.breakT > 0 ? 0.07 : 0.15;
     if (!settling) {
       for (let i = 0; i < world.players.length; i++) {
         const p = world.players[i];
@@ -403,7 +425,7 @@ export class Brain {
         const speedWanted = clamp(10 + d * 0.5, 11, 23);
         const meet = leadTarget(me.pos, p.pos, p.vel, speedWanted);
         const margin = passMargin(me.pos, meet, speedWanted, opps);
-        if (margin < 0.15) continue; // a defender gets there first — not my pass
+        if (margin < gate) continue; // a defender gets there first — not my pass
         const progress = (this.bb.axisOf(meet.x) - myAxis) * 0.05;
         const mateWide = Math.abs(p.id.anchor.y - 0.5) > 0.27;
         const marked = spaceAt(p.pos, opps);
@@ -429,13 +451,44 @@ export class Brain {
         if (pressure > 0.5 && progress < 0 && margin > 0.6 && goalDist > 21) s += 0.45;
         if (s > passScore) { passScore = s; passTo = p; passAim = meet; passSpeed = speedWanted; }
       }
+      // THE KILLER BALL: a committed line-runner is asking for the pass his
+      // legs are about to make good. Imagine him already at full sprint, lead
+      // THAT man, and judge the lane through the same shared model — its turn
+      // tax is what makes the ball in behind honest. Thin windows stay
+      // refused; a real one outranks every square ball on the pitch.
+      const throughGate = this.bb.breakT > 0 ? 0.16 : 0.22;
+      for (let i = 0; i < world.players.length; i++) {
+        const p = world.players[i];
+        if (p === me || p.id.team !== me.id.team || p.id.role === 'GK') continue;
+        const plan = this.bb.runPlanOf[i];
+        const running = plan === 'linebreak' || plan === 'channel' || plan === 'overlap' || plan === 'burst';
+        if (!running && i !== this.bb.supportDepthIdx) continue;
+        const d = dist(me.pos, p.pos);
+        if (d < 8 || d > 42) continue;
+        // HE must be onside when the boot lands — project his drift through
+        // the windup; the ball itself may lead as far beyond as it likes
+        if (this.bb.axisOf(p.pos.x + p.vel.x * KICK_LEAD) > safeAxis - 0.4) continue;
+        const goalDir = norm(add(scale(vec(this.bb.attackSign(), 0), 0.72), scale(norm(sub(goal, p.pos)), 0.28)));
+        const runVel = scale(goalDir, p.stats.sprintSpeed * 0.95);
+        const speed2 = clamp(11 + d * 0.55, 12, 24);
+        const meet2 = clampPitch(leadTarget(me.pos, p.pos, runVel, speed2));
+        const margin2 = passMargin(me.pos, meet2, speed2, opps);
+        if (margin2 < throughGate) continue;
+        let s2 = Math.min(margin2, 1.2) * 0.85 + (this.bb.axisOf(meet2.x) - myAxis) * 0.05
+          + 0.5 + this.rng.next() * 0.2;
+        const shotDist2 = dist(meet2, goal);
+        if (shotDist2 < 24) s2 += (24 - shotDist2) * 0.03; // it ends with a sight of goal
+        if (i === this.bb.humanIdx) s2 += 0.5;
+        if (s2 > passScore) { passScore = s2; passTo = p; passAim = meet2; passSpeed = speed2; }
+      }
     }
 
     // Carry: wingers DRIVE the touchline; everyone else weighs space ahead.
     // Under pressure a sharp brain lets go of it sooner than a soft one.
     const ahead = add(me.pos, scale(vec(this.bb.attackSign(), 0), 6));
     let dribble = 0.85 + spaceAt(ahead, opps) * 0.1
-      - pressure * (0.4 + 0.3 * clamp(1 - this.bb.profile.settle, 0, 1));
+      - pressure * (0.4 + 0.3 * clamp(1 - this.bb.profile.settle, 0, 1))
+      + (this.bb.breakT > 0 ? 0.3 : 0); // the break DRIVES — hesitation re-forms their shape
     if (isWinger && myAxis < 74) {
       const laneAhead = spaceAt(add(me.pos, scale(vec(this.bb.attackSign(), 0), 8)), opps);
       if (laneAhead > 4) dribble += 0.55; // the flank is open — take them on
@@ -476,6 +529,20 @@ export class Brain {
         if (gap < 2 && this.escapeT <= 0 && me.speed() > 3.4) {
           this.escapeT = 2.2;
           dir = weak;
+        } else if (this.driveT > 0) {
+          // committed: THROUGH the side his stance left open, at pace
+          dir = norm(add(dir, scale(weak, 1.1)));
+        } else if (this.sizeT > 0) {
+          // The take-on's tell: half a second of slowed approach, squared up,
+          // asking the defender the question. Anyone watching can read it —
+          // that readability IS the duel. The burst commits when this expires.
+          if (gap > 5.5) this.sizeT = 0; // he backed off; play on
+          else {
+            this.goto(add(me.pos, scale(norm(dir), 1.5)), false, 0);
+            return;
+          }
+        } else if (gap < 5.2 && gap > 2.2 && me.speed() > 1.8 && this.escapeT <= 0) {
+          this.sizeT = 0.4 + this.rng.next() * 0.25;
         } else if (gap < 6) {
           dir = norm(add(dir, scale(weak, clamp((6 - gap) / 6, 0, 1) * 0.9)));
         }
@@ -491,7 +558,9 @@ export class Brain {
       // circle a defender can chase you around.
       const want = norm(dir);
       const turn = Math.abs(signedAngle(me.facing, want));
-      this.goto(add(me.pos, scale(want, turn > 1.1 ? 2.2 : 7)), pressure < 0.3 && turn < 0.7, 0);
+      // A committed take-on burst sprints THROUGH the pressure it just baited
+      this.goto(add(me.pos, scale(want, turn > 1.1 ? 2.2 : 7)),
+        (pressure < 0.3 || this.driveT > 0) && turn < 0.9, 0);
     }
   }
 
@@ -653,8 +722,9 @@ export class Brain {
           const holdAt = this.bb.offsideSafeAxis() - 0.6;
           if (this.bb.axisOf(target.x) > holdAt) target = vec(this.bb.xAtAxis(holdAt), target.y);
         }
-        sprint = runSprints(this.run, this.bb) &&
-          (this.run !== 'linebreak' || this.runFree > 0 || this.bb.carrierLoaded);
+        // The runner's legs are never gated — he weaves the line at pace so
+        // the pass has a RUN to meet. Only the line itself still holds him.
+        sprint = runSprints(this.run, this.bb);
         // A corner gives him about five seconds: getting INTO the box is every
         // bit as urgent as the break itself
         if (!sprint && isCornerJob(this.run)) sprint = dist(me.pos, target) > 8;
@@ -665,8 +735,9 @@ export class Brain {
         target = add(world.ball.pos, scale(world.ball.vel, lead));
         // Contain-first pressing: a soft profile HOLDS a goal-side ring off
         // the carrier instead of diving in — close him down, don't sell out.
-        // He still bites if the carrier dribbles into him.
-        const hold = this.bb.profile.pressHold;
+        // He still bites if the carrier dribbles into him. The hunt suspends
+        // the softness: a committed wave contains nobody.
+        const hold = this.bb.huntT > 0 ? 0 : this.bb.profile.pressHold;
         if (hold > 0 && this.bb.phase === 'defend') {
           target = add(target, scale(norm(sub(this.bb.goalWeDefend(), world.ball.pos)), hold));
         }
@@ -752,10 +823,12 @@ export class Brain {
       side: me.id.anchor.y < 0.5 ? -1 : 1,
       daring: this.daring,
       rng: this.rng,
+      t: this.t,
     };
     c.world = world;
     c.me = me;
     c.anchor = this.wanderedAnchor();
+    c.t = this.t;
     return c;
   }
 
@@ -798,8 +871,11 @@ export class Brain {
     const goalSide = norm(sub(this.bb.goalWeDefend(), lead));
     const toBall = sub(world.ball.pos, lead);
     const ballD = len(toBall);
-    // tight when the ball can reach him, a step off it when it can't
-    let spot = add(lead, scale(goalSide, clamp(1.1 + ballD * 0.045, 1.1, 3.2)));
+    // tight when the ball can reach him, a step off it when it can't — and
+    // TIGHT everywhere while the hunt burns: the trap has no passengers
+    let spot = add(lead, scale(goalSide, this.bb.huntT > 0
+      ? clamp(0.6 + ballD * 0.015, 0.6, 1.6)
+      : clamp(1.1 + ballD * 0.045, 1.1, 3.2)));
     if (ballD > 2) spot = add(spot, scale(scale(toBall, 1 / ballD), 1.1));
     return clampPitch(spot);
   }

@@ -37,6 +37,7 @@ export class TeamCursor {
   private autoT = 0;
   private graceT = 0;       // the deliberate switch's beat of immunity
   private graceTouch = -1;  // ...whose touch it was granted against
+  private jawsCd = 0;       // breath between duel handoffs — never twice in a blink
   private wearable = new Set<number>(); // every outfield body on my side
 
   constructor(private team: 0 | 1, world: World, preferIdx = -1) {
@@ -119,10 +120,15 @@ export class TeamCursor {
     // ...but our own carrier always outranks it: while WE have the ball you are
     // the man on it, and a teammate still finishing a duel behind the play
     // never drags the hands off him.
+    // ...and only a duel that is genuinely BITING earns the yank: ambient
+    // pressure arms jaws constantly now, and being snatched into every brush
+    // reads as chaos, not as help. A real squeeze, and not twice in a breath.
+    this.jawsCd = Math.max(0, this.jawsCd - dt);
     const jaws = world.clamp;
     const weHaveIt = bb.phase === 'attack' && bb.possessorIdx !== null;
-    if (!weHaveIt && this.graceT <= 0 && jaws && this.wearable.has(jaws.idx) && !this.claimed(jaws.idx)) {
-      this.take(jaws.idx);
+    if (!weHaveIt && this.graceT <= 0 && this.jawsCd <= 0 && jaws && jaws.close > 0.3 &&
+        this.wearable.has(jaws.idx) && !this.claimed(jaws.idx)) {
+      if (this.take(jaws.idx)) this.jawsCd = 2;
     }
 
     // The chevron rides ahead of the switch instead of replacing it: while your
@@ -166,6 +172,18 @@ export class TeamCursor {
     // a pass of ours still in the air has a named owner; once THEY carry it,
     // that call is a dead letter
     if (theirs < 0 && valid(bb.calledReceiver)) return bb.calledReceiver;
+    // The man with a PLAY outranks the man who is merely close: an open
+    // tackle window on their carrier is the moment worth handing you
+    if (theirs >= 0) {
+      let wIdx = -1;
+      let bestW = 0.3;
+      for (const i of this.wearable) {
+        if (!valid(i)) continue;
+        const wv = world.tackleWindow(i);
+        if (wv > bestW) { bestW = wv; wIdx = i; }
+      }
+      if (wIdx >= 0) return wIdx;
+    }
     if (ours < 0) {
       const cutter = this.bestInterceptor(world, bb, theirs, valid);
       if (cutter >= 0) return cutter;
@@ -187,8 +205,11 @@ export class TeamCursor {
     const from = carrier ? carrier.pos : world.ball.pos;
     const toGoal = norm(sub(bb.goalWeDefend(), from));
     // a carrier is coming for our goal even between touches; a loose ball only
-    // owns the roll the grass leaves it
-    const run = carrier ? add(carrier.vel, scale(toGoal, GOAL_PULL)) : scale(world.ball.vel, ROLL_KEEP);
+    // owns the roll the grass leaves it — but a ball still FLYING owns its
+    // real pace, so the race with a through ball is priced as a race
+    const run = carrier
+      ? add(carrier.vel, scale(toGoal, GOAL_PULL))
+      : scale(world.ball.vel, world.ball.speed() > 8 ? 1 : ROLL_KEEP);
     const runSpeed = carrier ? len(carrier.vel) : 0;
     let best = -1;
     let bestEta = Infinity;

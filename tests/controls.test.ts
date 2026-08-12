@@ -142,25 +142,39 @@ describe('the right-stick sling', () => {
   });
 });
 
-describe('the keyboard defends with SPACE', () => {
+describe('SPACE is the boot, K is the defending hand', () => {
   const kbWith = (codes: string[]) => ({ has: (c: string) => codes.includes(c) }) as unknown as Keyboard;
 
-  it('holding space clamps and never charges a kick', () => {
+  it('holding space charges, releasing fires at the held weight', () => {
     let out = controls.sample(1 / 60, kbWith(['Space']), facing);
     for (let i = 0; i < 30; i++) out = controls.sample(1 / 60, kbWith(['Space']), facing);
-    expect(out.clamp).toBe(true);
-    expect(out.kickCharging).toBe(false); // the keyboard kicks with the mouse sling only
-    expect(out.tackle).toBe(false);
+    expect(out.kickCharging).toBe(true);
+    expect(out.clamp).toBe(false);
+    expect(controls.charge).toBeGreaterThan(0.3);
     out = controls.sample(1 / 60, kbWith([]), facing);
-    expect(out.tackle).toBe(false); // a long hold releases into nothing — the clamp was the act
+    expect(out.kickReleased).not.toBeNull();
+    expect(out.kickReleased!.power).toBeGreaterThan(0.5);
   });
 
-  it('a quick space tap fires the lunge on release, and K still works', () => {
-    for (const key of ['Space', 'KeyK']) {
-      controls.sample(1 / 60, kbWith([key]), facing);
-      const out = controls.sample(1 / 60, kbWith([]), facing);
-      expect(out.tackle).toBe(true);
-      expect(out.clamp).toBe(false);
-    }
+  it('a full bar held too long FIZZLES — the release fires nothing', () => {
+    // charge to the pin (0.85s), then sit on it past the grace (0.35s)
+    for (let i = 0; i < 55; i++) controls.sample(1 / 60, kbWith(['Space']), facing);
+    expect(controls.charge).toBeGreaterThan(0.9); // pinned and still live
+    for (let i = 0; i < 30; i++) controls.sample(1 / 60, kbWith(['Space']), facing);
+    expect(controls.charge).toBe(0); // spent — the sight is dead in your hands
+    const out = controls.sample(1 / 60, kbWith([]), facing);
+    expect(out.kickReleased).toBeNull();
+  });
+
+  it('K holds the clamp and a quick K tap fires the lunge', () => {
+    let out = controls.sample(1 / 60, kbWith(['KeyK']), facing);
+    for (let i = 0; i < 30; i++) out = controls.sample(1 / 60, kbWith(['KeyK']), facing);
+    expect(out.clamp).toBe(true);
+    expect(out.kickCharging).toBe(false);
+    out = controls.sample(1 / 60, kbWith([]), facing);
+    expect(out.tackle).toBe(false); // a long hold releases into nothing — the clamp was the act
+    controls.sample(1 / 60, kbWith(['KeyK']), facing);
+    out = controls.sample(1 / 60, kbWith([]), facing);
+    expect(out.tackle).toBe(true); // the tap is the lunge
   });
 });

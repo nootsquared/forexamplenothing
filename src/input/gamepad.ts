@@ -3,9 +3,11 @@ import { Vec2, vec, norm, scale, clamp } from '../core/math';
 // Twin-stick pads, EVERY slot, hot-plugged. The left stick moves (analog, with
 // a radial dead zone and a walk-then-sprint curve), the right stick IS the
 // pass: push it and you're winding, angle aims, throw depth is power, and the
-// spring-back fires the ball. A charges the big kick, B tackles, RT/RB sprint,
-// LB or X switches, Y toggles auto-switch, Start pauses, Select calls up the
-// controls card, and the dpad walks every menu.
+// spring-back fires the ball. A charges the big kick, B defends (hold to
+// squeeze, tap to lunge), X switches, RT sprints (LT answers too), Y toggles
+// auto-switch, Start pauses, Select calls up the controls card, and the dpad
+// walks every menu. The bumpers are deliberately EMPTY — the hand sits wrong
+// on them, so no verb lives there.
 // Each pad is read on its own so a couch full of them can play at once; the
 // shell's unnamed calls speak for the WHOLE bench, so the man holding pad two
 // can pause, back out and walk a menu exactly like the man holding pad one.
@@ -98,11 +100,10 @@ export class Pad {
       aim: am < AIM_DEAD ? { x: 0, y: 0, mag: 0 } : { x: ax, y: ay, mag: clamp((am - AIM_DEAD) / (SATURATE - AIM_DEAD), 0, 1) },
       kick: held(pad.buttons[BTN.a]),
       tackle: held(pad.buttons[BTN.b]),
-      // Sprint lives on the LEFT trigger. It used to sit on RB/RT, which asked
-      // one hand to hold a sprint and stab the kick at the same time — the
-      // thumb and the index finger fighting over one run at goal. RT stays as
-      // an alias for old hands; RB is now free for the kick to grow into.
-      sprint: held(pad.buttons[BTN.lt]) || held(pad.buttons[BTN.rt]),
+      // Sprint lives on the RIGHT trigger — the couch's pick — and the left
+      // trigger answers too, so neither index finger ever rests on a dead key
+      // and old habits keep working.
+      sprint: held(pad.buttons[BTN.rt]) || held(pad.buttons[BTN.lt]),
     };
 
     this.down = 0;

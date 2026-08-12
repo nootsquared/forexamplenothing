@@ -373,9 +373,16 @@ describe('stoppage time', () => {
     for (let t = 0; t < 60 * 5; t++) advanceMatch(match, DT); // the ball lives
     world.restartLock = 0;
     world.restartExclusion = 0;
+    // the staging forges a fresh play — a latch from whatever flight the live
+    // spell left mid-air must not flag the forged scorer
+    (world as unknown as { offsideLatch: unknown }).offsideLatch = null;
     world.lastTouch = { team: 0, idx: 9 };
-    world.ball.pos = vec(PITCH.length - 0.5, PITCH.width / 2);
-    world.ball.vel = vec(15, 0);
+    // Over the line, on the grass, past every glove: the goal is the GIVEN in
+    // these tests — what's under test is the ceremony, never the finish
+    world.ball.pos = vec(PITCH.length + 0.1, PITCH.width / 2);
+    world.ball.vel = vec(10, 0);
+    world.ball.z = 0.3;
+    world.ball.vz = 0;
     let ticks = 60 * 5;
     let owed = 0;
     for (let t = 0; t < 60 * 90 && match.half === 1; t++) {
@@ -406,8 +413,12 @@ describe('the walk back', () => {
     world.restartLock = 0;
     world.restartExclusion = 0;
     world.lastTouch = { team: 0, idx: 9 };
-    world.ball.pos = vec(PITCH.length - 0.5, PITCH.width / 2);
-    world.ball.vel = vec(15, 0);
+    // Two ticks out, on the grass, past every glove: the goal is the GIVEN in
+    // these tests — a breath of 'live' first, then the net, never a save
+    world.ball.pos = vec(PITCH.length - 0.25, PITCH.width / 2);
+    world.ball.vel = vec(10, 0);
+    world.ball.z = 0.3;
+    world.ball.vz = 0;
     return match;
   };
 
@@ -494,8 +505,12 @@ describe('the walk back', () => {
     const world = match.world;
     world.restartLock = 0;
     world.lastTouch = { team: 0, idx: 9 };
-    world.ball.pos = vec(PITCH.length - 0.5, PITCH.width / 2);
-    world.ball.vel = vec(15, 0);
+    // Over the line, on the grass, past every glove: the goal is the GIVEN in
+    // these tests — what's under test is the ceremony, never the finish
+    world.ball.pos = vec(PITCH.length + 0.1, PITCH.width / 2);
+    world.ball.vel = vec(10, 0);
+    world.ball.z = 0.3;
+    world.ball.vz = 0;
     for (let t = 0; t < 60 * 8 && world.ceremony !== 'walkback'; t++) advanceMatch(match, DT);
     expect(world.ceremony).toBe('walkback');
     for (let t = 0; t < 60; t++) advanceMatch(match, DT); // a second into the walk, ball out of the net

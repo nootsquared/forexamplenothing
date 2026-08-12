@@ -68,8 +68,13 @@ export class KeeperMind {
 
     // A slow ball dying near his goal is HIS — he comes and takes it. He picks
     // it UP; he never shepherds it, which is how keepers dribble balls over
-    // their own line. Only an opponent's latch can stop him claiming it.
-    if (goalDist < 11 && world.ball.speed() < 6.5 && world.ball.z < 1.6 && bb.phase !== 'attack') {
+    // their own line. And a BACKPASS is no less his ball: the old possession
+    // gate here is exactly how a keeper stood scooting sideways while his own
+    // team rolled one past him. Only a teammate actually dribbling it (latched)
+    // is left alone.
+    const mateLatched = world.carrier !== null &&
+      world.players[world.carrier.idx].id.team === bb.team;
+    if (goalDist < 11 && world.ball.speed() < 6.5 && world.ball.z < 1.6 && !mateLatched) {
       const theirs = world.carrier && world.players[world.carrier.idx].id.team !== bb.team;
       input.move = norm(sub(ball, me.pos));
       input.sprint = true;

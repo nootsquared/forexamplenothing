@@ -45,6 +45,10 @@ export interface PlayerInput {
   clamp?: boolean;     // held: engage the clamp on a nearby carrier's ball
   attend?: Vec2;       // where the body FACES at walking pace (ball, mark) — sprint overrides
   dive?: { dirY: -1 | 1; height: 0 | 1 }; // keeper only: commit the leap the brain chose
+  // The takeover blend: a freshly switched-into body whose hands are still
+  // idle keeps doing what its brain was doing — the mark held, the jockey
+  // kept. Any real input takes over instantly; kicks are never inherited.
+  assist?: boolean;
 }
 
 // Which side a body plays for and where it lives in the team's shape
@@ -90,6 +94,9 @@ export class PlayerBody {
   bargeCooldown = 0;
   isSprinting = false;
   isCharging = false;
+  // The world's verdict that this body is running WITH the ball right now —
+  // and the oldest truth in football: the man with the ball is the slower man
+  carrying = false;
   prev = { x: 0, y: 0 };
   id: PlayerIdentity;
 
@@ -136,6 +143,10 @@ export class PlayerBody {
     const staminaFactor = 0.8 + 0.2 * this.stamina;
     let maxSpeed = (this.isSprinting ? this.stats.sprintSpeed : this.stats.topSpeed) * staminaFactor;
     if (this.isCharging) maxSpeed *= 0.92; // you can dribble into a shot; barely a tax
+    // Nobody outruns the field WITH the ball: sprinting while it rides your
+    // boot is taxed, so a chasing defender genuinely reels a carrier in. Touch
+    // decides the trade — better feet keep more of the pace.
+    if (this.carrying && this.isSprinting) maxSpeed *= 0.84 + 0.05 * this.stats.control;
     if (input.clamp) maxSpeed *= 0.85;     // squeezing costs a step — attach with your legs first
     if (this.recoverTimer > 0) maxSpeed *= 0.45; // beaten after a whiffed lunge
 

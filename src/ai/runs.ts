@@ -58,6 +58,7 @@ export interface RunCtx {
   side: -1 | 1;   // the touchline he lives on
   daring: number; // personal appetite for the ambitious run
   rng: Rng;
+  t: number;      // the brain's own clock — the weave lives on it
 }
 
 const AUCTION: RunKind[] = ['hold', 'check', 'channel', 'driftWide', 'overlap', 'linebreak', 'nearPost', 'farPost'];
@@ -123,8 +124,13 @@ export function runTarget(c: RunCtx, plan: RunPlan): Vec2 {
       const past = Math.max(bb.axisOf((carrier ?? me).pos.x) + 10, bb.axisOf(me.pos.x) + 5);
       return clampPitch(vec(bb.xAtAxis(Math.min(past, bb.offsideSafeAxis() - 1)), chalk));
     }
-    case 'linebreak':
-      return clampPitch(vec(bb.xAtAxis(bb.offsideSafeAxis() + 9), c.anchor.y * 0.55 + goal.y * 0.45));
+    case 'linebreak': {
+      // The runner HUNTS along the shoulder instead of standing on it: a
+      // lateral weave at pace, so he arrives at every window with real
+      // velocity — the lead pass has a run to be played into
+      const weave = Math.sin(c.t * 2.4 + c.idx * 1.3) * 6.5;
+      return clampPitch(vec(bb.xAtAxis(bb.offsideSafeAxis() + 9), c.anchor.y * 0.55 + goal.y * 0.45 + weave));
+    }
     case 'nearPost':
       return clampPitch(vec(goal.x - sgn * 5.5, mid + ballSide * 3.4));
     case 'farPost':
@@ -156,6 +162,10 @@ export function runSprints(plan: RunPlan, bb: TeamBrain): boolean {
     case 'cornerShort':
       return cornerBreaking(bb, plan);
     default:
+      // The break burns legs it would normally save; the scramble sprints even
+      // the men whose whole job is standing in the right place
+      if (bb.breakT > 0 && plan === 'channel') return true;
+      if (bb.scrambleT > 0 && plan === 'hold') return true;
       return plan === 'linebreak' || plan === 'burst' || plan === 'overlap' ||
         plan === 'nearPost' || plan === 'farPost';
   }
@@ -216,6 +226,12 @@ function score(c: RunCtx, kind: RunKind, target: Vec2): number {
     + laneOpen(from, target, opps) * 0.5
     + (bb.axisOf(target.x) - bb.axisOf(me.pos.x)) * 0.035
     + c.rng.next() * 0.35; // dither, so eleven brains never lockstep
+  // The break wants VERTICAL ideas while the window burns — holding shape is
+  // how a counter dies of politeness
+  if (bb.breakT > 0) {
+    if (kind === 'linebreak' || kind === 'channel' || kind === 'overlap') s += 1.0;
+    if (kind === 'hold') s -= 0.7;
+  }
   // Nobody stands on a teammate, and the carrier needs air, not company
   const mate = nearestTeammate(c, target);
   if (mate < 9) s -= (9 - mate) * 0.25;

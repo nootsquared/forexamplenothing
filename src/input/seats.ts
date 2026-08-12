@@ -16,18 +16,18 @@ export const deviceId = (d: SeatDevice) => (d.kind === 'pad' ? `pad${d.index}` :
 export const deviceLabel = (d: SeatDevice) =>
   d.kind === 'pad' ? `PAD ${d.index + 1}` : d.hands === 0 ? 'KEYBOARD' : 'KEYBOARD 2';
 
-// The SECOND pair of hands on one keyboard. Seat one keeps WASD, shift, space
-// and the mouse exactly as they have always been; seat two lives in the
-// right-hand cluster — arrows to run, / to sprint, . to tackle, ; and ' to
-// bend. It has no mouse, so its kick is the shell's to hand out.
+// The SECOND pair of hands on one keyboard. Seat one keeps WASD, shift and
+// space exactly as they have always been; seat two lives in the right-hand
+// cluster — arrows to run, / to sprint, . to kick, , to defend, ; and ' to
+// bend.
 export const SECOND_HANDS: Record<string, string> = {
   KeyW: 'ArrowUp', KeyS: 'ArrowDown', KeyA: 'ArrowLeft', KeyD: 'ArrowRight',
   ShiftLeft: 'Slash', ShiftRight: 'Slash',
-  Space: 'Period', KeyK: 'Period',
+  Space: 'Period', KeyK: 'Comma',
   KeyJ: 'Semicolon', KeyL: 'Quote',
 };
 // The two keys seat two presses together to sit down — its own sprint and
-// tackle, so the handshake teaches the controls
+// kick, so the handshake teaches the controls
 export const SECOND_JOIN = ['Slash', 'Period'];
 
 // Same keyboard, different names on the keys: LocalControls only ever asks

@@ -79,7 +79,7 @@ export class Scene {
   private replayOn = false;         // the truck has the room: every live aid steps off
   private hudWanted = true;         // ...and the HUD comes back only if it was wanted
   private dragHead: Sprite;         // baked chalk arrowhead, tinted by power
-  private kickDrag: { from: Vec2; dir: Vec2; power: number; theta?: number } | null = null;
+  private kickDrags: { from: Vec2; dir: Vec2; power: number; theta?: number }[] = [];
   // "The ball is YOURS": a gold pixel frame breathing at the screen edge, and
   // under it the red one that only shows up when the match has real teeth
   private possessionGlow = new Graphics();
@@ -91,6 +91,9 @@ export class Scene {
   private glowW = 0;
   private glowH = 0;
   private mood: VariantMood = MOODS[0];
+  // Which lens density V has cycled to — the camera itself owns the number.
+  // Starts at CLOSE, the couch's pick.
+  private densityIdx = 1;
   // The ceremony's own lens: the shot a goal or a dead ball is being played on
   private staged: { center: Vec2; zoom: number } | null = null;
   private restartHold = 0;
@@ -126,6 +129,18 @@ export class Scene {
     this.pitchLayer.setVariant(mood.id);
     this.worldSorted.tint = mood.spriteTint;
     this.hud.showToast(mood.name);
+  }
+
+  // V cycles how tight the live game is framed — three densities to taste
+  cycleDensity() {
+    const modes = [
+      { zoom: 1, name: 'LENS: BROADCAST' },
+      { zoom: 1.16, name: 'LENS: CLOSE' },
+      { zoom: 1.34, name: 'LENS: INTENSE' },
+    ];
+    this.densityIdx = (this.densityIdx + 1) % modes.length;
+    this.camera.density = modes[this.densityIdx].zoom;
+    this.hud.showToast(modes[this.densityIdx].name);
   }
 
   setControlled(idx: number) {
@@ -167,10 +182,15 @@ export class Scene {
     }
   }
 
-  // The slingshot sight — non-null while a drag-back is charging a strike.
-  // theta is the cone's half-angle: the honest wedge this ball may leave through.
+  // The charge sight — non-null while a strike is being wound. theta is the
+  // cone's half-angle: the honest wedge this ball may leave through.
   setKickDrag(d: { from: Vec2; dir: Vec2; power: number; theta?: number } | null) {
-    this.kickDrag = d;
+    this.kickDrags = d ? [d] : [];
+  }
+
+  // The couch's version: every charging seat brings its own arrow
+  setKickDrags(ds: { from: Vec2; dir: Vec2; power: number; theta?: number }[]) {
+    this.kickDrags = ds;
   }
 
   toast(msg: string) {
@@ -476,9 +496,9 @@ export class Scene {
     const live = !this.replayOn;
     this.dragG.clear();
     this.wedgeG.clear();
-    this.dragHead.visible = live && !!this.kickDrag;
-    if (live && this.kickDrag) {
-      const kd = this.kickDrag;
+    const firstKd = this.kickDrags[0] ?? null;
+    this.dragHead.visible = live && !!firstKd;
+    for (const kd of live ? this.kickDrags : []) {
       // Red is the top of the throw and NOTHING else: a stick buried to the
       // pin. Everything a thumb does on the way there reads mint or amber, so
       // the colour is news about YOUR hand instead of a permanent warning.
@@ -507,13 +527,13 @@ export class Scene {
           const p = project(kd.from.x + edge.x * wedgeLen, kd.from.y + edge.y * wedgeLen, 0);
           pts.push(p.sx, p.sy);
         }
-        this.wedgeG.poly(pts).fill({ color, alpha: 0.14 });
+        this.wedgeG.poly(pts).fill({ color, alpha: 0.07 }); // the lottery whispers; the arrow speaks
         for (const side of [-1, 1]) {
           const edge = rotate(kd.dir, side * th);
           for (let t = 1.4; t < wedgeLen; t += 0.62) {
             const p = project(kd.from.x + edge.x * t, kd.from.y + edge.y * t, 0);
             this.wedgeG.rect(Math.round(p.sx - wq / 2), Math.round(p.sy - wq / 2), wq, wq)
-              .fill({ color, alpha: 0.5 });
+              .fill({ color, alpha: 0.28 });
           }
         }
         for (let a = -th; a <= th + 0.001; a += Math.max(th / 3, 0.02)) {
@@ -524,13 +544,15 @@ export class Scene {
         }
       }
 
-      const dirs = this.assets.manifest.fx.aim.frames;
-      const bin = Math.round(Math.atan2(kd.dir.y, kd.dir.x) / ((Math.PI * 2) / dirs));
-      this.dragHead.texture = this.assets.aimFrames[((bin % dirs) + dirs) % dirs];
-      this.dragHead.tint = color;
-      this.dragHead.scale.set(0.75 + kd.power * 0.65);
-      const tip = project(kd.from.x + kd.dir.x * reach, kd.from.y + kd.dir.y * reach, 0);
-      this.dragHead.position.set(Math.round(tip.sx), Math.round(tip.sy));
+      if (kd === firstKd) {
+        const dirs = this.assets.manifest.fx.aim.frames;
+        const bin = Math.round(Math.atan2(kd.dir.y, kd.dir.x) / ((Math.PI * 2) / dirs));
+        this.dragHead.texture = this.assets.aimFrames[((bin % dirs) + dirs) % dirs];
+        this.dragHead.tint = color;
+        this.dragHead.scale.set(0.75 + kd.power * 0.65);
+        const tip = project(kd.from.x + kd.dir.x * reach, kd.from.y + kd.dir.y * reach, 0);
+        this.dragHead.position.set(Math.round(tip.sx), Math.round(tip.sy));
+      }
     }
 
     // The clamp, visible: jaws of chalk dots biting around a contested ball
@@ -554,7 +576,7 @@ export class Scene {
       }
     }
 
-    // The offside line, chalked into the turf like every other law of this
+        // The offside line, chalked into the turf like every other law of this
     // game — but only when a runner is actually flirting with it, and it turns
     // red for a beat when the flag finally goes up
     this.offsideG.clear();

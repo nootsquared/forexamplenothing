@@ -208,6 +208,8 @@ export class World {
       // — nobody's foul is ever handed to them by the computer.
       const late = !!input.tackle && p.lungeTimer <= 0 && p.id.role !== 'GK' &&
         this.humanIdxs.has(i) && this.tackleWindow(i) <= 0;
+      p.carrying = ballLive && this.ball.z <= 1 && dist(p.pos, this.ball.pos) < CLAMP.carry &&
+        (this.carrier?.idx === i || this.lastTouch?.idx === i);
       p.update(dt, input, this.events);
       if (p.lungeTimer <= 0) this.lateLunge.delete(i);
       else if (late) this.lateLunge.add(i);
@@ -551,7 +553,10 @@ export class World {
       const axis = norm(sub(carrier.pos, p.pos));
       const toBall = sub(this.ball.pos, p.pos);
       const side = axis.x * toBall.y - axis.y * toBall.x >= 0 ? 1 : -1;
-      dir = norm(add(scale(axis, 0.55), scale(perpRight(axis), side * 0.85)));
+      // Sideways past the man, leaning UPFIELD: a won tackle is the first
+      // pass of the counter, never a ricochet back into the mixer
+      dir = norm(add(add(scale(axis, 0.55), scale(perpRight(axis), side * 0.85)),
+        scale(vec(this.attackSign(p.id.team), 0), 0.5)));
     }
     this.ball.vel = add(scale(dir, 6.5), scale(p.vel, 0.2));
     this.ball.spin = 0;
@@ -957,7 +962,7 @@ export class World {
     if (dist(p.pos, this.ball.pos) > KICK_RANGE || this.ball.z > 1.2) return;
 
     const inputPower = clamp(p.pendingKick.power, 0.1, 1);
-    const power = inputPower * (0.75 + 0.25 * p.stats.power);
+    let power = inputPower * (0.75 + 0.25 * p.stats.power);
     const bend = clamp(p.pendingKick.bend, -AIM_BEND_MAX, AIM_BEND_MAX);
     const at = p.pendingKick.aimAt;
     p.pendingKick = null;
@@ -969,6 +974,11 @@ export class World {
     const aim = toAt && len(toAt) > 0.5
       ? norm(toAt)
       : rotate(len(input.move) > 0.25 ? norm(input.move) : p.facing, bend);
+    // Across the body is a REAL ball to hit: the further the strike bends from
+    // the line the legs are running, the more weight it loses. Kiting away
+    // while pinging no-look balls behind you buys a soft, cuttable pass.
+    const stride = p.speed() > 1.2 ? norm(p.vel) : p.facing;
+    power *= 1 - clamp((angleBetween(stride, aim) - 0.9) / (Math.PI - 0.9), 0, 1) * 0.35;
     // The cone made law: the ball samples inside the same wedge the sight
     // chalks — finishing governs balls driven at the mouth, passing governs
     // deliveries and decays toward the long-ball stat with intended distance,

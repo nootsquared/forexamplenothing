@@ -44,6 +44,10 @@ function coverFitZoom(viewW: number, viewH: number, pad: number): number {
 export class FollowCamera {
   center: Vec2 = vec(PITCH.length / 2, PITCH.width / 2);
   zoom = 3.0;
+  // The lens density: how tight live football is framed. 1 is broadcast;
+  // above it the same action fills more of the screen (V cycles it in-match).
+  // CLOSE by default — the verdict from the couch was that broadcast reads empty.
+  density = 1.16;
   // A distribution beat pulls the view wide onto a chosen spot (keeper aiming)
   override: { center: Vec2; zoom: number } | null = null;
   private targetZoom = 3.0;
@@ -117,7 +121,7 @@ export class FollowCamera {
     const spanY = (maxY - minY) / 2 + 6;
     const fit = Math.min(viewW / (2 * spanX * M), viewH / (2 * spanY * M * squash()));
     const pace = Math.hypot(ballVel.x, ballVel.y) > 15 ? 2.75 : ZOOM_CEIL;
-    this.targetZoom = clamp(Math.min(pace, fit), ZOOM_FLOOR, ZOOM_CEIL);
+    this.targetZoom = clamp(Math.min(pace, fit) * this.density, ZOOM_FLOOR, ZOOM_CEIL * this.density);
     this.zoom = expDecay(this.zoom, this.targetZoom, 1.8, dt);
 
     this.zoom = this.clampView(this.center, this.zoom, viewW, viewH, SHAKE_ROOM);

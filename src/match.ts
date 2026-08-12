@@ -166,7 +166,24 @@ export function advanceMatch(match: Match, dt: number, overrides: Record<number,
   }
   match.teamBrains[0].update(match.world, dt);
   match.teamBrains[1].update(match.world, dt);
-  const inputs = match.world.players.map((_, i) => overrides[i] ?? match.brains[i].tick(match.world, dt));
+  const inputs = match.world.players.map((_, i) => {
+    const o = overrides[i];
+    if (!o) return match.brains[i].tick(match.world, dt);
+    // The takeover blend: switching into a body never drops what it was doing.
+    // Idle hands inherit the brain's whole stance (the mark, the jockey, the
+    // chase); moving hands still KEEP the brain's clamp, so steering out of a
+    // switch never releases jaws mid-duel. Kicks and lunges are decisions,
+    // never inherited.
+    if (o.assist) {
+      const ai = match.brains[i].tick(match.world, dt);
+      const idle = Math.hypot(o.move.x, o.move.y) < 0.15 &&
+        !o.sprint && !o.kickCharging && !o.kickReleased && !o.tackle && !o.clamp;
+      if (idle) return { ...ai, kickCharging: false, kickReleased: null, tackle: false, dive: undefined };
+      if (ai.clamp && !o.clamp) return { ...o, clamp: true };
+      return o;
+    }
+    return o;
+  });
   // A keeper holding the ball STANDS and reads the field — his brain never
   // walks a charged clearance out of the box (unless a human seat is aiming him)
   const holdingIdx = match.world.holdingGk;

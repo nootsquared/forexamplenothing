@@ -133,6 +133,19 @@ export class TeamBrain {
   // The carrier with his head up: settled, unhurried, pointed forward. The
   // line-breaking runners wait for exactly this beat before they go.
   carrierLoaded = false;
+  // THE BREAK: seconds of surge after winning the ball in open play — runs go
+  // vertical, gates loosen, the game refuses to congeal. A tackle is a trigger.
+  breakT = 0;
+  // ...and the other side of the same moment: seconds of honest panic after
+  // LOSING it — the shape sprints home instead of elastically strolling back.
+  scrambleT = 0;
+  // THE HUNT: the team press, conducted by a human's own legs — sprint at
+  // their carrier and everyone commits with you. AI sides arm it off their
+  // presser latching on. While it burns, marks are tight and a second man comes.
+  huntT = 0;
+  // What each of ours is RUNNING right now — published so the carrier can
+  // imagine the pass a committed run is asking for
+  runPlanOf: string[] = [];
   // The live corner, whoever's it is — armed by the whistle, aimed by whoever
   // takes it, and always on a clock so a delivery that never comes cannot
   // freeze eleven men in the six-yard box.
@@ -149,6 +162,8 @@ export class TeamBrain {
   private threats: number[] = [];  // reused scratch — the auction allocates nothing
   private markers: number[] = [];
   private runFact = { idx: -1, quality: 0, at: vec() };
+  private prevPhase: Phase = 'loose';
+  private pressNearT = 0;
 
   // Which way is FORWARD this half — refreshed from the world every update,
   // because the teams swap ends at the break
@@ -216,10 +231,12 @@ export class TeamBrain {
     if (this.myIdxs.length === 0) {
       world.players.forEach((p, i) => { if (p.id.team === this.team) this.myIdxs.push(i); });
       this.markOf = world.players.map(() => -1);
+      this.runPlanOf = world.players.map(() => 'hold');
     }
     const possessor = world.possessor();
     this.possessorIdx = possessor;
     this.updatePhase(world, dt, possessor);
+    this.updateMoment(world, dt);
 
     // Second-last opponent up the attack axis — the line runs never cross
     let first = -Infinity;
@@ -260,6 +277,56 @@ export class TeamBrain {
     this.phaseHold += dt;
     const inFlight = world.ball.speed() > 5 || world.ball.z > 0.6;
     this.phase = inFlight && this.phaseHold < FLIGHT_OWNS ? owner : 'loose';
+  }
+
+  // The temperature of the moment: turnovers ignite a BREAK for the winners
+  // and a SCRAMBLE for the losers; a committed chase ignites the HUNT. Dead
+  // balls put all three out — ceremony is nobody's madness.
+  private updateMoment(world: World, dt: number) {
+    this.breakT = Math.max(0, this.breakT - dt);
+    this.scrambleT = Math.max(0, this.scrambleT - dt);
+    this.huntT = Math.max(0, this.huntT - dt);
+    for (const e of world.events) {
+      // A clean steal is the loudest trigger; any open-play flip still opens a window
+      if (e.kind === 'steal') {
+        if (world.lastTouch?.team === this.team) this.breakT = 5;
+        else this.scrambleT = 5;
+      }
+      if (e.kind === 'restart' || e.kind === 'kickoff' || e.kind === 'goal') {
+        this.breakT = 0;
+        this.scrambleT = 0;
+        this.huntT = 0;
+      }
+    }
+    if (world.restartLock <= 0 && world.ceremony === 'live') {
+      if (this.prevPhase !== 'attack' && this.phase === 'attack') {
+        this.breakT = Math.max(this.breakT, 4);
+        this.scrambleT = 0;
+      }
+      if (this.prevPhase === 'attack' && this.phase === 'defend') {
+        this.scrambleT = Math.max(this.scrambleT, 4);
+        this.breakT = 0;
+      }
+    }
+    this.prevPhase = this.phase;
+
+    // The hunt arms while we defend a carried ball: a human sprinting AT the
+    // carrier commits the team; an AI presser latched close for a beat does too
+    if (this.phase === 'defend' && this.possessorIdx !== null) {
+      const cb = world.players[this.possessorIdx];
+      if (this.humanIdx >= 0) {
+        const h = world.players[this.humanIdx];
+        const to = { x: cb.pos.x - h.pos.x, y: cb.pos.y - h.pos.y };
+        const d = Math.hypot(to.x, to.y);
+        const closing = d > 1e-3 ? (h.vel.x * to.x + h.vel.y * to.y) / (Math.max(h.speed(), 0.1) * d) : 0;
+        if (h.isSprinting && d < 9 && closing > 0.6) this.huntT = 1.6;
+      }
+      const pr = this.presserIdx >= 0 ? world.players[this.presserIdx] : null;
+      if (pr && dist(pr.pos, cb.pos) < 2.3) {
+        this.pressNearT += dt;
+        if (this.pressNearT > 0.55) this.huntT = Math.max(this.huntT, 1);
+      } else this.pressNearT = 0;
+    } else this.pressNearT = 0;
   }
 
   // Who owes the carrier an angle, who owes him depth. Sticky by a couple of
@@ -439,8 +506,10 @@ export class TeamBrain {
     // The step-up EASES between phases: a turnover slides the block, it never
     // teleports it, so nobody sprints backwards for a ball that was ours again
     // half a second later
-    const pushWant = this.phase === 'attack' ? 11 : this.phase === 'defend' ? -7 : 3;
-    this.pushNow = expDecay(this.pushNow, pushWant, 1.5, dt);
+    // A scramble is not an elastic stroll: losing the ball in open play sends
+    // the shape home deeper and at nearly triple the ease rate — panic reads
+    const pushWant = this.scrambleT > 0 ? -12 : this.phase === 'attack' ? 11 : this.phase === 'defend' ? -7 : 3;
+    this.pushNow = expDecay(this.pushNow, pushWant, this.scrambleT > 0 ? 3.6 : 1.5, dt);
     const ballAxis = this.axisOf(ball.x);
     // The back line LIVES with the ball, not with its box: past halfway in
     // possession, still stepped up around it out of possession — space behind

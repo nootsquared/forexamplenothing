@@ -6,6 +6,12 @@ import { Vec2, add, clamp, dist, len, scale, sub } from '../core/math';
 
 const OPP_EST_SPEED = 7.1; // how fast everyone assumes an opponent can run — mean of the widened pace band
 const OPP_REACTION = 0.25; // seconds before that opponent gets moving
+// The turn tax: a defender who must run WITH the ball's direction of travel is
+// turning and chasing, not stepping across a line — he reacts later and arrives
+// slower. This one number is what makes the ball in behind a real pass, for
+// the passer weighing it and the cover man fearing it alike.
+const CHASE_SPEED = 6.5;
+const CHASE_REACTION = 0.55;
 
 // Where do the ball and a moving receiver actually MEET? Solves the classic
 // intercept: receiver keeps running his line, the ball leaves now at
@@ -39,13 +45,24 @@ export function passMargin(from: Vec2, to: Vec2, ballSpeed: number, opponents: V
   const L = len(ab);
   if (L < 1e-4) return 9;
   const dir = scale(ab, 1 / L);
+  // Each defender aims at his smartest catch: not his perpendicular foot on
+  // the lane but the pursuit point ahead of it his legs can actually make
+  const k = Math.min(OPP_EST_SPEED / ballSpeed, 0.98);
+  const lead = k / Math.sqrt(1 - k * k);
   let worst = 9;
   for (const opp of opponents) {
-    const along = clamp((opp.x - from.x) * dir.x + (opp.y - from.y) * dir.y, 1, L - 0.4);
-    const point = add(from, scale(dir, along));
-    const ballT = along / ballSpeed;
-    const oppT = dist(opp, point) / OPP_EST_SPEED + OPP_REACTION;
-    worst = Math.min(worst, oppT - ballT);
+    const a0 = clamp((opp.x - from.x) * dir.x + (opp.y - from.y) * dir.y, 1, L - 0.4);
+    const h = dist(opp, add(from, scale(dir, a0)));
+    const s = clamp(a0 + h * lead, 1, L - 0.4);
+    const point = add(from, scale(dir, s));
+    const d = dist(opp, point);
+    // The turn tax: the share of his run spent chasing WITH the ball's flight
+    // is run late and run slow — stepping across a lane is quick, turning and
+    // chasing a ball played past you is not
+    const chaseFrac = d > 1e-4 ? clamp(((point.x - opp.x) * dir.x + (point.y - opp.y) * dir.y) / d, 0, 1) : 0;
+    const v = OPP_EST_SPEED + (CHASE_SPEED - OPP_EST_SPEED) * chaseFrac;
+    const r = OPP_REACTION + (CHASE_REACTION - OPP_REACTION) * chaseFrac;
+    worst = Math.min(worst, d / v + r - s / ballSpeed);
   }
   return worst;
 }

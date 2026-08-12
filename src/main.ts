@@ -3,7 +3,7 @@ import { GameLoop } from './core/loop';
 import { Vec2, vec, dist, clamp, norm, scale, sub, expDecayVec } from './core/math';
 import { PlayerInput } from './sim/player';
 import { World } from './sim/world';
-import { kickSight, keeperScatter, keeperCentering } from './sim/tuning';
+import { HUMAN_KICK_FLOOR, kickSight, keeperScatter, keeperCentering } from './sim/tuning';
 import { PITCH } from './sim/constants';
 import { Match, createMatch, advanceMatch, pickDistribution, MAX_STOPPAGE } from './match';
 import { leadTarget, passMargin } from './ai/brain';
@@ -113,6 +113,24 @@ async function boot() {
   // pad — nobody is ever seated on somebody else's behalf
   let lastHands: SeatDevice = { kind: 'keys', hands: 0 };
   const couchDown = new Set<string>(); // raw key edges the couch reads for itself
+  // Switch inheritance: for a beat after the cursor lands on a new body, idle
+  // hands let its brain keep the stance it was holding — the mark, the jockey,
+  // the chase. Defensive phases only: with the ball, your body is yours from
+  // the first frame.
+  const takeover = new WeakMap<TeamCursor, { last: number; t: number }>();
+  function assistFor(c: TeamCursor, dt: number): boolean {
+    if (!match) return false;
+    let s = takeover.get(c);
+    if (!s) { s = { last: c.idx, t: 0 }; takeover.set(c, s); }
+    if (c.idx !== s.last) {
+      s.last = c.idx;
+      const team = match.world.players[c.idx]?.id.team;
+      s.t = team !== undefined && match.teamBrains[team].phase !== 'attack' ? 0.5 : 0;
+    } else {
+      s.t = Math.max(0, s.t - dt);
+    }
+    return s.t > 0;
+  }
   // The goal party: whose arms X throws up, and whether anybody has asked yet
   let celebrate: { scorer: number; t: number; ask: boolean; taken: boolean; pop: number } | null = null;
   const CELEBRATE_WINDOW = 5.2; // longer than the sim's party — the ceremony ends it, not a timer
@@ -1291,7 +1309,7 @@ async function boot() {
   // is still his to press, seat two's comma beside its own tackle and sprint
   const seatSwitchPressed = (seat: Seat): boolean => {
     // X belongs to the party while a goal is still being celebrated
-    if (seat.pressed('lb') || (seat.pressed('x') && !celebrate)) return true;
+    if (seat.pressed('x') && !celebrate) return true;
     if (seat.device.kind === 'keys' && seat.device.hands === 1) return keyEdge('Comma');
     return boardFor(seat) !== deafBoard && keyEdge('KeyE');
   };
@@ -1351,7 +1369,7 @@ async function boot() {
     if (pads.pressed('b') && !activeScreen && callCornerRun()) return; // over a corner, B is the call
     if (pads.pressed('b') && activeScreen) pressEscape(); // B backs out of menus; in play it tackles
     if (pads.pressed(CONTROLS_PAD_BUTTON)) toggleControls('pad'); // SELECT: what does this button do
-    if (pads.pressed('lb') || pads.pressed('x')) pressSwitch();
+    if (pads.pressed('x')) pressSwitch(); // X is the switch; the bumpers stay retired
     if (pads.pressed('y')) {
       toggleAutoSwitch();                  // in play: hand-me-the-hunter mode
       if (activeScreen) routeKey('KeyF');  // in the lobby: READY UP
@@ -1359,6 +1377,9 @@ async function boot() {
   };
   // Numbers belong to the pitch's mood — except on the training ground, where
   // the modifier rail borrows them and hands back whatever it doesn't use
+  kb.onPress('KeyV', () => {
+    if (screenName === 'match') scene?.cycleDensity();
+  });
   MOODS.forEach((mood, i) => kb.onPress(`Digit${i + 1}`, () => {
     if (screenName !== 'match' || sandbox?.key(`Digit${i + 1}`)) return;
     scene?.setVariant(mood);
@@ -1418,20 +1439,9 @@ async function boot() {
     // movement must not be picked against a pointer we only guessed at
     mouse.x = e.clientX;
     mouse.y = e.clientY;
-    if (screenName !== 'match' || paused) return;
-    // The sling only arms with the ball at YOUR feet — no phantom arrows, and
-    // never over a corner, where the same button is the delivery itself
-    if (!keeperAiming && !cornerAim && ballIsMine()) {
-      drag.active = true;
-      drag.anchorX = e.clientX;
-      drag.anchorY = e.clientY;
-      return;
-    }
-    // Off the ball the same button hands you a body instead — the man lit up
-    // under the pointer, worn the instant you press. A kick and a switch can
-    // never steal each other: the ball decides whose click this is.
-    const pick = pickTeammate();
-    if (pick >= 0 && cursor?.takeAt(pick)) soundSwitch();
+    // The mouse no longer kicks and no longer picks bodies: passing is the
+    // legs' direction and the bar's timing, switching is E. Clicks stay only
+    // for the dead-ball sights (a keeper's throw, a corner's ring).
   });
   window.addEventListener('mouseup', () => {
     if (!drag.active) return;
@@ -1817,10 +1827,7 @@ async function boot() {
     input = primary
       ? primary.sample(dt, boardFor(primary), facing)
       : pads.drive(roster.soloPads, () => controls.sample(dt, kb, facing));
-    if (mouseKick) {
-      input.kickReleased = { power: mouseKick.power, aimOffset: 0, aimAt: mouseKick.aimAt };
-      mouseKick = null;
-    }
+    mouseKick = null; // the sling is retired — the boot answers to Space and A
     applyFlick(input, world, primary);
     if (primary && seatSwitchPressed(primary)) askSwitch(cursor);
     // over a corner the tackle key changes jobs — it calls the box in, and
@@ -1834,7 +1841,9 @@ async function boot() {
     mouse.moved = false;
     humanIdle = active ? 0 : humanIdle + dt;
 
-    // YOUR body is always yours — an empty input means he holds, not plays on
+    // YOUR body is always yours — an empty input means he holds, not plays on.
+    // Freshly switched-into and idle, he FINISHES what he was doing instead.
+    if (assistFor(cursor, dt)) input.assist = true;
     const overrides: Record<number, PlayerInput> = { [cursor.idx]: input };
     // a taker mid-throw stands at the line; the mouse owns the delivery
     if (throwAim) overrides[throwAim.taker] = { move: vec(), sprint: false, kickCharging: false, kickReleased: null };
@@ -1845,6 +1854,7 @@ async function boot() {
       if (seatSwitchPressed(cs.seat)) askSwitch(cs.cursor);
       const seatIn = cs.seat.sample(dt, boardFor(cs.seat), world.players[cs.cursor.idx].facing);
       applyFlick(seatIn, world, cs.seat);
+      if (assistFor(cs.cursor, dt)) seatIn.assist = true;
       overrides[cs.cursor.idx] = seatIn;
     }
     // online: every seated friend drives his own body through his own cursor
@@ -2156,18 +2166,30 @@ async function boot() {
     } else passHints = [];
     scene.setPassHints(tutorial ? passHints.filter((i) => tutorial!.visible.has(i)) : passHints);
 
-    // The drag sight: an arrow off your boot, growing longer and thicker
-    // as you pull back — the meter IS the arrow. Lose the ball, lose the sling.
-    if (drag.active && !ballIsMine()) drag.active = false;
-    if (drag.active) {
-      const pull = resolveDrag();
-      scene.setKickDrag(pull ? { from: world.players[cursor.idx].pos, dir: pull.dir, power: pull.power, theta: tutorial?.hideWedge ? 0 : wedgeFor(world, cursor.idx, pull.dir, pull.power) } : null);
-    } else if (controls.flickAim && ballIsMine()) {
-      // the pad's wind-up wears the same arrow the mouse sling does
-      scene.setKickDrag({ from: world.players[cursor.idx].pos, dir: controls.flickAim.dir, power: controls.flickAim.power, theta: tutorial?.hideWedge ? 0 : wedgeFor(world, cursor.idx, controls.flickAim.dir, controls.flickAim.power) });
-    } else {
-      scene.setKickDrag(null);
+    // The charge sight: the sling's own chalk, reading the held bar. Every
+    // charging seat gets the full dot-arrow and wedge off its legs' facing —
+    // power grows the arrow from NOTHING toward full, and a fizzled bar kills
+    // the sight in your hands. The meter IS the arrow; nothing rides the head.
+    const sights: { from: Vec2; dir: Vec2; power: number; theta?: number }[] = [];
+    const chargeSight = (ctl: LocalControls, idx: number) => {
+      const body = world.players[idx];
+      if (!body || !ctl.aimDir || ctl.charge <= 0) return;
+      if (dist(body.pos, world.ball.pos) > 3) return; // no phantom arrows off the ball
+      const releaseP = HUMAN_KICK_FLOOR + ctl.charge * (1 - HUMAN_KICK_FLOOR);
+      sights.push({ from: body.pos, dir: ctl.aimDir, power: ctl.charge, theta: tutorial?.hideWedge ? 0 : wedgeFor(world, idx, ctl.aimDir, releaseP) });
+    };
+    if (!keeperAiming && !cornerAim) {
+      chargeSight(primary ? primary.controls : controls, cursor.idx);
+      for (const cs of couch) {
+        if (cs.seat.live) chargeSight(cs.seat.controls, cs.cursor.idx);
+      }
     }
+    // the pad's right-stick wind wears the same chalk
+    const flickCtl = primary ? primary.controls : controls;
+    if (!sights.length && flickCtl.flickAim && ballIsMine()) {
+      sights.push({ from: world.players[cursor.idx].pos, dir: flickCtl.flickAim.dir, power: flickCtl.flickAim.power, theta: tutorial?.hideWedge ? 0 : wedgeFor(world, cursor.idx, flickCtl.flickAim.dir, flickCtl.flickAim.power) });
+    }
+    scene.setKickDrags(sights);
 
     scene.setControlled(cursor.idx);
     scene.setSwitchTarget(tutorial ? tutorial.switchTargetFor(cursor.suggested) : cursor.suggested);
@@ -2259,7 +2281,10 @@ async function boot() {
       controlsPanel.update(dt); // the card rides in and out over everything, paused or not
     },
     (alpha, renderDt) => {
-      if (scene) scene.render(alpha, renderDt, { charge: controls.charge, move: input.move, dir: controls.aimDir });
+      // The charge tell reads whichever hands are actually the first seat's —
+      // the big chalk sight owns the ARROW now, so the sprite keeps only the bar
+      const ctl = primary ? primary.controls : controls;
+      if (scene) scene.render(alpha, renderDt, { charge: ctl.charge, move: input.move, dir: null });
       else if (screenName === 'menu') attract?.scene.render(alpha, renderDt, { charge: 0, move: vec(), dir: null });
       // the rail's dust is projected through the lens that was just drawn
       if (sandbox) {

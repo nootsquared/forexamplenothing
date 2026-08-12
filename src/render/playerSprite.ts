@@ -1,12 +1,12 @@
 import { Container, Sprite, Graphics } from 'pixi.js';
 import { lerp } from './interp';
-import { Vec2, len, norm, signedAngle } from '../core/math';
+import { Vec2, signedAngle } from '../core/math';
 import { PITCH } from '../sim/constants';
 import { PlayerBody } from '../sim/player';
 import { GameAssets, Manifest } from './assets';
 import { Celebration, celebrationFor } from './celebrations';
 import { PixelText } from './pixelText';
-import { project, pxPerMeter, squash } from './projection';
+import { project } from './projection';
 
 // Charge + resolved aim the local player's view needs to draw its tell —
 // `dir` is the world-space strike line (field-locked J/L already applied)
@@ -40,7 +40,6 @@ export class PlayerView {
   private animPhase = 0;
   private idlePhase = 0;
   private kickTimer = 0;
-  private aimPulse = 0;
   private markerPulse = 0;
   private hintPulse = 0;
   private chevPulse = 0;
@@ -203,7 +202,7 @@ export class PlayerView {
       this.chevPulse += dt * 2;
       this.seatChev.position.y = -33 + Math.sin(this.chevPulse * 0.6) * 1.4;
     }
-    this.updateAimArrow(p, dt, aim);
+    this.updateAimArrow();
 
     const speed = p.speed();
     const anims = this.assets.manifest.player.anims;
@@ -272,7 +271,10 @@ export class PlayerView {
     // Charge tell above EVERY head, human or brain: you can read a wound-up
     // strike coming across the pitch — and brace for it
     this.aiCharge = p.isCharging ? Math.min(0.85, this.aiCharge + dt) : 0;
-    const charge = aim ? aim.charge : this.aiCharge / 0.85;
+    // The human's meter IS the chalk arrow on the turf now — only an AI
+    // body's wind-up keeps the little tell over its head, so a brain's
+    // strike can still be read coming across the pitch
+    const charge = aim ? 0 : this.aiCharge / 0.85;
     this.chargeBar.clear();
     if (charge > 0.02) {
       const w = 16;
@@ -283,20 +285,10 @@ export class PlayerView {
 
   // The shot sight: a chalk arrow orbiting the feet at the FINAL aim — stick
   // line bent by J/L — so you always see where the strike will leave
-  private updateAimArrow(p: PlayerBody, dt: number, aim: AimState | null) {
-    if (!aim || aim.charge <= 0) {
-      this.aimArrow.visible = false;
-      return;
-    }
-    this.aimPulse += dt * 9;
-    const dir = aim.dir ?? (len(aim.move) > 0.25 ? norm(aim.move) : p.facing);
-    const dirs = this.assets.manifest.fx.aim.frames;
-    const bin = Math.round(Math.atan2(dir.y, dir.x) / ((Math.PI * 2) / dirs));
-    this.aimArrow.texture = this.assets.aimFrames[((bin % dirs) + dirs) % dirs];
-    const M = pxPerMeter();
-    this.aimArrow.position.set(dir.x * 1.7 * M, dir.y * 1.7 * M * squash() - 2);
-    this.aimArrow.visible = true;
-    this.aimArrow.alpha = 0.82 + 0.18 * Math.sin(this.aimPulse);
+  // Retired: the turf chalk (dot-arrow + wedge) is the one and only sight — a
+  // second little arrow orbiting the feet was noise on top of the real meter
+  private updateAimArrow() {
+    this.aimArrow.visible = false;
   }
 
   // His block lands him in the pose at speed, then settles into its tail —
